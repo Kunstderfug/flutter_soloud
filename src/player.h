@@ -100,6 +100,7 @@ public:
                             unsigned int sampleRate,
                             unsigned int channels,
                             unsigned int bufferSizeFrames,
+                            float inputGainDb,
                             CaptureStartInfo *info);
 
   /// @brief Start native capture and a SoLoud voice from one native command.
@@ -114,6 +115,7 @@ public:
                                    double startAtSeconds,
                                    bool looping,
                                    double loopingStartAt,
+                                   float inputGainDb,
                                    CapturePlaybackStartInfo *info);
 
   /// @brief Stop recording the native miniaudio capture device.
@@ -912,6 +914,8 @@ private:
   unsigned int mCaptureChannels = 0;
   uint64_t mCaptureSessionStartHostTimeNanos = 0;
   uint64_t mCaptureStartHostTimeNanos = 0;
+  float mCaptureInputGain = 1.0f;
+  std::vector<float> mCaptureGainBuffer;
   std::atomic<uint64_t> mCaptureFrameCount{0};
   std::atomic<uint64_t> mFirstInputBufferHostTimeNanos{0};
   std::atomic<uint64_t> mFirstInputBufferFrameIndex{0};

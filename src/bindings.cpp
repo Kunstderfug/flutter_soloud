@@ -492,7 +492,8 @@ extern "C"
 
   FFI_PLUGIN_EXPORT enum PlayerErrors
   startCapture(char *path, unsigned int sampleRate, unsigned int channels,
-               unsigned int bufferSizeFrames, unsigned int *actualSampleRate,
+               unsigned int bufferSizeFrames, float inputGainDb,
+               unsigned int *actualSampleRate,
                unsigned int *actualChannels,
                uint64_t *sessionStartHostTimeNanos,
                uint64_t *captureStartHostTimeNanos)
@@ -506,7 +507,8 @@ extern "C"
 
     CaptureStartInfo info;
     PlayerErrors result = player.get()->startCapture(
-        std::string(path), sampleRate, channels, bufferSizeFrames, &info);
+        std::string(path), sampleRate, channels, bufferSizeFrames, inputGainDb,
+        &info);
     if (result == noError)
     {
       *actualSampleRate = info.sampleRate;
@@ -522,6 +524,7 @@ extern "C"
       unsigned int sampleRate, unsigned int channels,
       unsigned int bufferSizeFrames, float volume, float pan,
       double startAtSeconds, bool looping, double loopingStartAt,
+      float inputGainDb,
       unsigned int *handle, unsigned int *actualSampleRate,
       unsigned int *actualChannels, uint64_t *sessionStartHostTimeNanos,
       uint64_t *captureStartHostTimeNanos,
@@ -539,7 +542,7 @@ extern "C"
     PlayerErrors result = player.get()->startCaptureAndPlay(
         std::string(path), soundHash, busId, sampleRate, channels,
         bufferSizeFrames, volume, pan, startAtSeconds, looping, loopingStartAt,
-        &info);
+        inputGainDb, &info);
     if (result == noError)
     {
       *handle = info.handle;

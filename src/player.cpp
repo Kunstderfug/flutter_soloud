@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -437,9 +438,19 @@ void Player::handleCaptureFrames(const void *input, ma_uint32 frameCount)
         mFirstInputBufferFrameIndex.store(currentFrame);
     }
 
-    const size_t bytesToWrite =
-        static_cast<size_t>(frameCount) * mCaptureChannels * sizeof(float);
-    fwrite(input, 1, bytesToWrite, mCaptureFile);
+    const size_t samplesToWrite =
+        static_cast<size_t>(frameCount) * mCaptureChannels;
+    const size_t bytesToWrite = samplesToWrite * sizeof(float);
+    if (std::fabs(mCaptureInputGain - 1.0f) < 0.0001f) {
+        fwrite(input, 1, bytesToWrite, mCaptureFile);
+    } else {
+        const float *samples = static_cast<const float *>(input);
+        if (mCaptureGainBuffer.size() < samplesToWrite)
+            mCaptureGainBuffer.resize(samplesToWrite);
+        for (size_t i = 0; i < samplesToWrite; ++i)
+            mCaptureGainBuffer[i] = samples[i] * mCaptureInputGain;
+        fwrite(mCaptureGainBuffer.data(), 1, bytesToWrite, mCaptureFile);
+    }
     mCaptureFrameCount.fetch_add(frameCount);
 }
 
@@ -453,6 +464,8 @@ void Player::resetCaptureState()
     mCaptureChannels = 0;
     mCaptureSessionStartHostTimeNanos = 0;
     mCaptureStartHostTimeNanos = 0;
+    mCaptureInputGain = 1.0f;
+    mCaptureGainBuffer.clear();
     mCaptureFrameCount.store(0);
     mFirstInputBufferHostTimeNanos.store(0);
     mFirstInputBufferFrameIndex.store(0);
@@ -462,6 +475,7 @@ PlayerErrors Player::startCapture(const std::string &filePath,
                                   unsigned int sampleRate,
                                   unsigned int channels,
                                   unsigned int bufferSizeFrames,
+                                  float inputGainDb,
                                   CaptureStartInfo *info)
 {
     if (!mInited)
@@ -509,6 +523,10 @@ PlayerErrors Player::startCapture(const std::string &filePath,
     mCaptureFrameCount.store(0);
     mFirstInputBufferHostTimeNanos.store(0);
     mFirstInputBufferFrameIndex.store(0);
+    mCaptureInputGain = std::pow(10.0f, inputGainDb / 20.0f);
+    mCaptureGainBuffer.clear();
+    if (std::fabs(mCaptureInputGain - 1.0f) >= 0.0001f)
+        mCaptureGainBuffer.resize(static_cast<size_t>(bufferSizeFrames) * channels);
     mCaptureSessionStartHostTimeNanos = nowHostTimeNanos();
     mCaptureRecording = true;
 
@@ -541,6 +559,7 @@ PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
                                          double startAtSeconds,
                                          bool looping,
                                          double loopingStartAt,
+                                         float inputGainDb,
                                          CapturePlaybackStartInfo *info)
 {
     if (info == nullptr)
@@ -550,7 +569,8 @@ PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
 
     CaptureStartInfo captureInfo;
     PlayerErrors result = startCapture(filePath, sampleRate, channels,
-                                       bufferSizeFrames, &captureInfo);
+                                       bufferSizeFrames, inputGainDb,
+                                       &captureInfo);
     if (result != noError)
         return result;
 

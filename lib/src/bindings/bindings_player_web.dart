@@ -324,6 +324,7 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     int sampleRate,
     int channels,
     int bufferSizeFrames,
+    double inputGainDb,
   ) {
     return (error: PlayerErrors.notImplemented, result: null);
   }
@@ -342,6 +343,7 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     Duration startAt = Duration.zero,
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
+    double inputGainDb = 0,
   }) {
     return (error: PlayerErrors.notImplemented, result: null);
   }

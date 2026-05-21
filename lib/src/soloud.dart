@@ -527,6 +527,7 @@ interface class SoLoud {
     int sampleRate = 48000,
     Channels channels = Channels.stereo,
     int bufferSizeFrames = 256,
+    double inputGainDb = 0,
   }) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -536,6 +537,7 @@ interface class SoLoud {
       sampleRate,
       channels.count,
       bufferSizeFrames,
+      inputGainDb,
     );
     _logPlayerError(ret.error, from: 'startCapture() result');
     if (ret.error != PlayerErrors.noError || ret.result == null) {
@@ -562,6 +564,7 @@ interface class SoLoud {
     Duration startAt = Duration.zero,
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
+    double inputGainDb = 0,
   }) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -578,6 +581,7 @@ interface class SoLoud {
       startAt: startAt,
       looping: looping,
       loopingStartAt: loopingStartAt,
+      inputGainDb: inputGainDb,
     );
     _logPlayerError(ret.error, from: 'startCaptureAndPlay() result');
     if (ret.error != PlayerErrors.noError || ret.result == null) {

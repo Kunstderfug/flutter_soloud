@@ -12,6 +12,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter_soloud/src/bindings/audio_data.dart';
 import 'package:flutter_soloud/src/bindings/bindings_player.dart';
 import 'package:flutter_soloud/src/bindings/native_metadata_ffi.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
@@ -674,6 +675,231 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     'isInited',
   );
   late final _isInited = _isInitedPtr.asFunction<int Function()>();
+
+  @override
+  ({PlayerErrors error, SoLoudCaptureStartResult? result}) startCapture(
+    String path,
+    int sampleRate,
+    int channels,
+    int bufferSizeFrames,
+  ) {
+    final pathPtr = path.toNativeUtf8();
+    final actualSampleRate = calloc<ffi.UnsignedInt>();
+    final actualChannels = calloc<ffi.UnsignedInt>();
+    final sessionStartHostTimeNanos = calloc<ffi.Uint64>();
+    final captureStartHostTimeNanos = calloc<ffi.Uint64>();
+    final error = _startCapture(
+      pathPtr,
+      sampleRate,
+      channels,
+      bufferSizeFrames,
+      actualSampleRate,
+      actualChannels,
+      sessionStartHostTimeNanos,
+      captureStartHostTimeNanos,
+    );
+    final result = error == PlayerErrors.noError.value
+        ? SoLoudCaptureStartResult(
+            path: path,
+            sampleRate: actualSampleRate.value,
+            channels: actualChannels.value,
+            bufferSizeFrames: bufferSizeFrames,
+            sessionStartHostTimeNanos: sessionStartHostTimeNanos.value,
+            captureStartHostTimeNanos: captureStartHostTimeNanos.value,
+          )
+        : null;
+    calloc
+      ..free(pathPtr)
+      ..free(actualSampleRate)
+      ..free(actualChannels)
+      ..free(sessionStartHostTimeNanos)
+      ..free(captureStartHostTimeNanos);
+    return (error: PlayerErrors.values[error], result: result);
+  }
+
+  late final _startCapturePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<Utf8>,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('startCapture');
+  late final _startCapture = _startCapturePtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<Utf8>,
+          int,
+          int,
+          int,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
+
+  @override
+  ({PlayerErrors error, SoLoudCaptureStopResult? result}) stopCapture() {
+    final sampleRate = calloc<ffi.UnsignedInt>();
+    final channels = calloc<ffi.UnsignedInt>();
+    final frameCount = calloc<ffi.Uint64>();
+    final sessionStartHostTimeNanos = calloc<ffi.Uint64>();
+    final captureStartHostTimeNanos = calloc<ffi.Uint64>();
+    final firstInputBufferHostTimeNanos = calloc<ffi.Uint64>();
+    final firstInputBufferFrameIndex = calloc<ffi.Uint64>();
+    final captureStopHostTimeNanos = calloc<ffi.Uint64>();
+    final error = _stopCapture(
+      sampleRate,
+      channels,
+      frameCount,
+      sessionStartHostTimeNanos,
+      captureStartHostTimeNanos,
+      firstInputBufferHostTimeNanos,
+      firstInputBufferFrameIndex,
+      captureStopHostTimeNanos,
+    );
+    final result = error == PlayerErrors.noError.value
+        ? SoLoudCaptureStopResult(
+            path: '',
+            sampleRate: sampleRate.value,
+            channels: channels.value,
+            frameCount: frameCount.value,
+            duration: Duration(
+              microseconds: sampleRate.value <= 0
+                  ? 0
+                  : (frameCount.value * Duration.microsecondsPerSecond /
+                          sampleRate.value)
+                      .round(),
+            ),
+            sessionStartHostTimeNanos: sessionStartHostTimeNanos.value,
+            captureStartHostTimeNanos: captureStartHostTimeNanos.value,
+            firstInputBufferHostTimeNanos:
+                firstInputBufferHostTimeNanos.value == 0
+                ? null
+                : firstInputBufferHostTimeNanos.value,
+            firstInputBufferFrameIndex:
+                firstInputBufferHostTimeNanos.value == 0
+                ? null
+                : firstInputBufferFrameIndex.value,
+            captureStopHostTimeNanos: captureStopHostTimeNanos.value,
+          )
+        : null;
+    calloc
+      ..free(sampleRate)
+      ..free(channels)
+      ..free(frameCount)
+      ..free(sessionStartHostTimeNanos)
+      ..free(captureStartHostTimeNanos)
+      ..free(firstInputBufferHostTimeNanos)
+      ..free(firstInputBufferFrameIndex)
+      ..free(captureStopHostTimeNanos);
+    return (error: PlayerErrors.values[error], result: result);
+  }
+
+  late final _stopCapturePtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('stopCapture');
+  late final _stopCapture = _stopCapturePtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
+
+  @override
+  PlayerErrors cancelCapture() {
+    final error = _cancelCapture();
+    return PlayerErrors.values[error];
+  }
+
+  late final _cancelCapturePtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function()>>('cancelCapture');
+  late final _cancelCapture = _cancelCapturePtr.asFunction<int Function()>();
+
+  @override
+  bool isCaptureRecording() => _isCaptureRecording() == 1;
+
+  late final _isCaptureRecordingPtr =
+      _lookup<ffi.NativeFunction<ffi.Int Function()>>('isCaptureRecording');
+  late final _isCaptureRecording =
+      _isCaptureRecordingPtr.asFunction<int Function()>();
+
+  @override
+  ({PlayerErrors error, SoLoudCaptureClockSnapshot? result})
+  getCaptureClockSnapshot() {
+    final hostTimeNanos = calloc<ffi.Uint64>();
+    final sessionStartHostTimeNanos = calloc<ffi.Uint64>();
+    final sampleRate = calloc<ffi.UnsignedInt>();
+    final inputDeviceFrame = calloc<ffi.Uint64>();
+    final error = _getCaptureClockSnapshot(
+      hostTimeNanos,
+      sessionStartHostTimeNanos,
+      sampleRate,
+      inputDeviceFrame,
+    );
+    final result = error == PlayerErrors.noError.value
+        ? SoLoudCaptureClockSnapshot(
+            hostTimeNanos: hostTimeNanos.value,
+            sessionStartHostTimeNanos: sessionStartHostTimeNanos.value,
+            sampleRate: sampleRate.value,
+            inputDeviceFrame: inputDeviceFrame.value,
+          )
+        : null;
+    calloc
+      ..free(hostTimeNanos)
+      ..free(sessionStartHostTimeNanos)
+      ..free(sampleRate)
+      ..free(inputDeviceFrame);
+    return (error: PlayerErrors.values[error], result: result);
+  }
+
+  late final _getCaptureClockSnapshotPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('getCaptureClockSnapshot');
+  late final _getCaptureClockSnapshot = _getCaptureClockSnapshotPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
 
   /// After loading the file, the [_fileLoadedCallback] will call the
   /// Dart function defined with [_setDartEventCallback] which gives back

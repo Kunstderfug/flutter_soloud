@@ -9,6 +9,7 @@ import 'package:flutter_soloud/src/bindings/bindings_player.dart';
 import 'package:flutter_soloud/src/bindings/native_metadata_ffi.dart'
     if (dart.library.js_interop) 'package:flutter_soloud/src/bindings/native_metadata_web.dart';
 import 'package:flutter_soloud/src/bindings/soloud_controller.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
@@ -323,6 +324,9 @@ interface class SoLoud {
   /// The channels the engine was initialized with.
   Channels _channels = Channels.stereo;
 
+  /// Path of the active native miniaudio capture, if any.
+  String? _capturePath;
+
   /// Initializes the audio engine.
   ///
   /// Run this before anything else, and `await` its result in a try/catch.
@@ -507,6 +511,82 @@ interface class SoLoud {
   /// Could be called safely even if the engin has not been initialized yet.
   List<PlaybackDevice> listPlaybackDevices() {
     return _controller.soLoudFFI.listPlaybackDevices();
+  }
+
+  /// Whether the native miniaudio capture device is currently recording.
+  bool get isCaptureRecording => _controller.soLoudFFI.isCaptureRecording();
+
+  /// Start recording from the native miniaudio capture device into [path].
+  ///
+  /// The file is written as IEEE float WAV. The capture clock snapshots
+  /// returned by this API use the same native monotonic clock for the whole
+  /// capture session, so callers can compare start, first-buffer, stop, and
+  /// explicit transport marks.
+  SoLoudCaptureStartResult startCapture(
+    String path, {
+    int sampleRate = 48000,
+    Channels channels = Channels.stereo,
+    int bufferSizeFrames = 256,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final ret = _controller.soLoudFFI.startCapture(
+      path,
+      sampleRate,
+      channels.count,
+      bufferSizeFrames,
+    );
+    _logPlayerError(ret.error, from: 'startCapture() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+    _capturePath = path;
+    return ret.result!;
+  }
+
+  /// Stop the active native miniaudio capture device.
+  SoLoudCaptureStopResult stopCapture() {
+    final ret = _controller.soLoudFFI.stopCapture();
+    _logPlayerError(ret.error, from: 'stopCapture() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+    final result = ret.result!;
+    final path = _capturePath ?? result.path;
+    _capturePath = null;
+    return SoLoudCaptureStopResult(
+      path: path,
+      sampleRate: result.sampleRate,
+      channels: result.channels,
+      frameCount: result.frameCount,
+      duration: result.duration,
+      sessionStartHostTimeNanos: result.sessionStartHostTimeNanos,
+      captureStartHostTimeNanos: result.captureStartHostTimeNanos,
+      firstInputBufferHostTimeNanos: result.firstInputBufferHostTimeNanos,
+      firstInputBufferFrameIndex: result.firstInputBufferFrameIndex,
+      captureStopHostTimeNanos: result.captureStopHostTimeNanos,
+    );
+  }
+
+  /// Cancel the active native miniaudio capture device.
+  void cancelCapture() {
+    final ret = _controller.soLoudFFI.cancelCapture();
+    _logPlayerError(ret, from: 'cancelCapture() result');
+    if (ret != PlayerErrors.noError) {
+      throw SoLoudCppException.fromPlayerError(ret);
+    }
+    _capturePath = null;
+  }
+
+  /// Return a clock snapshot from the active miniaudio capture session.
+  SoLoudCaptureClockSnapshot captureClockSnapshot() {
+    final ret = _controller.soLoudFFI.getCaptureClockSnapshot();
+    _logPlayerError(ret.error, from: 'captureClockSnapshot() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+    return ret.result!;
   }
 
   /// Stops the engine and disposes of all resources, including sounds.

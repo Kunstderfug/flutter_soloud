@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_soloud/src/bindings/audio_data.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
@@ -1299,6 +1300,36 @@ abstract class FlutterSoLoud {
     double endTime = -1,
     bool average = false,
   });
+
+  /////////////////////////////////////////
+  /// Native miniaudio capture
+  /////////////////////////////////////////
+
+  /// Start recording from the native miniaudio capture device to a WAV file.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCaptureStartResult? result}) startCapture(
+    String path,
+    int sampleRate,
+    int channels,
+    int bufferSizeFrames,
+  );
+
+  /// Stop the active native miniaudio capture device.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCaptureStopResult? result}) stopCapture();
+
+  /// Cancel the active native miniaudio capture device and delete the WAV file.
+  @mustBeOverridden
+  PlayerErrors cancelCapture();
+
+  /// Whether the native miniaudio capture device is currently recording.
+  @mustBeOverridden
+  bool isCaptureRecording();
+
+  /// Return a clock snapshot from the active miniaudio capture session.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCaptureClockSnapshot? result})
+  getCaptureClockSnapshot();
 
   /////////////////////////////////////////
   /// Mixing Bus

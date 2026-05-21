@@ -15,6 +15,8 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
+#include <cstdio>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -28,6 +30,34 @@ struct PlaybackDevice
   unsigned int isDefault;
   unsigned int id;
   ma_device_id deviceId; // Store the actual device ID, not just the index
+};
+
+struct CaptureStartInfo
+{
+  unsigned int sampleRate;
+  unsigned int channels;
+  uint64_t sessionStartHostTimeNanos;
+  uint64_t captureStartHostTimeNanos;
+};
+
+struct CaptureStopInfo
+{
+  unsigned int sampleRate;
+  unsigned int channels;
+  uint64_t frameCount;
+  uint64_t sessionStartHostTimeNanos;
+  uint64_t captureStartHostTimeNanos;
+  uint64_t firstInputBufferHostTimeNanos;
+  uint64_t firstInputBufferFrameIndex;
+  uint64_t captureStopHostTimeNanos;
+};
+
+struct CaptureClockInfo
+{
+  uint64_t hostTimeNanos;
+  uint64_t sessionStartHostTimeNanos;
+  unsigned int sampleRate;
+  uint64_t inputDeviceFrame;
 };
 
 class Player
@@ -54,6 +84,25 @@ public:
   PlayerErrors changeDevice(int deviceID);
 
   std::vector<PlaybackDevice> listPlaybackDevices();
+
+  /// @brief Start recording the native miniaudio capture device to a WAV file.
+  PlayerErrors startCapture(const std::string &filePath,
+                            unsigned int sampleRate,
+                            unsigned int channels,
+                            unsigned int bufferSizeFrames,
+                            CaptureStartInfo *info);
+
+  /// @brief Stop recording the native miniaudio capture device.
+  PlayerErrors stopCapture(CaptureStopInfo *info);
+
+  /// @brief Cancel recording and delete the partially written WAV file.
+  PlayerErrors cancelCapture();
+
+  /// @brief Return true if miniaudio capture is active.
+  bool isCaptureRecording() const;
+
+  /// @brief Capture a same-clock snapshot from the active capture session.
+  PlayerErrors getCaptureClockSnapshot(CaptureClockInfo *info) const;
 
   /// @brief Set a function callback triggered when a voice is stopped/ended.
   void setVoiceEndedCallback(void (*voiceEndedCallback)(unsigned int *));
@@ -816,10 +865,32 @@ public:
   unsigned int mChannels;
 
 private:
+  static void captureDataCallback(ma_device *device, void *output,
+                                  const void *input, ma_uint32 frameCount);
+  static uint64_t nowHostTimeNanos();
+  static bool writeWavHeader(FILE *file, unsigned int sampleRate,
+                             unsigned int channels);
+  static void finalizeWavHeader(FILE *file, uint64_t dataSizeBytes);
+  void handleCaptureFrames(const void *input, ma_uint32 frameCount);
+  void resetCaptureState();
+
   ma_device_info *pPlaybackInfos;
   std::mutex remove_handle_mutex;
   mutable std::recursive_mutex sounds_mutex; // Protects the sounds vector (recursive to avoid deadlock in destructors)
   unsigned int mBufferSize;
+
+  ma_device mCaptureDevice;
+  bool mCaptureDeviceInitialized = false;
+  bool mCaptureRecording = false;
+  FILE *mCaptureFile = nullptr;
+  std::string mCaptureFilePath;
+  unsigned int mCaptureSampleRate = 0;
+  unsigned int mCaptureChannels = 0;
+  uint64_t mCaptureSessionStartHostTimeNanos = 0;
+  uint64_t mCaptureStartHostTimeNanos = 0;
+  std::atomic<uint64_t> mCaptureFrameCount{0};
+  std::atomic<uint64_t> mFirstInputBufferHostTimeNanos{0};
+  std::atomic<uint64_t> mFirstInputBufferFrameIndex{0};
 
   std::map<unsigned int, BusData> busMap;
   unsigned int busIdCounter = 0;

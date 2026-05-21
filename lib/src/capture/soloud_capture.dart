@@ -38,6 +38,63 @@ final class SoLoudCaptureStartResult {
       );
 }
 
+/// Result returned after native capture and playback start together.
+final class SoLoudCapturePlaybackStartResult {
+  /// Create a coordinated native capture/playback start result.
+  const SoLoudCapturePlaybackStartResult({
+    required this.path,
+    required this.handle,
+    required this.sampleRate,
+    required this.channels,
+    required this.bufferSizeFrames,
+    required this.sessionStartHostTimeNanos,
+    required this.captureStartHostTimeNanos,
+    required this.playbackStartHostTimeNanos,
+  });
+
+  /// Destination WAV path.
+  final String path;
+
+  /// New SoLoud playback handle.
+  final int handle;
+
+  /// Actual native capture sample rate.
+  final int sampleRate;
+
+  /// Actual native capture channel count.
+  final int channels;
+
+  /// Requested native period size.
+  final int bufferSizeFrames;
+
+  /// Monotonic clock timestamp used as this coordinated session's origin.
+  final int sessionStartHostTimeNanos;
+
+  /// Monotonic clock timestamp captured after the native capture device starts.
+  final int captureStartHostTimeNanos;
+
+  /// Monotonic clock timestamp captured after the SoLoud voice is unpaused.
+  final int playbackStartHostTimeNanos;
+
+  /// Capture-start timestamp expressed as a reusable clock snapshot.
+  SoLoudCaptureClockSnapshot get captureStartClock =>
+      SoLoudCaptureClockSnapshot(
+        hostTimeNanos: captureStartHostTimeNanos,
+        sessionStartHostTimeNanos: sessionStartHostTimeNanos,
+        sampleRate: sampleRate,
+        inputDeviceFrame: 0,
+      );
+
+  /// Playback-start timestamp expressed as a reusable clock snapshot.
+  SoLoudCaptureClockSnapshot get playbackStartClock =>
+      SoLoudCaptureClockSnapshot(
+        hostTimeNanos: playbackStartHostTimeNanos,
+        sessionStartHostTimeNanos: sessionStartHostTimeNanos,
+        sampleRate: sampleRate,
+        inputDeviceFrame: 0,
+      );
+}
+
 /// Result returned after the native miniaudio capture device stops.
 final class SoLoudCaptureStopResult {
   /// Create a native capture stop result.

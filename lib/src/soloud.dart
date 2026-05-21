@@ -484,6 +484,65 @@ interface class SoLoud {
     return ret.result!;
   }
 
+  /// Start recording and play [sound] from one native command path.
+  ///
+  /// This creates the SoLoud voice paused, applies the optional [startAt] seek
+  /// and loop settings, then unpauses it after native capture is active. The
+  /// returned timestamps are on the same native monotonic clock as capture.
+  SoLoudCapturePlaybackStartResult startCaptureAndPlay(
+    String path,
+    AudioSource sound, {
+    int busId = 0,
+    int sampleRate = 48000,
+    Channels channels = Channels.stereo,
+    int bufferSizeFrames = 256,
+    double volume = 1,
+    double pan = 0,
+    Duration startAt = Duration.zero,
+    bool looping = false,
+    Duration loopingStartAt = Duration.zero,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final ret = _controller.soLoudFFI.startCaptureAndPlay(
+      path,
+      sound.soundHash,
+      busId: busId,
+      sampleRate: sampleRate,
+      channels: channels.count,
+      bufferSizeFrames: bufferSizeFrames,
+      volume: volume,
+      pan: pan,
+      startAt: startAt,
+      looping: looping,
+      loopingStartAt: loopingStartAt,
+    );
+    _logPlayerError(ret.error, from: 'startCaptureAndPlay() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+
+    final filtered = _activeSounds
+        .where((s) => s.soundHash == sound.soundHash)
+        .toSet();
+    if (filtered.isEmpty) {
+      _log.severe(
+        () => 'startCaptureAndPlay(): soundHash ${sound.soundHash} not found',
+      );
+      throw SoLoudSoundHashNotFoundDartException(sound.soundHash);
+    }
+
+    assert(filtered.length == 1, 'Duplicate sounds found');
+    final result = ret.result!;
+    for (final activeSound in filtered) {
+      activeSound.handlesInternal.add(SoundHandle(result.handle));
+    }
+
+    _capturePath = path;
+    return result;
+  }
+
   /// Stop the active native miniaudio capture device.
   SoLoudCaptureStopResult stopCapture() {
     final ret = _controller.soLoudFFI.stopCapture();

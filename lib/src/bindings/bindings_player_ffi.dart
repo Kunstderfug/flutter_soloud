@@ -416,6 +416,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     int sampleRate,
     int channels,
     int bufferSizeFrames,
+    double inputGainDb,
   ) {
     final pathPtr = path.toNativeUtf8();
     final actualSampleRate = calloc<ffi.UnsignedInt>();
@@ -427,6 +428,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       sampleRate,
       channels,
       bufferSizeFrames,
+      inputGainDb,
       actualSampleRate,
       actualChannels,
       sessionStartHostTimeNanos,
@@ -459,6 +461,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.UnsignedInt,
             ffi.UnsignedInt,
             ffi.UnsignedInt,
+            ffi.Float,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.Uint64>,
@@ -473,6 +476,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           int,
           int,
           int,
+          double,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.Uint64>,
@@ -494,6 +498,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     Duration startAt = Duration.zero,
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
+    double inputGainDb = 0,
   }) {
     final pathPtr = path.toNativeUtf8();
     final handle = calloc<ffi.UnsignedInt>();
@@ -514,6 +519,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       startAt.toDouble(),
       looping ? 1 : 0,
       loopingStartAt.toDouble(),
+      inputGainDb,
       handle,
       actualSampleRate,
       actualChannels,
@@ -559,6 +565,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.Double,
             ffi.Int,
             ffi.Double,
+            ffi.Float,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.UnsignedInt>,
@@ -581,6 +588,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           double,
           double,
           int,
+          double,
           double,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.UnsignedInt>,

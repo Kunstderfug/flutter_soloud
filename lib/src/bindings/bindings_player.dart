@@ -997,6 +997,7 @@ abstract class FlutterSoLoud {
     int sampleRate,
     int channels,
     int bufferSizeFrames,
+    double inputGainDb,
   );
 
   /// Start native capture and a SoLoud voice from one native command path.
@@ -1014,6 +1015,7 @@ abstract class FlutterSoLoud {
     Duration startAt = Duration.zero,
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
+    double inputGainDb = 0,
   });
 
   /// Stop the active native miniaudio capture device.

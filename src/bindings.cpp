@@ -327,7 +327,8 @@ FFI_PLUGIN_EXPORT int isInited() {
 
 FFI_PLUGIN_EXPORT enum PlayerErrors
 startCapture(char *path, unsigned int sampleRate, unsigned int channels,
-             unsigned int bufferSizeFrames, unsigned int *actualSampleRate,
+             unsigned int bufferSizeFrames, float inputGainDb,
+             unsigned int *actualSampleRate,
              unsigned int *actualChannels, uint64_t *sessionStartHostTimeNanos,
              uint64_t *captureStartHostTimeNanos) {
   if (player.get() == nullptr)
@@ -339,7 +340,8 @@ startCapture(char *path, unsigned int sampleRate, unsigned int channels,
 
   CaptureStartInfo info;
   PlayerErrors result = player.get()->startCapture(
-      std::string(path), sampleRate, channels, bufferSizeFrames, &info);
+      std::string(path), sampleRate, channels, bufferSizeFrames, inputGainDb,
+      &info);
   if (result == noError) {
     *actualSampleRate = info.sampleRate;
     *actualChannels = info.channels;
@@ -354,7 +356,8 @@ startCaptureAndPlay(char *path, unsigned int soundHash, unsigned int busId,
                     unsigned int sampleRate, unsigned int channels,
                     unsigned int bufferSizeFrames, float volume, float pan,
                     double startAtSeconds, bool looping,
-                    double loopingStartAt, unsigned int *handle,
+                    double loopingStartAt, float inputGainDb,
+                    unsigned int *handle,
                     unsigned int *actualSampleRate,
                     unsigned int *actualChannels,
                     uint64_t *sessionStartHostTimeNanos,
@@ -372,7 +375,7 @@ startCaptureAndPlay(char *path, unsigned int soundHash, unsigned int busId,
   PlayerErrors result = player.get()->startCaptureAndPlay(
       std::string(path), soundHash, busId, sampleRate, channels,
       bufferSizeFrames, volume, pan, startAtSeconds, looping, loopingStartAt,
-      &info);
+      inputGainDb, &info);
   if (result == noError) {
     *handle = info.handle;
     *actualSampleRate = info.sampleRate;

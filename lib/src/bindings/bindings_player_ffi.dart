@@ -747,6 +747,117 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       >();
 
   @override
+  ({PlayerErrors error, SoLoudCapturePlaybackStartResult? result})
+  startCaptureAndPlay(
+    String path,
+    SoundHash soundHash, {
+    int busId = 0,
+    int sampleRate = 48000,
+    int channels = 2,
+    int bufferSizeFrames = 256,
+    double volume = 1,
+    double pan = 0,
+    Duration startAt = Duration.zero,
+    bool looping = false,
+    Duration loopingStartAt = Duration.zero,
+  }) {
+    final pathPtr = path.toNativeUtf8();
+    final handle = calloc<ffi.UnsignedInt>();
+    final actualSampleRate = calloc<ffi.UnsignedInt>();
+    final actualChannels = calloc<ffi.UnsignedInt>();
+    final sessionStartHostTimeNanos = calloc<ffi.Uint64>();
+    final captureStartHostTimeNanos = calloc<ffi.Uint64>();
+    final playbackStartHostTimeNanos = calloc<ffi.Uint64>();
+    final error = _startCaptureAndPlay(
+      pathPtr,
+      soundHash.hash,
+      busId,
+      sampleRate,
+      channels,
+      bufferSizeFrames,
+      volume,
+      pan,
+      startAt.toDouble(),
+      looping ? 1 : 0,
+      loopingStartAt.toDouble(),
+      handle,
+      actualSampleRate,
+      actualChannels,
+      sessionStartHostTimeNanos,
+      captureStartHostTimeNanos,
+      playbackStartHostTimeNanos,
+    );
+    final result = error == PlayerErrors.noError.value
+        ? SoLoudCapturePlaybackStartResult(
+            path: path,
+            handle: handle.value,
+            sampleRate: actualSampleRate.value,
+            channels: actualChannels.value,
+            bufferSizeFrames: bufferSizeFrames,
+            sessionStartHostTimeNanos: sessionStartHostTimeNanos.value,
+            captureStartHostTimeNanos: captureStartHostTimeNanos.value,
+            playbackStartHostTimeNanos: playbackStartHostTimeNanos.value,
+          )
+        : null;
+    calloc
+      ..free(pathPtr)
+      ..free(handle)
+      ..free(actualSampleRate)
+      ..free(actualChannels)
+      ..free(sessionStartHostTimeNanos)
+      ..free(captureStartHostTimeNanos)
+      ..free(playbackStartHostTimeNanos);
+    return (error: PlayerErrors.values[error], result: result);
+  }
+
+  late final _startCaptureAndPlayPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<Utf8>,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.Float,
+            ffi.Float,
+            ffi.Double,
+            ffi.Int,
+            ffi.Double,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('startCaptureAndPlay');
+  late final _startCaptureAndPlay = _startCaptureAndPlayPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<Utf8>,
+          int,
+          int,
+          int,
+          int,
+          int,
+          double,
+          double,
+          double,
+          int,
+          double,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
+
+  @override
   ({PlayerErrors error, SoLoudCaptureStopResult? result}) stopCapture() {
     final sampleRate = calloc<ffi.UnsignedInt>();
     final channels = calloc<ffi.UnsignedInt>();

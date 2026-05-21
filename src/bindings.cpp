@@ -517,6 +517,41 @@ extern "C"
     return result;
   }
 
+  FFI_PLUGIN_EXPORT enum PlayerErrors startCaptureAndPlay(
+      char *path, unsigned int soundHash, unsigned int busId,
+      unsigned int sampleRate, unsigned int channels,
+      unsigned int bufferSizeFrames, float volume, float pan,
+      double startAtSeconds, bool looping, double loopingStartAt,
+      unsigned int *handle, unsigned int *actualSampleRate,
+      unsigned int *actualChannels, uint64_t *sessionStartHostTimeNanos,
+      uint64_t *captureStartHostTimeNanos,
+      uint64_t *playbackStartHostTimeNanos)
+  {
+    if (player.get() == nullptr)
+      return backendNotInited;
+    if (path == nullptr || handle == nullptr || actualSampleRate == nullptr ||
+        actualChannels == nullptr || sessionStartHostTimeNanos == nullptr ||
+        captureStartHostTimeNanos == nullptr ||
+        playbackStartHostTimeNanos == nullptr)
+      return nullPointer;
+
+    CapturePlaybackStartInfo info;
+    PlayerErrors result = player.get()->startCaptureAndPlay(
+        std::string(path), soundHash, busId, sampleRate, channels,
+        bufferSizeFrames, volume, pan, startAtSeconds, looping, loopingStartAt,
+        &info);
+    if (result == noError)
+    {
+      *handle = info.handle;
+      *actualSampleRate = info.sampleRate;
+      *actualChannels = info.channels;
+      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
+      *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
+      *playbackStartHostTimeNanos = info.playbackStartHostTimeNanos;
+    }
+    return result;
+  }
+
   FFI_PLUGIN_EXPORT enum PlayerErrors
   stopCapture(unsigned int *sampleRate, unsigned int *channels,
               uint64_t *frameCount, uint64_t *sessionStartHostTimeNanos,

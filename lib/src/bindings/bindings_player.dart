@@ -1314,6 +1314,23 @@ abstract class FlutterSoLoud {
     int bufferSizeFrames,
   );
 
+  /// Start native capture and a SoLoud voice from one native command path.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCapturePlaybackStartResult? result})
+  startCaptureAndPlay(
+    String path,
+    SoundHash soundHash, {
+    int busId = 0,
+    int sampleRate = 48000,
+    int channels = 2,
+    int bufferSizeFrames = 256,
+    double volume = 1,
+    double pan = 0,
+    Duration startAt = Duration.zero,
+    bool looping = false,
+    Duration loopingStartAt = Duration.zero,
+  });
+
   /// Stop the active native miniaudio capture device.
   @mustBeOverridden
   ({PlayerErrors error, SoLoudCaptureStopResult? result}) stopCapture();

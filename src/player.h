@@ -60,6 +60,16 @@ struct CaptureClockInfo
   uint64_t inputDeviceFrame;
 };
 
+struct CapturePlaybackStartInfo
+{
+  unsigned int handle;
+  unsigned int sampleRate;
+  unsigned int channels;
+  uint64_t sessionStartHostTimeNanos;
+  uint64_t captureStartHostTimeNanos;
+  uint64_t playbackStartHostTimeNanos;
+};
+
 class Player
 {
 public:
@@ -91,6 +101,20 @@ public:
                             unsigned int channels,
                             unsigned int bufferSizeFrames,
                             CaptureStartInfo *info);
+
+  /// @brief Start native capture and a SoLoud voice from one native command.
+  PlayerErrors startCaptureAndPlay(const std::string &filePath,
+                                   unsigned int soundHash,
+                                   unsigned int busId,
+                                   unsigned int sampleRate,
+                                   unsigned int channels,
+                                   unsigned int bufferSizeFrames,
+                                   float volume,
+                                   float pan,
+                                   double startAtSeconds,
+                                   bool looping,
+                                   double loopingStartAt,
+                                   CapturePlaybackStartInfo *info);
 
   /// @brief Stop recording the native miniaudio capture device.
   PlayerErrors stopCapture(CaptureStopInfo *info);

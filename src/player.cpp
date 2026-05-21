@@ -510,9 +510,11 @@ PlayerErrors Player::startCapture(const std::string &filePath,
     mFirstInputBufferHostTimeNanos.store(0);
     mFirstInputBufferFrameIndex.store(0);
     mCaptureSessionStartHostTimeNanos = nowHostTimeNanos();
+    mCaptureRecording = true;
 
     result = ma_device_start(&mCaptureDevice);
     if (result != MA_SUCCESS) {
+        mCaptureRecording = false;
         ma_device_uninit(&mCaptureDevice);
         fclose(file);
         remove(filePath.c_str());
@@ -520,12 +522,62 @@ PlayerErrors Player::startCapture(const std::string &filePath,
         return unknownError;
     }
 
-    mCaptureRecording = true;
     mCaptureStartHostTimeNanos = nowHostTimeNanos();
     info->sampleRate = mCaptureSampleRate;
     info->channels = mCaptureChannels;
     info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
     info->captureStartHostTimeNanos = mCaptureStartHostTimeNanos;
+    return noError;
+}
+
+PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
+                                         unsigned int soundHash,
+                                         unsigned int busId,
+                                         unsigned int sampleRate,
+                                         unsigned int channels,
+                                         unsigned int bufferSizeFrames,
+                                         float volume,
+                                         float pan,
+                                         double startAtSeconds,
+                                         bool looping,
+                                         double loopingStartAt,
+                                         CapturePlaybackStartInfo *info)
+{
+    if (info == nullptr)
+        return nullPointer;
+    if (startAtSeconds < 0 || loopingStartAt < 0)
+        return invalidParameter;
+
+    CaptureStartInfo captureInfo;
+    PlayerErrors result = startCapture(filePath, sampleRate, channels,
+                                       bufferSizeFrames, &captureInfo);
+    if (result != noError)
+        return result;
+
+    unsigned int handle = 0;
+    result = play(soundHash, handle, busId, volume, pan, true, looping,
+                  loopingStartAt);
+    if (result != noError) {
+        cancelCapture();
+        return result;
+    }
+
+    if (startAtSeconds > 0) {
+        result = seek(handle, static_cast<float>(startAtSeconds));
+        if (result != noError) {
+            stop(handle);
+            cancelCapture();
+            return result;
+        }
+    }
+
+    setPause(handle, false);
+    info->handle = handle;
+    info->sampleRate = captureInfo.sampleRate;
+    info->channels = captureInfo.channels;
+    info->sessionStartHostTimeNanos = captureInfo.sessionStartHostTimeNanos;
+    info->captureStartHostTimeNanos = captureInfo.captureStartHostTimeNanos;
+    info->playbackStartHostTimeNanos = nowHostTimeNanos();
     return noError;
 }
 

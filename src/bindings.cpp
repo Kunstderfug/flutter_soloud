@@ -325,6 +325,96 @@ FFI_PLUGIN_EXPORT int isInited() {
   return player.get()->isInited() ? 1 : 0;
 }
 
+FFI_PLUGIN_EXPORT enum PlayerErrors
+startCapture(char *path, unsigned int sampleRate, unsigned int channels,
+             unsigned int bufferSizeFrames, unsigned int *actualSampleRate,
+             unsigned int *actualChannels, uint64_t *sessionStartHostTimeNanos,
+             uint64_t *captureStartHostTimeNanos) {
+  if (player.get() == nullptr)
+    return backendNotInited;
+  if (path == nullptr || actualSampleRate == nullptr ||
+      actualChannels == nullptr || sessionStartHostTimeNanos == nullptr ||
+      captureStartHostTimeNanos == nullptr)
+    return nullPointer;
+
+  CaptureStartInfo info;
+  PlayerErrors result = player.get()->startCapture(
+      std::string(path), sampleRate, channels, bufferSizeFrames, &info);
+  if (result == noError) {
+    *actualSampleRate = info.sampleRate;
+    *actualChannels = info.channels;
+    *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
+    *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
+  }
+  return result;
+}
+
+FFI_PLUGIN_EXPORT enum PlayerErrors
+stopCapture(unsigned int *sampleRate, unsigned int *channels,
+            uint64_t *frameCount, uint64_t *sessionStartHostTimeNanos,
+            uint64_t *captureStartHostTimeNanos,
+            uint64_t *firstInputBufferHostTimeNanos,
+            uint64_t *firstInputBufferFrameIndex,
+            uint64_t *captureStopHostTimeNanos) {
+  if (player.get() == nullptr)
+    return backendNotInited;
+  if (sampleRate == nullptr || channels == nullptr || frameCount == nullptr ||
+      sessionStartHostTimeNanos == nullptr ||
+      captureStartHostTimeNanos == nullptr ||
+      firstInputBufferHostTimeNanos == nullptr ||
+      firstInputBufferFrameIndex == nullptr ||
+      captureStopHostTimeNanos == nullptr)
+    return nullPointer;
+
+  CaptureStopInfo info;
+  PlayerErrors result = player.get()->stopCapture(&info);
+  if (result == noError) {
+    *sampleRate = info.sampleRate;
+    *channels = info.channels;
+    *frameCount = info.frameCount;
+    *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
+    *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
+    *firstInputBufferHostTimeNanos = info.firstInputBufferHostTimeNanos;
+    *firstInputBufferFrameIndex = info.firstInputBufferFrameIndex;
+    *captureStopHostTimeNanos = info.captureStopHostTimeNanos;
+  }
+  return result;
+}
+
+FFI_PLUGIN_EXPORT enum PlayerErrors cancelCapture() {
+  if (player.get() == nullptr)
+    return backendNotInited;
+  return player.get()->cancelCapture();
+}
+
+FFI_PLUGIN_EXPORT int isCaptureRecording() {
+  if (player.get() == nullptr)
+    return 0;
+  return player.get()->isCaptureRecording() ? 1 : 0;
+}
+
+FFI_PLUGIN_EXPORT enum PlayerErrors
+getCaptureClockSnapshot(uint64_t *hostTimeNanos,
+                        uint64_t *sessionStartHostTimeNanos,
+                        unsigned int *sampleRate,
+                        uint64_t *inputDeviceFrame) {
+  if (player.get() == nullptr)
+    return backendNotInited;
+  if (hostTimeNanos == nullptr || sessionStartHostTimeNanos == nullptr ||
+      sampleRate == nullptr || inputDeviceFrame == nullptr)
+    return nullPointer;
+
+  CaptureClockInfo info;
+  PlayerErrors result = player.get()->getCaptureClockSnapshot(&info);
+  if (result == noError) {
+    *hostTimeNanos = info.hostTimeNanos;
+    *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
+    *sampleRate = info.sampleRate;
+    *inputDeviceFrame = info.inputDeviceFrame;
+  }
+  return result;
+}
+
     /// Load a new sound to be played once or multiple times later.
     ///
     /// After loading the file, the [fileLoadedCallback] will call the

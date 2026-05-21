@@ -9,7 +9,9 @@
 #include "synth/basic_wave.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <random>
 
@@ -24,6 +26,38 @@
 #else
 #define __WEB__ 0
 #endif
+
+namespace SoLoud {
+extern ma_context context;
+}
+
+namespace {
+bool writeBytes(FILE *file, const void *data, size_t size) {
+    return file != nullptr && fwrite(data, 1, size, file) == size;
+}
+
+bool writeU16le(FILE *file, uint16_t value) {
+    const unsigned char bytes[2] = {
+        static_cast<unsigned char>(value & 0xff),
+        static_cast<unsigned char>((value >> 8) & 0xff),
+    };
+    return writeBytes(file, bytes, sizeof(bytes));
+}
+
+bool writeU32le(FILE *file, uint32_t value) {
+    const unsigned char bytes[4] = {
+        static_cast<unsigned char>(value & 0xff),
+        static_cast<unsigned char>((value >> 8) & 0xff),
+        static_cast<unsigned char>((value >> 16) & 0xff),
+        static_cast<unsigned char>((value >> 24) & 0xff),
+    };
+    return writeBytes(file, bytes, sizeof(bytes));
+}
+
+uint32_t clampWavSize(uint64_t value) {
+    return value > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(value);
+}
+}
 
 Player::Player() : mInited(false), mFilters(&soloud, nullptr, nullptr) {}
 
@@ -55,6 +89,7 @@ void Player::dispose() {
     if (!mInited)
         return;
 
+    cancelCapture();
     mInited = false;
 
     // Clean up SoLoud
@@ -189,6 +224,236 @@ std::vector<PlaybackDevice> Player::listPlaybackDevices()
     // printf("***************** LIST DEVICES END\n");
     ma_context_uninit(&context);
     return ret;
+}
+
+uint64_t Player::nowHostTimeNanos()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
+bool Player::writeWavHeader(FILE *file, unsigned int sampleRate,
+                            unsigned int channels)
+{
+    if (file == nullptr || sampleRate == 0 || channels == 0)
+        return false;
+
+    const uint16_t audioFormat = 3; // IEEE float.
+    const uint16_t bitsPerSample = 32;
+    const uint16_t blockAlign = static_cast<uint16_t>(channels * sizeof(float));
+    const uint32_t byteRate = sampleRate * blockAlign;
+
+    return writeBytes(file, "RIFF", 4) &&
+           writeU32le(file, 36) &&
+           writeBytes(file, "WAVE", 4) &&
+           writeBytes(file, "fmt ", 4) &&
+           writeU32le(file, 16) &&
+           writeU16le(file, audioFormat) &&
+           writeU16le(file, static_cast<uint16_t>(channels)) &&
+           writeU32le(file, sampleRate) &&
+           writeU32le(file, byteRate) &&
+           writeU16le(file, blockAlign) &&
+           writeU16le(file, bitsPerSample) &&
+           writeBytes(file, "data", 4) &&
+           writeU32le(file, 0);
+}
+
+void Player::finalizeWavHeader(FILE *file, uint64_t dataSizeBytes)
+{
+    if (file == nullptr)
+        return;
+
+    const uint32_t riffSize = clampWavSize(dataSizeBytes + 36);
+    const uint32_t dataSize = clampWavSize(dataSizeBytes);
+    fseek(file, 4, SEEK_SET);
+    writeU32le(file, riffSize);
+    fseek(file, 40, SEEK_SET);
+    writeU32le(file, dataSize);
+    fseek(file, 0, SEEK_END);
+}
+
+void Player::captureDataCallback(ma_device *device, void *output,
+                                 const void *input, ma_uint32 frameCount)
+{
+    (void)output;
+    if (device == nullptr || device->pUserData == nullptr)
+        return;
+
+    Player *player = static_cast<Player *>(device->pUserData);
+    player->handleCaptureFrames(input, frameCount);
+}
+
+void Player::handleCaptureFrames(const void *input, ma_uint32 frameCount)
+{
+    if (!mCaptureRecording || mCaptureFile == nullptr || input == nullptr ||
+        frameCount == 0)
+        return;
+
+    uint64_t expected = 0;
+    const uint64_t currentFrame = mCaptureFrameCount.load();
+    if (mFirstInputBufferHostTimeNanos.compare_exchange_strong(
+            expected, nowHostTimeNanos())) {
+        mFirstInputBufferFrameIndex.store(currentFrame);
+    }
+
+    const size_t bytesToWrite =
+        static_cast<size_t>(frameCount) * mCaptureChannels * sizeof(float);
+    fwrite(input, 1, bytesToWrite, mCaptureFile);
+    mCaptureFrameCount.fetch_add(frameCount);
+}
+
+void Player::resetCaptureState()
+{
+    mCaptureDeviceInitialized = false;
+    mCaptureRecording = false;
+    mCaptureFile = nullptr;
+    mCaptureFilePath.clear();
+    mCaptureSampleRate = 0;
+    mCaptureChannels = 0;
+    mCaptureSessionStartHostTimeNanos = 0;
+    mCaptureStartHostTimeNanos = 0;
+    mCaptureFrameCount.store(0);
+    mFirstInputBufferHostTimeNanos.store(0);
+    mFirstInputBufferFrameIndex.store(0);
+}
+
+PlayerErrors Player::startCapture(const std::string &filePath,
+                                  unsigned int sampleRate,
+                                  unsigned int channels,
+                                  unsigned int bufferSizeFrames,
+                                  CaptureStartInfo *info)
+{
+    if (!mInited)
+        return backendNotInited;
+    if (mCaptureRecording)
+        return playerAlreadyInited;
+    if (filePath.empty() || sampleRate == 0 || channels == 0 ||
+        channels > 2 || bufferSizeFrames == 0 || info == nullptr)
+        return invalidParameter;
+
+    FILE *file = fopen(filePath.c_str(), "wb");
+    if (file == nullptr)
+        return fileLoadFailed;
+    if (!writeWavHeader(file, sampleRate, channels)) {
+        fclose(file);
+        remove(filePath.c_str());
+        return fileLoadFailed;
+    }
+
+    ma_device_config config = ma_device_config_init(ma_device_type_capture);
+    config.capture.format = ma_format_f32;
+    config.capture.channels = channels;
+    config.sampleRate = sampleRate;
+    config.periodSizeInFrames = bufferSizeFrames;
+    config.dataCallback = captureDataCallback;
+    config.pUserData = this;
+
+    ma_result result;
+#if defined(MA_HAS_COREAUDIO) || defined(__ANDROID__)
+    result = ma_device_init(&SoLoud::context, &config, &mCaptureDevice);
+#else
+    result = ma_device_init(NULL, &config, &mCaptureDevice);
+#endif
+    if (result != MA_SUCCESS) {
+        fclose(file);
+        remove(filePath.c_str());
+        return unknownError;
+    }
+
+    mCaptureDeviceInitialized = true;
+    mCaptureFile = file;
+    mCaptureFilePath = filePath;
+    mCaptureSampleRate = mCaptureDevice.sampleRate;
+    mCaptureChannels = mCaptureDevice.capture.channels;
+    mCaptureFrameCount.store(0);
+    mFirstInputBufferHostTimeNanos.store(0);
+    mFirstInputBufferFrameIndex.store(0);
+    mCaptureSessionStartHostTimeNanos = nowHostTimeNanos();
+
+    result = ma_device_start(&mCaptureDevice);
+    if (result != MA_SUCCESS) {
+        ma_device_uninit(&mCaptureDevice);
+        fclose(file);
+        remove(filePath.c_str());
+        resetCaptureState();
+        return unknownError;
+    }
+
+    mCaptureRecording = true;
+    mCaptureStartHostTimeNanos = nowHostTimeNanos();
+    info->sampleRate = mCaptureSampleRate;
+    info->channels = mCaptureChannels;
+    info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
+    info->captureStartHostTimeNanos = mCaptureStartHostTimeNanos;
+    return noError;
+}
+
+PlayerErrors Player::stopCapture(CaptureStopInfo *info)
+{
+    if (!mCaptureRecording || !mCaptureDeviceInitialized || mCaptureFile == nullptr)
+        return invalidParameter;
+    if (info == nullptr)
+        return nullPointer;
+
+    ma_device_stop(&mCaptureDevice);
+    const uint64_t stopHostTimeNanos = nowHostTimeNanos();
+    ma_device_uninit(&mCaptureDevice);
+
+    const uint64_t frameCount = mCaptureFrameCount.load();
+    const uint64_t dataSizeBytes =
+        frameCount * mCaptureChannels * sizeof(float);
+    finalizeWavHeader(mCaptureFile, dataSizeBytes);
+    fclose(mCaptureFile);
+
+    info->sampleRate = mCaptureSampleRate;
+    info->channels = mCaptureChannels;
+    info->frameCount = frameCount;
+    info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
+    info->captureStartHostTimeNanos = mCaptureStartHostTimeNanos;
+    info->firstInputBufferHostTimeNanos =
+        mFirstInputBufferHostTimeNanos.load();
+    info->firstInputBufferFrameIndex = mFirstInputBufferFrameIndex.load();
+    info->captureStopHostTimeNanos = stopHostTimeNanos;
+    resetCaptureState();
+    return noError;
+}
+
+PlayerErrors Player::cancelCapture()
+{
+    if (!mCaptureRecording && !mCaptureDeviceInitialized && mCaptureFile == nullptr)
+        return noError;
+
+    const std::string path = mCaptureFilePath;
+    if (mCaptureDeviceInitialized) {
+        ma_device_stop(&mCaptureDevice);
+        ma_device_uninit(&mCaptureDevice);
+    }
+    if (mCaptureFile != nullptr) {
+        fclose(mCaptureFile);
+    }
+    resetCaptureState();
+    if (!path.empty()) {
+        remove(path.c_str());
+    }
+    return noError;
+}
+
+bool Player::isCaptureRecording() const
+{
+    return mCaptureRecording;
+}
+
+PlayerErrors Player::getCaptureClockSnapshot(CaptureClockInfo *info) const
+{
+    if (!mCaptureRecording || info == nullptr)
+        return invalidParameter;
+
+    info->hostTimeNanos = nowHostTimeNanos();
+    info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
+    info->sampleRate = mCaptureSampleRate;
+    info->inputDeviceFrame = mCaptureFrameCount.load();
+    return noError;
 }
 
 bool Player::isInited()

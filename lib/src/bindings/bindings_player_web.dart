@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import 'package:flutter_soloud/src/bindings/audio_data.dart';
 import 'package:flutter_soloud/src/bindings/bindings_player.dart';
 import 'package:flutter_soloud/src/bindings/js_extension.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
@@ -179,6 +180,33 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
 
   @override
   bool isInited() => wasmIsInited() == 1;
+
+  @override
+  ({PlayerErrors error, SoLoudCaptureStartResult? result}) startCapture(
+    String path,
+    int sampleRate,
+    int channels,
+    int bufferSizeFrames,
+  ) {
+    return (error: PlayerErrors.notImplemented, result: null);
+  }
+
+  @override
+  ({PlayerErrors error, SoLoudCaptureStopResult? result}) stopCapture() {
+    return (error: PlayerErrors.notImplemented, result: null);
+  }
+
+  @override
+  PlayerErrors cancelCapture() => PlayerErrors.notImplemented;
+
+  @override
+  bool isCaptureRecording() => false;
+
+  @override
+  ({PlayerErrors error, SoLoudCaptureClockSnapshot? result})
+  getCaptureClockSnapshot() {
+    return (error: PlayerErrors.notImplemented, result: null);
+  }
 
   @override
   ({PlayerErrors error, SoundHash soundHash}) loadFile(

@@ -5,6 +5,9 @@ enum SoLoudCaptureMirrorFormat {
 
   /// Native FLAC sidecar encoder.
   flac,
+
+  /// Native WavPack sidecar encoder.
+  wavPack,
 }
 
 /// Resolve a native integer mirror format value.

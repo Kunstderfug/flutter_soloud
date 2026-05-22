@@ -14,10 +14,15 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <random>
 
 #if !defined(NO_XIPH_LIBS)
 #include <FLAC/stream_encoder.h>
+#endif
+
+#if !defined(NO_WAVPACK_LIBS)
+#include "wavpack.h"
 #endif
 
 #ifdef _IS_WIN_
@@ -76,6 +81,192 @@ int32_t floatToPcmSample(float sample, unsigned int bitsPerSample) {
     return static_cast<int32_t>(
         std::clamp<int64_t>(scaled, minValue, maxValue));
 }
+
+unsigned int normalizeCaptureMirrorBits(unsigned int mirrorFormat,
+                                        unsigned int bitsPerSample)
+{
+    if (mirrorFormat == captureMirrorWavPack) {
+        if (bitsPerSample == 16 || bitsPerSample == 24 || bitsPerSample == 32) {
+            return bitsPerSample;
+        }
+        return 24;
+    }
+    if (mirrorFormat == captureMirrorFlac) {
+        return bitsPerSample == 16 ? 16 : 24;
+    }
+    return 0;
+}
+
+#if !defined(NO_WAVPACK_LIBS)
+struct CaptureWavPackMirrorEncoder {
+    WavpackContext *context = nullptr;
+    FILE *file = nullptr;
+    unsigned int channels = 0;
+    unsigned int bitsPerSample = 0;
+    bool isFloat = false;
+    bool failed = false;
+    std::vector<int32_t> sampleBuffer;
+};
+
+int wavPackWriteBlock(void *id, void *data, int32_t length)
+{
+    CaptureWavPackMirrorEncoder *encoder =
+        static_cast<CaptureWavPackMirrorEncoder *>(id);
+    if (encoder == nullptr || encoder->file == nullptr || data == nullptr ||
+        length <= 0 || encoder->failed) {
+        return 0;
+    }
+    const size_t written = fwrite(data, 1, static_cast<size_t>(length),
+                                  encoder->file);
+    if (written != static_cast<size_t>(length)) {
+        encoder->failed = true;
+        return 0;
+    }
+    return 1;
+}
+
+uint32_t captureWavPackChannelMask(unsigned int channels)
+{
+    if (channels == 1) {
+        return 0x4;
+    }
+    if (channels == 2) {
+        return 0x3;
+    }
+    if (channels >= 32) {
+        return 0;
+    }
+    return (uint32_t{1} << channels) - 1;
+}
+
+bool prepareWavPackCaptureMirror(const std::string &filePath,
+                                 unsigned int sampleRate,
+                                 unsigned int channels,
+                                 unsigned int bitsPerSample,
+                                 void **outEncoder)
+{
+    if (outEncoder == nullptr || filePath.empty() || sampleRate == 0 ||
+        channels == 0 ||
+        (bitsPerSample != 16 && bitsPerSample != 24 && bitsPerSample != 32)) {
+        return false;
+    }
+
+    CaptureWavPackMirrorEncoder *encoder =
+        new (std::nothrow) CaptureWavPackMirrorEncoder();
+    if (encoder == nullptr) {
+        return false;
+    }
+
+    encoder->channels = channels;
+    encoder->bitsPerSample = bitsPerSample;
+    encoder->isFloat = bitsPerSample == 32;
+    encoder->file = fopen(filePath.c_str(), "wb");
+    if (encoder->file == nullptr) {
+        delete encoder;
+        return false;
+    }
+
+    encoder->context = WavpackOpenFileOutput(wavPackWriteBlock, encoder,
+                                             nullptr);
+    if (encoder->context == nullptr) {
+        fclose(encoder->file);
+        delete encoder;
+        return false;
+    }
+
+    WavpackConfig config;
+    memset(&config, 0, sizeof(config));
+    config.sample_rate = static_cast<int32_t>(sampleRate);
+    config.num_channels = static_cast<int>(channels);
+    config.bits_per_sample = static_cast<int>(bitsPerSample);
+    config.bytes_per_sample = static_cast<int>((bitsPerSample + 7) / 8);
+    config.channel_mask = static_cast<int32_t>(
+        captureWavPackChannelMask(channels));
+    if (encoder->isFloat) {
+        config.float_norm_exp = 127;
+    }
+
+    if (!WavpackSetConfiguration64(encoder->context, &config, -1, nullptr) ||
+        !WavpackPackInit(encoder->context)) {
+        WavpackCloseFile(encoder->context);
+        fclose(encoder->file);
+        delete encoder;
+        return false;
+    }
+
+    *outEncoder = encoder;
+    return true;
+}
+
+bool encodeWavPackCaptureMirror(void *opaqueEncoder, const float *samples,
+                                ma_uint32 frameCount)
+{
+    CaptureWavPackMirrorEncoder *encoder =
+        static_cast<CaptureWavPackMirrorEncoder *>(opaqueEncoder);
+    if (encoder == nullptr || encoder->context == nullptr ||
+        samples == nullptr || frameCount == 0 || encoder->channels == 0) {
+        return false;
+    }
+
+    const size_t sampleCount =
+        static_cast<size_t>(frameCount) * encoder->channels;
+    if (encoder->sampleBuffer.size() < sampleCount) {
+        try {
+            encoder->sampleBuffer.resize(sampleCount);
+        } catch (...) {
+            encoder->failed = true;
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < sampleCount; ++i) {
+        if (encoder->isFloat) {
+            float sample = std::isfinite(samples[i]) ? samples[i] : 0.0f;
+            sample = std::clamp(sample, -1.0f, 1.0f);
+            memcpy(&encoder->sampleBuffer[i], &sample, sizeof(sample));
+        } else {
+            encoder->sampleBuffer[i] =
+                floatToPcmSample(samples[i], encoder->bitsPerSample);
+        }
+    }
+
+    if (!WavpackPackSamples(encoder->context, encoder->sampleBuffer.data(),
+                            frameCount)) {
+        encoder->failed = true;
+        return false;
+    }
+    return true;
+}
+
+bool finishWavPackCaptureMirror(void *opaqueEncoder)
+{
+    CaptureWavPackMirrorEncoder *encoder =
+        static_cast<CaptureWavPackMirrorEncoder *>(opaqueEncoder);
+    if (encoder == nullptr) {
+        return false;
+    }
+
+    bool succeeded = !encoder->failed;
+    if (encoder->context != nullptr) {
+        succeeded = WavpackFlushSamples(encoder->context) && succeeded;
+    }
+    if (encoder->file != nullptr && fflush(encoder->file) != 0) {
+        succeeded = false;
+    }
+    if (encoder->context != nullptr) {
+        WavpackCloseFile(encoder->context);
+        encoder->context = nullptr;
+    }
+    if (encoder->file != nullptr) {
+        if (fclose(encoder->file) != 0) {
+            succeeded = false;
+        }
+        encoder->file = nullptr;
+    }
+    delete encoder;
+    return succeeded;
+}
+#endif
 }
 
 Player::Player() : mInited(false), mFilters(&soloud, nullptr, nullptr) {}
@@ -348,53 +539,78 @@ bool Player::prepareCaptureMirror(const std::string &mirrorFilePath,
     mCaptureMirrorFilePath = mirrorFilePath;
     mCaptureMirrorFormat = mirrorFormat;
     mCaptureMirrorBitsPerSample =
-        mirrorBitsPerSample == 16 ? 16 : 24;
+        normalizeCaptureMirrorBits(mirrorFormat, mirrorBitsPerSample);
 
-    if (mirrorFilePath.empty() || mirrorFormat != captureMirrorFlac) {
+    if (mirrorFilePath.empty() || mCaptureMirrorBitsPerSample == 0) {
         mCaptureMirrorFailed = true;
         return true;
     }
 
+    if (mirrorFormat == captureMirrorFlac) {
 #if defined(NO_XIPH_LIBS)
+        mCaptureMirrorFailed = true;
+        return true;
+#else
+        FLAC__StreamEncoder *encoder = FLAC__stream_encoder_new();
+        if (encoder == nullptr) {
+            mCaptureMirrorFailed = true;
+            remove(mirrorFilePath.c_str());
+            return true;
+        }
+
+        const bool configured =
+            FLAC__stream_encoder_set_channels(encoder, mCaptureChannels) &&
+            FLAC__stream_encoder_set_sample_rate(encoder, mCaptureSampleRate) &&
+            FLAC__stream_encoder_set_bits_per_sample(
+                encoder, mCaptureMirrorBitsPerSample) &&
+            FLAC__stream_encoder_set_compression_level(encoder, 3);
+        if (!configured) {
+            FLAC__stream_encoder_delete(encoder);
+            mCaptureMirrorFailed = true;
+            remove(mirrorFilePath.c_str());
+            return true;
+        }
+
+        const FLAC__StreamEncoderInitStatus status =
+            FLAC__stream_encoder_init_file(encoder, mirrorFilePath.c_str(),
+                                           nullptr, nullptr);
+        if (status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
+            FLAC__stream_encoder_delete(encoder);
+            mCaptureMirrorFailed = true;
+            remove(mirrorFilePath.c_str());
+            return true;
+        }
+
+        mCaptureMirrorEncoder = encoder;
+        mCaptureMirrorActive = true;
+        mCaptureMirrorFailed = false;
+        mCaptureMirrorFrameCount = 0;
+        return true;
+#endif
+    }
+
+    if (mirrorFormat == captureMirrorWavPack) {
+#if defined(NO_WAVPACK_LIBS)
+        mCaptureMirrorFailed = true;
+        return true;
+#else
+        if (!prepareWavPackCaptureMirror(mirrorFilePath, mCaptureSampleRate,
+                                         mCaptureChannels,
+                                         mCaptureMirrorBitsPerSample,
+                                         &mCaptureMirrorEncoder)) {
+            mCaptureMirrorFailed = true;
+            remove(mirrorFilePath.c_str());
+            return true;
+        }
+        mCaptureMirrorActive = true;
+        mCaptureMirrorFailed = false;
+        mCaptureMirrorFrameCount = 0;
+        return true;
+#endif
+    }
+
     mCaptureMirrorFailed = true;
     return true;
-#else
-    FLAC__StreamEncoder *encoder = FLAC__stream_encoder_new();
-    if (encoder == nullptr) {
-        mCaptureMirrorFailed = true;
-        remove(mirrorFilePath.c_str());
-        return true;
-    }
-
-    const bool configured =
-        FLAC__stream_encoder_set_channels(encoder, mCaptureChannels) &&
-        FLAC__stream_encoder_set_sample_rate(encoder, mCaptureSampleRate) &&
-        FLAC__stream_encoder_set_bits_per_sample(
-            encoder, mCaptureMirrorBitsPerSample) &&
-        FLAC__stream_encoder_set_compression_level(encoder, 3);
-    if (!configured) {
-        FLAC__stream_encoder_delete(encoder);
-        mCaptureMirrorFailed = true;
-        remove(mirrorFilePath.c_str());
-        return true;
-    }
-
-    const FLAC__StreamEncoderInitStatus status =
-        FLAC__stream_encoder_init_file(encoder, mirrorFilePath.c_str(),
-                                       nullptr, nullptr);
-    if (status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-        FLAC__stream_encoder_delete(encoder);
-        mCaptureMirrorFailed = true;
-        remove(mirrorFilePath.c_str());
-        return true;
-    }
-
-    mCaptureMirrorEncoder = encoder;
-    mCaptureMirrorActive = true;
-    mCaptureMirrorFailed = false;
-    mCaptureMirrorFrameCount = 0;
-    return true;
-#endif
 }
 
 bool Player::encodeCaptureMirror(const float *samples, ma_uint32 frameCount)
@@ -402,45 +618,69 @@ bool Player::encodeCaptureMirror(const float *samples, ma_uint32 frameCount)
     if (!mCaptureMirrorActive || mCaptureMirrorEncoder == nullptr ||
         samples == nullptr || frameCount == 0)
         return true;
-    if (mCaptureMirrorFormat != captureMirrorFlac)
-        return false;
 
+    if (mCaptureMirrorFormat == captureMirrorFlac) {
 #if defined(NO_XIPH_LIBS)
-    return false;
+        return false;
 #else
-    const size_t sampleCount =
-        static_cast<size_t>(frameCount) * mCaptureChannels;
-    if (mCaptureMirrorIntBuffer.size() < sampleCount)
-        mCaptureMirrorIntBuffer.resize(sampleCount);
-    for (size_t i = 0; i < sampleCount; ++i) {
-        mCaptureMirrorIntBuffer[i] =
-            floatToPcmSample(samples[i], mCaptureMirrorBitsPerSample);
+        const size_t sampleCount =
+            static_cast<size_t>(frameCount) * mCaptureChannels;
+        if (mCaptureMirrorIntBuffer.size() < sampleCount)
+            mCaptureMirrorIntBuffer.resize(sampleCount);
+        for (size_t i = 0; i < sampleCount; ++i) {
+            mCaptureMirrorIntBuffer[i] =
+                floatToPcmSample(samples[i], mCaptureMirrorBitsPerSample);
+        }
+
+        FLAC__StreamEncoder *encoder =
+            static_cast<FLAC__StreamEncoder *>(mCaptureMirrorEncoder);
+        const FLAC__bool ok = FLAC__stream_encoder_process_interleaved(
+            encoder, mCaptureMirrorIntBuffer.data(), frameCount);
+        if (!ok)
+            return false;
+
+        mCaptureMirrorFrameCount += frameCount;
+        return true;
+#endif
     }
 
-    FLAC__StreamEncoder *encoder =
-        static_cast<FLAC__StreamEncoder *>(mCaptureMirrorEncoder);
-    const FLAC__bool ok = FLAC__stream_encoder_process_interleaved(
-        encoder, mCaptureMirrorIntBuffer.data(), frameCount);
-    if (!ok)
+    if (mCaptureMirrorFormat == captureMirrorWavPack) {
+#if defined(NO_WAVPACK_LIBS)
         return false;
-
-    mCaptureMirrorFrameCount += frameCount;
-    return true;
+#else
+        if (!encodeWavPackCaptureMirror(mCaptureMirrorEncoder, samples,
+                                        frameCount)) {
+            return false;
+        }
+        mCaptureMirrorFrameCount += frameCount;
+        return true;
 #endif
+    }
+
+    return false;
 }
 
 bool Player::finishCaptureMirror(bool deleteOutput)
 {
     bool succeeded = !mCaptureMirrorFailed;
+    if (mCaptureMirrorEncoder != nullptr &&
+        mCaptureMirrorFormat == captureMirrorFlac) {
 #if !defined(NO_XIPH_LIBS)
-    if (mCaptureMirrorEncoder != nullptr) {
         FLAC__StreamEncoder *encoder =
             static_cast<FLAC__StreamEncoder *>(mCaptureMirrorEncoder);
         succeeded = FLAC__stream_encoder_finish(encoder) && succeeded;
         FLAC__stream_encoder_delete(encoder);
         mCaptureMirrorEncoder = nullptr;
-    }
 #endif
+    }
+    if (mCaptureMirrorEncoder != nullptr &&
+        mCaptureMirrorFormat == captureMirrorWavPack) {
+#if !defined(NO_WAVPACK_LIBS)
+        succeeded = finishWavPackCaptureMirror(mCaptureMirrorEncoder) &&
+                    succeeded;
+#endif
+        mCaptureMirrorEncoder = nullptr;
+    }
     mCaptureMirrorActive = false;
     if ((deleteOutput || !succeeded) && !mCaptureMirrorFilePath.empty()) {
         remove(mCaptureMirrorFilePath.c_str());

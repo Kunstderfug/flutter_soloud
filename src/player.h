@@ -26,6 +26,7 @@
 enum CaptureMirrorFormat {
   captureMirrorNone = 0,
   captureMirrorFlac = 1,
+  captureMirrorWavPack = 2,
 };
 
 struct PlaybackDevice {

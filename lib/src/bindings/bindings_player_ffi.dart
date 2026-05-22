@@ -417,22 +417,33 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     int channels,
     int bufferSizeFrames,
     double inputGainDb,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat,
+    int mirrorBitsPerSample,
   ) {
     final pathPtr = path.toNativeUtf8();
+    final mirrorPathPtr = (mirrorPath ?? '').toNativeUtf8();
     final actualSampleRate = calloc<ffi.UnsignedInt>();
     final actualChannels = calloc<ffi.UnsignedInt>();
     final sessionStartHostTimeNanos = calloc<ffi.Uint64>();
     final captureStartHostTimeNanos = calloc<ffi.Uint64>();
+    final actualMirrorFormat = calloc<ffi.UnsignedInt>();
+    final mirrorActive = calloc<ffi.UnsignedInt>();
     final error = _startCapture(
       pathPtr,
       sampleRate,
       channels,
       bufferSizeFrames,
       inputGainDb,
+      mirrorPathPtr,
+      mirrorFormat.index,
+      mirrorBitsPerSample,
       actualSampleRate,
       actualChannels,
       sessionStartHostTimeNanos,
       captureStartHostTimeNanos,
+      actualMirrorFormat,
+      mirrorActive,
     );
     final result = error == PlayerErrors.noError.value
         ? SoLoudCaptureStartResult(
@@ -442,14 +453,23 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             bufferSizeFrames: bufferSizeFrames,
             sessionStartHostTimeNanos: sessionStartHostTimeNanos.value,
             captureStartHostTimeNanos: captureStartHostTimeNanos.value,
+            mirrorPath: mirrorPath,
+            mirrorFormat: soLoudCaptureMirrorFormatFromValue(
+              actualMirrorFormat.value,
+            ),
+            mirrorBitsPerSample: mirrorBitsPerSample,
+            mirrorActive: mirrorActive.value != 0,
           )
         : null;
     calloc
       ..free(pathPtr)
+      ..free(mirrorPathPtr)
       ..free(actualSampleRate)
       ..free(actualChannels)
       ..free(sessionStartHostTimeNanos)
-      ..free(captureStartHostTimeNanos);
+      ..free(captureStartHostTimeNanos)
+      ..free(actualMirrorFormat)
+      ..free(mirrorActive);
     return (error: PlayerErrors.values[error], result: result);
   }
 
@@ -462,10 +482,15 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.UnsignedInt,
             ffi.UnsignedInt,
             ffi.Float,
+            ffi.Pointer<Utf8>,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.UnsignedInt>,
           )
         >
       >('startCapture');
@@ -477,10 +502,15 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           int,
           int,
           double,
+          ffi.Pointer<Utf8>,
+          int,
+          int,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.Uint64>,
           ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.UnsignedInt>,
         )
       >();
 
@@ -499,14 +529,20 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
     double inputGainDb = 0,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
   }) {
     final pathPtr = path.toNativeUtf8();
+    final mirrorPathPtr = (mirrorPath ?? '').toNativeUtf8();
     final handle = calloc<ffi.UnsignedInt>();
     final actualSampleRate = calloc<ffi.UnsignedInt>();
     final actualChannels = calloc<ffi.UnsignedInt>();
     final sessionStartHostTimeNanos = calloc<ffi.Uint64>();
     final captureStartHostTimeNanos = calloc<ffi.Uint64>();
     final playbackStartHostTimeNanos = calloc<ffi.Uint64>();
+    final actualMirrorFormat = calloc<ffi.UnsignedInt>();
+    final mirrorActive = calloc<ffi.UnsignedInt>();
     final error = _startCaptureAndPlay(
       pathPtr,
       soundHash.hash,
@@ -520,12 +556,17 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       looping ? 1 : 0,
       loopingStartAt.toDouble(),
       inputGainDb,
+      mirrorPathPtr,
+      mirrorFormat.index,
+      mirrorBitsPerSample,
       handle,
       actualSampleRate,
       actualChannels,
       sessionStartHostTimeNanos,
       captureStartHostTimeNanos,
       playbackStartHostTimeNanos,
+      actualMirrorFormat,
+      mirrorActive,
     );
     final result = error == PlayerErrors.noError.value
         ? SoLoudCapturePlaybackStartResult(
@@ -537,16 +578,25 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             sessionStartHostTimeNanos: sessionStartHostTimeNanos.value,
             captureStartHostTimeNanos: captureStartHostTimeNanos.value,
             playbackStartHostTimeNanos: playbackStartHostTimeNanos.value,
+            mirrorPath: mirrorPath,
+            mirrorFormat: soLoudCaptureMirrorFormatFromValue(
+              actualMirrorFormat.value,
+            ),
+            mirrorBitsPerSample: mirrorBitsPerSample,
+            mirrorActive: mirrorActive.value != 0,
           )
         : null;
     calloc
       ..free(pathPtr)
+      ..free(mirrorPathPtr)
       ..free(handle)
       ..free(actualSampleRate)
       ..free(actualChannels)
       ..free(sessionStartHostTimeNanos)
       ..free(captureStartHostTimeNanos)
-      ..free(playbackStartHostTimeNanos);
+      ..free(playbackStartHostTimeNanos)
+      ..free(actualMirrorFormat)
+      ..free(mirrorActive);
     return (error: PlayerErrors.values[error], result: result);
   }
 
@@ -566,12 +616,17 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.Int,
             ffi.Double,
             ffi.Float,
+            ffi.Pointer<Utf8>,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.UnsignedInt>,
           )
         >
       >('startCaptureAndPlay');
@@ -590,12 +645,17 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           int,
           double,
           double,
+          ffi.Pointer<Utf8>,
+          int,
+          int,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.Uint64>,
           ffi.Pointer<ffi.Uint64>,
           ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.UnsignedInt>,
         )
       >();
 
@@ -609,6 +669,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     final firstInputBufferHostTimeNanos = calloc<ffi.Uint64>();
     final firstInputBufferFrameIndex = calloc<ffi.Uint64>();
     final captureStopHostTimeNanos = calloc<ffi.Uint64>();
+    final mirrorFormat = calloc<ffi.UnsignedInt>();
+    final mirrorSucceeded = calloc<ffi.UnsignedInt>();
+    final mirrorFrameCount = calloc<ffi.Uint64>();
     final error = _stopCapture(
       sampleRate,
       channels,
@@ -618,6 +681,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       firstInputBufferHostTimeNanos,
       firstInputBufferFrameIndex,
       captureStopHostTimeNanos,
+      mirrorFormat,
+      mirrorSucceeded,
+      mirrorFrameCount,
     );
     final result = error == PlayerErrors.noError.value
         ? SoLoudCaptureStopResult(
@@ -643,6 +709,11 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
                 ? null
                 : firstInputBufferFrameIndex.value,
             captureStopHostTimeNanos: captureStopHostTimeNanos.value,
+            mirrorFormat: soLoudCaptureMirrorFormatFromValue(
+              mirrorFormat.value,
+            ),
+            mirrorSucceeded: mirrorSucceeded.value != 0,
+            mirrorFrameCount: mirrorFrameCount.value,
           )
         : null;
     calloc
@@ -653,7 +724,10 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       ..free(captureStartHostTimeNanos)
       ..free(firstInputBufferHostTimeNanos)
       ..free(firstInputBufferFrameIndex)
-      ..free(captureStopHostTimeNanos);
+      ..free(captureStopHostTimeNanos)
+      ..free(mirrorFormat)
+      ..free(mirrorSucceeded)
+      ..free(mirrorFrameCount);
     return (error: PlayerErrors.values[error], result: result);
   }
 
@@ -669,6 +743,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
             ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.UnsignedInt>,
+            ffi.Pointer<ffi.Uint64>,
           )
         >
       >('stopCapture');
@@ -682,6 +759,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           ffi.Pointer<ffi.Uint64>,
           ffi.Pointer<ffi.Uint64>,
           ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.Uint64>,
         )
       >();

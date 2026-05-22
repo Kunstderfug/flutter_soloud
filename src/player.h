@@ -23,6 +23,11 @@
 #include <thread>
 #include <vector>
 
+enum CaptureMirrorFormat {
+  captureMirrorNone = 0,
+  captureMirrorFlac = 1,
+};
+
 struct PlaybackDevice {
   char *name;
   unsigned int isDefault;
@@ -35,6 +40,8 @@ struct CaptureStartInfo {
   unsigned int channels;
   uint64_t sessionStartHostTimeNanos;
   uint64_t captureStartHostTimeNanos;
+  unsigned int mirrorFormat;
+  bool mirrorActive;
 };
 
 struct CaptureStopInfo {
@@ -46,6 +53,9 @@ struct CaptureStopInfo {
   uint64_t firstInputBufferHostTimeNanos;
   uint64_t firstInputBufferFrameIndex;
   uint64_t captureStopHostTimeNanos;
+  unsigned int mirrorFormat;
+  bool mirrorSucceeded;
+  uint64_t mirrorFrameCount;
 };
 
 struct CaptureClockInfo {
@@ -62,6 +72,8 @@ struct CapturePlaybackStartInfo {
   uint64_t sessionStartHostTimeNanos;
   uint64_t captureStartHostTimeNanos;
   uint64_t playbackStartHostTimeNanos;
+  unsigned int mirrorFormat;
+  bool mirrorActive;
 };
 
 class Player {
@@ -93,6 +105,9 @@ public:
                             unsigned int channels,
                             unsigned int bufferSizeFrames,
                             float inputGainDb,
+                            const std::string &mirrorFilePath,
+                            unsigned int mirrorFormat,
+                            unsigned int mirrorBitsPerSample,
                             CaptureStartInfo *info);
 
   /// @brief Start native capture and a SoLoud voice from one native command.
@@ -108,6 +123,9 @@ public:
                                    bool looping,
                                    double loopingStartAt,
                                    float inputGainDb,
+                                   const std::string &mirrorFilePath,
+                                   unsigned int mirrorFormat,
+                                   unsigned int mirrorBitsPerSample,
                                    CapturePlaybackStartInfo *info);
 
   /// @brief Stop recording the native miniaudio capture device.
@@ -709,6 +727,12 @@ private:
                              unsigned int channels);
   static void finalizeWavHeader(FILE *file, uint64_t dataSizeBytes);
   void handleCaptureFrames(const void *input, ma_uint32 frameCount);
+  bool prepareCaptureMirror(const std::string &mirrorFilePath,
+                            unsigned int mirrorFormat,
+                            unsigned int mirrorBitsPerSample);
+  bool encodeCaptureMirror(const float *samples, ma_uint32 frameCount);
+  bool finishCaptureMirror(bool deleteOutput);
+  void resetCaptureMirrorState();
   void resetCaptureState();
 
   ma_device_info *pPlaybackInfos;
@@ -730,6 +754,14 @@ private:
   std::atomic<uint64_t> mCaptureFrameCount{0};
   std::atomic<uint64_t> mFirstInputBufferHostTimeNanos{0};
   std::atomic<uint64_t> mFirstInputBufferFrameIndex{0};
+  std::string mCaptureMirrorFilePath;
+  unsigned int mCaptureMirrorFormat = captureMirrorNone;
+  unsigned int mCaptureMirrorBitsPerSample = 0;
+  bool mCaptureMirrorActive = false;
+  bool mCaptureMirrorFailed = false;
+  void *mCaptureMirrorEncoder = nullptr;
+  std::vector<int32_t> mCaptureMirrorIntBuffer;
+  uint64_t mCaptureMirrorFrameCount = 0;
 
   std::map<unsigned int, BusData> busMap;
   unsigned int busIdCounter = 0;

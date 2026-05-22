@@ -278,3 +278,30 @@ final class SoLoudCaptureClockSnapshot {
     return (sessionElapsedNanos * sampleRate / 1000000000).round();
   }
 }
+
+/// A live input-level snapshot from the active miniaudio capture session.
+final class SoLoudCaptureLevelSnapshot {
+  /// Create a live capture level snapshot.
+  const SoLoudCaptureLevelSnapshot({
+    required this.currentPeak,
+    required this.currentRms,
+    required this.peakSinceLastRead,
+    required this.heldPeak,
+    required this.frameCount,
+  });
+
+  /// Peak absolute sample value from the most recent input callback.
+  final double currentPeak;
+
+  /// RMS level from the most recent input callback.
+  final double currentRms;
+
+  /// Peak absolute sample value seen since the previous snapshot read.
+  final double peakSinceLastRead;
+
+  /// Highest absolute sample value seen during this capture session.
+  final double heldPeak;
+
+  /// Number of captured input frames at the time of the snapshot.
+  final int frameCount;
+}

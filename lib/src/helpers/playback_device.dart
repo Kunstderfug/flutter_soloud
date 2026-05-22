@@ -1,7 +1,7 @@
 import 'package:flutter_soloud/src/soloud.dart';
 import 'package:meta/meta.dart';
 
-/// CaptureDevice exposed to Dart.
+/// Playback output device exposed to Dart.
 ///
 /// Used to get a list available playback devices by calling
 /// [SoLoud.listPlaybackDevices].

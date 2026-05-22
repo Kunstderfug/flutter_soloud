@@ -13,6 +13,7 @@ import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart';
 import 'package:flutter_soloud/src/helpers/looping_region.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/metadata.dart';
@@ -514,6 +515,12 @@ interface class SoLoud {
     return _controller.soLoudFFI.listPlaybackDevices();
   }
 
+  /// Lists all OS available capture devices.
+  /// Could be called safely even if the engine has not been initialized yet.
+  List<CaptureDevice> listCaptureDevices() {
+    return _controller.soLoudFFI.listCaptureDevices();
+  }
+
   /// Whether the native miniaudio capture device is currently recording.
   bool get isCaptureRecording => _controller.soLoudFFI.isCaptureRecording();
 
@@ -529,6 +536,7 @@ interface class SoLoud {
     Channels channels = Channels.stereo,
     int bufferSizeFrames = 256,
     double inputGainDb = 0,
+    CaptureDevice? device,
     String? mirrorPath,
     SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
     int mirrorBitsPerSample = 0,
@@ -542,6 +550,7 @@ interface class SoLoud {
       channels.count,
       bufferSizeFrames,
       inputGainDb,
+      device,
       mirrorPath,
       mirrorFormat,
       mirrorBitsPerSample,
@@ -574,6 +583,7 @@ interface class SoLoud {
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
     double inputGainDb = 0,
+    CaptureDevice? device,
     String? mirrorPath,
     SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
     int mirrorBitsPerSample = 0,
@@ -594,6 +604,7 @@ interface class SoLoud {
       looping: looping,
       loopingStartAt: loopingStartAt,
       inputGainDb: inputGainDb,
+      device: device,
       mirrorPath: mirrorPath,
       mirrorFormat: mirrorFormat,
       mirrorBitsPerSample: mirrorBitsPerSample,
@@ -669,6 +680,16 @@ interface class SoLoud {
   SoLoudCaptureClockSnapshot captureClockSnapshot() {
     final ret = _controller.soLoudFFI.getCaptureClockSnapshot();
     _logPlayerError(ret.error, from: 'captureClockSnapshot() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+    return ret.result!;
+  }
+
+  /// Return the current live input level from the active capture session.
+  SoLoudCaptureLevelSnapshot captureLevelSnapshot() {
+    final ret = _controller.soLoudFFI.getCaptureLevelSnapshot();
+    _logPlayerError(ret.error, from: 'captureLevelSnapshot() result');
     if (ret.error != PlayerErrors.noError || ret.result == null) {
       throw SoLoudCppException.fromPlayerError(ret.error);
     }

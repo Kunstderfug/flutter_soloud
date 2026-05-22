@@ -13,6 +13,7 @@ import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:flutter_soloud/src/sound_hash.dart';
@@ -298,6 +299,11 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
+  List<CaptureDevice> listCaptureDevices() {
+    return const [];
+  }
+
+  @override
   void deinit() => wasmDeinit();
 
   @override
@@ -325,6 +331,7 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     int channels,
     int bufferSizeFrames,
     double inputGainDb,
+    CaptureDevice? device,
     String? mirrorPath,
     SoLoudCaptureMirrorFormat mirrorFormat,
     int mirrorBitsPerSample,
@@ -347,6 +354,7 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
     double inputGainDb = 0,
+    CaptureDevice? device,
     String? mirrorPath,
     SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
     int mirrorBitsPerSample = 0,
@@ -368,6 +376,12 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   @override
   ({PlayerErrors error, SoLoudCaptureClockSnapshot? result})
   getCaptureClockSnapshot() {
+    return (error: PlayerErrors.notImplemented, result: null);
+  }
+
+  @override
+  ({PlayerErrors error, SoLoudCaptureLevelSnapshot? result})
+  getCaptureLevelSnapshot() {
     return (error: PlayerErrors.notImplemented, result: null);
   }
 

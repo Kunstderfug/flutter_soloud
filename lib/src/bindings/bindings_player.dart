@@ -1313,6 +1313,9 @@ abstract class FlutterSoLoud {
     int channels,
     int bufferSizeFrames,
     double inputGainDb,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat,
+    int mirrorBitsPerSample,
   );
 
   /// Start native capture and a SoLoud voice from one native command path.
@@ -1331,6 +1334,9 @@ abstract class FlutterSoLoud {
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
     double inputGainDb = 0,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
   });
 
   /// Stop the active native miniaudio capture device.

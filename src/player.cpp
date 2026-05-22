@@ -20,6 +20,10 @@
 #include <random>
 #include <thread>
 
+#if !defined(NO_XIPH_LIBS)
+#include <FLAC/stream_encoder.h>
+#endif
+
 #ifdef _IS_WIN_
 #include <stddef.h> // for size_t
 #else
@@ -69,6 +73,21 @@ namespace
     uint32_t clampWavSize(uint64_t value)
     {
         return value > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(value);
+    }
+
+    int32_t floatToPcmSample(float sample, unsigned int bitsPerSample)
+    {
+        if (!std::isfinite(sample))
+            sample = 0.0f;
+        const float clamped = std::clamp(sample, -1.0f, 1.0f);
+        const int32_t maxValue =
+            static_cast<int32_t>((uint32_t{1} << (bitsPerSample - 1)) - 1);
+        const int32_t minValue =
+            -static_cast<int32_t>(uint32_t{1} << (bitsPerSample - 1));
+        const int64_t scaled =
+            static_cast<int64_t>(std::lrintf(clamped * maxValue));
+        return static_cast<int32_t>(
+            std::clamp<int64_t>(scaled, minValue, maxValue));
     }
 
     bool readFileBytes(const std::string &filePath,
@@ -441,17 +460,145 @@ void Player::handleCaptureFrames(const void *input, ma_uint32 frameCount)
     const size_t samplesToWrite =
         static_cast<size_t>(frameCount) * mCaptureChannels;
     const size_t bytesToWrite = samplesToWrite * sizeof(float);
+    const float *samples = static_cast<const float *>(input);
     if (std::fabs(mCaptureInputGain - 1.0f) < 0.0001f) {
-        fwrite(input, 1, bytesToWrite, mCaptureFile);
+        fwrite(samples, 1, bytesToWrite, mCaptureFile);
     } else {
-        const float *samples = static_cast<const float *>(input);
         if (mCaptureGainBuffer.size() < samplesToWrite)
             mCaptureGainBuffer.resize(samplesToWrite);
         for (size_t i = 0; i < samplesToWrite; ++i)
             mCaptureGainBuffer[i] = samples[i] * mCaptureInputGain;
-        fwrite(mCaptureGainBuffer.data(), 1, bytesToWrite, mCaptureFile);
+        samples = mCaptureGainBuffer.data();
+        fwrite(samples, 1, bytesToWrite, mCaptureFile);
+    }
+    if (mCaptureMirrorActive && !encodeCaptureMirror(samples, frameCount)) {
+        mCaptureMirrorFailed = true;
+        finishCaptureMirror(true);
     }
     mCaptureFrameCount.fetch_add(frameCount);
+}
+
+bool Player::prepareCaptureMirror(const std::string &mirrorFilePath,
+                                  unsigned int mirrorFormat,
+                                  unsigned int mirrorBitsPerSample)
+{
+    resetCaptureMirrorState();
+    if (mirrorFormat == captureMirrorNone)
+        return true;
+
+    mCaptureMirrorFilePath = mirrorFilePath;
+    mCaptureMirrorFormat = mirrorFormat;
+    mCaptureMirrorBitsPerSample =
+        mirrorBitsPerSample == 16 ? 16 : 24;
+
+    if (mirrorFilePath.empty() || mirrorFormat != captureMirrorFlac) {
+        mCaptureMirrorFailed = true;
+        return true;
+    }
+
+#if defined(NO_XIPH_LIBS)
+    mCaptureMirrorFailed = true;
+    return true;
+#else
+    FLAC__StreamEncoder *encoder = FLAC__stream_encoder_new();
+    if (encoder == nullptr) {
+        mCaptureMirrorFailed = true;
+        remove(mirrorFilePath.c_str());
+        return true;
+    }
+
+    const bool configured =
+        FLAC__stream_encoder_set_channels(encoder, mCaptureChannels) &&
+        FLAC__stream_encoder_set_sample_rate(encoder, mCaptureSampleRate) &&
+        FLAC__stream_encoder_set_bits_per_sample(
+            encoder, mCaptureMirrorBitsPerSample) &&
+        FLAC__stream_encoder_set_compression_level(encoder, 3);
+    if (!configured) {
+        FLAC__stream_encoder_delete(encoder);
+        mCaptureMirrorFailed = true;
+        remove(mirrorFilePath.c_str());
+        return true;
+    }
+
+    const FLAC__StreamEncoderInitStatus status =
+        FLAC__stream_encoder_init_file(encoder, mirrorFilePath.c_str(),
+                                       nullptr, nullptr);
+    if (status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
+        FLAC__stream_encoder_delete(encoder);
+        mCaptureMirrorFailed = true;
+        remove(mirrorFilePath.c_str());
+        return true;
+    }
+
+    mCaptureMirrorEncoder = encoder;
+    mCaptureMirrorActive = true;
+    mCaptureMirrorFailed = false;
+    mCaptureMirrorFrameCount = 0;
+    return true;
+#endif
+}
+
+bool Player::encodeCaptureMirror(const float *samples, ma_uint32 frameCount)
+{
+    if (!mCaptureMirrorActive || mCaptureMirrorEncoder == nullptr ||
+        samples == nullptr || frameCount == 0)
+        return true;
+    if (mCaptureMirrorFormat != captureMirrorFlac)
+        return false;
+
+#if defined(NO_XIPH_LIBS)
+    return false;
+#else
+    const size_t sampleCount =
+        static_cast<size_t>(frameCount) * mCaptureChannels;
+    if (mCaptureMirrorIntBuffer.size() < sampleCount)
+        mCaptureMirrorIntBuffer.resize(sampleCount);
+    for (size_t i = 0; i < sampleCount; ++i) {
+        mCaptureMirrorIntBuffer[i] =
+            floatToPcmSample(samples[i], mCaptureMirrorBitsPerSample);
+    }
+
+    FLAC__StreamEncoder *encoder =
+        static_cast<FLAC__StreamEncoder *>(mCaptureMirrorEncoder);
+    const FLAC__bool ok = FLAC__stream_encoder_process_interleaved(
+        encoder, mCaptureMirrorIntBuffer.data(), frameCount);
+    if (!ok)
+        return false;
+
+    mCaptureMirrorFrameCount += frameCount;
+    return true;
+#endif
+}
+
+bool Player::finishCaptureMirror(bool deleteOutput)
+{
+    bool succeeded = !mCaptureMirrorFailed;
+#if !defined(NO_XIPH_LIBS)
+    if (mCaptureMirrorEncoder != nullptr) {
+        FLAC__StreamEncoder *encoder =
+            static_cast<FLAC__StreamEncoder *>(mCaptureMirrorEncoder);
+        succeeded = FLAC__stream_encoder_finish(encoder) && succeeded;
+        FLAC__stream_encoder_delete(encoder);
+        mCaptureMirrorEncoder = nullptr;
+    }
+#endif
+    mCaptureMirrorActive = false;
+    if ((deleteOutput || !succeeded) && !mCaptureMirrorFilePath.empty()) {
+        remove(mCaptureMirrorFilePath.c_str());
+    }
+    return succeeded && !deleteOutput;
+}
+
+void Player::resetCaptureMirrorState()
+{
+    mCaptureMirrorFilePath.clear();
+    mCaptureMirrorFormat = captureMirrorNone;
+    mCaptureMirrorBitsPerSample = 0;
+    mCaptureMirrorActive = false;
+    mCaptureMirrorFailed = false;
+    mCaptureMirrorEncoder = nullptr;
+    mCaptureMirrorIntBuffer.clear();
+    mCaptureMirrorFrameCount = 0;
 }
 
 void Player::resetCaptureState()
@@ -469,6 +616,7 @@ void Player::resetCaptureState()
     mCaptureFrameCount.store(0);
     mFirstInputBufferHostTimeNanos.store(0);
     mFirstInputBufferFrameIndex.store(0);
+    resetCaptureMirrorState();
 }
 
 PlayerErrors Player::startCapture(const std::string &filePath,
@@ -476,6 +624,9 @@ PlayerErrors Player::startCapture(const std::string &filePath,
                                   unsigned int channels,
                                   unsigned int bufferSizeFrames,
                                   float inputGainDb,
+                                  const std::string &mirrorFilePath,
+                                  unsigned int mirrorFormat,
+                                  unsigned int mirrorBitsPerSample,
                                   CaptureStartInfo *info)
 {
     if (!mInited)
@@ -527,6 +678,7 @@ PlayerErrors Player::startCapture(const std::string &filePath,
     mCaptureGainBuffer.clear();
     if (std::fabs(mCaptureInputGain - 1.0f) >= 0.0001f)
         mCaptureGainBuffer.resize(static_cast<size_t>(bufferSizeFrames) * channels);
+    prepareCaptureMirror(mirrorFilePath, mirrorFormat, mirrorBitsPerSample);
     mCaptureSessionStartHostTimeNanos = nowHostTimeNanos();
     mCaptureRecording = true;
 
@@ -534,6 +686,7 @@ PlayerErrors Player::startCapture(const std::string &filePath,
     if (result != MA_SUCCESS) {
         mCaptureRecording = false;
         ma_device_uninit(&mCaptureDevice);
+        finishCaptureMirror(true);
         fclose(file);
         remove(filePath.c_str());
         resetCaptureState();
@@ -545,6 +698,8 @@ PlayerErrors Player::startCapture(const std::string &filePath,
     info->channels = mCaptureChannels;
     info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
     info->captureStartHostTimeNanos = mCaptureStartHostTimeNanos;
+    info->mirrorFormat = mCaptureMirrorFormat;
+    info->mirrorActive = mCaptureMirrorActive && !mCaptureMirrorFailed;
     return noError;
 }
 
@@ -560,6 +715,9 @@ PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
                                          bool looping,
                                          double loopingStartAt,
                                          float inputGainDb,
+                                         const std::string &mirrorFilePath,
+                                         unsigned int mirrorFormat,
+                                         unsigned int mirrorBitsPerSample,
                                          CapturePlaybackStartInfo *info)
 {
     if (info == nullptr)
@@ -570,6 +728,8 @@ PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
     CaptureStartInfo captureInfo;
     PlayerErrors result = startCapture(filePath, sampleRate, channels,
                                        bufferSizeFrames, inputGainDb,
+                                       mirrorFilePath, mirrorFormat,
+                                       mirrorBitsPerSample,
                                        &captureInfo);
     if (result != noError)
         return result;
@@ -598,6 +758,8 @@ PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
     info->sessionStartHostTimeNanos = captureInfo.sessionStartHostTimeNanos;
     info->captureStartHostTimeNanos = captureInfo.captureStartHostTimeNanos;
     info->playbackStartHostTimeNanos = nowHostTimeNanos();
+    info->mirrorFormat = captureInfo.mirrorFormat;
+    info->mirrorActive = captureInfo.mirrorActive;
     return noError;
 }
 
@@ -615,6 +777,14 @@ PlayerErrors Player::stopCapture(CaptureStopInfo *info)
     const uint64_t frameCount = mCaptureFrameCount.load();
     const uint64_t dataSizeBytes =
         frameCount * mCaptureChannels * sizeof(float);
+    const unsigned int mirrorFormat = mCaptureMirrorFormat;
+    const uint64_t mirrorFrameCount = mCaptureMirrorFrameCount;
+    bool mirrorSucceeded =
+        mirrorFormat != captureMirrorNone && mCaptureMirrorActive &&
+        !mCaptureMirrorFailed && mirrorFrameCount == frameCount;
+    if (mirrorFormat != captureMirrorNone) {
+        mirrorSucceeded = finishCaptureMirror(!mirrorSucceeded) && mirrorSucceeded;
+    }
     finalizeWavHeader(mCaptureFile, dataSizeBytes);
     fclose(mCaptureFile);
 
@@ -627,6 +797,9 @@ PlayerErrors Player::stopCapture(CaptureStopInfo *info)
         mFirstInputBufferHostTimeNanos.load();
     info->firstInputBufferFrameIndex = mFirstInputBufferFrameIndex.load();
     info->captureStopHostTimeNanos = stopHostTimeNanos;
+    info->mirrorFormat = mirrorFormat;
+    info->mirrorSucceeded = mirrorSucceeded;
+    info->mirrorFrameCount = mirrorFrameCount;
     resetCaptureState();
     return noError;
 }
@@ -644,6 +817,7 @@ PlayerErrors Player::cancelCapture()
     if (mCaptureFile != nullptr) {
         fclose(mCaptureFile);
     }
+    finishCaptureMirror(true);
     resetCaptureState();
     if (!path.empty()) {
         remove(path.c_str());

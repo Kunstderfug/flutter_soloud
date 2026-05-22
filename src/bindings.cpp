@@ -493,28 +493,36 @@ extern "C"
   FFI_PLUGIN_EXPORT enum PlayerErrors
   startCapture(char *path, unsigned int sampleRate, unsigned int channels,
                unsigned int bufferSizeFrames, float inputGainDb,
+               char *mirrorPath, unsigned int mirrorFormat,
+               unsigned int mirrorBitsPerSample,
                unsigned int *actualSampleRate,
                unsigned int *actualChannels,
                uint64_t *sessionStartHostTimeNanos,
-               uint64_t *captureStartHostTimeNanos)
+               uint64_t *captureStartHostTimeNanos,
+               unsigned int *actualMirrorFormat,
+               unsigned int *mirrorActive)
   {
     if (player.get() == nullptr)
       return backendNotInited;
     if (path == nullptr || actualSampleRate == nullptr ||
         actualChannels == nullptr || sessionStartHostTimeNanos == nullptr ||
-        captureStartHostTimeNanos == nullptr)
+        captureStartHostTimeNanos == nullptr || actualMirrorFormat == nullptr ||
+        mirrorActive == nullptr)
       return nullPointer;
 
     CaptureStartInfo info;
     PlayerErrors result = player.get()->startCapture(
         std::string(path), sampleRate, channels, bufferSizeFrames, inputGainDb,
-        &info);
+        mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
+        mirrorFormat, mirrorBitsPerSample, &info);
     if (result == noError)
     {
       *actualSampleRate = info.sampleRate;
       *actualChannels = info.channels;
       *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
       *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
+      *actualMirrorFormat = info.mirrorFormat;
+      *mirrorActive = info.mirrorActive ? 1 : 0;
     }
     return result;
   }
@@ -524,25 +532,30 @@ extern "C"
       unsigned int sampleRate, unsigned int channels,
       unsigned int bufferSizeFrames, float volume, float pan,
       double startAtSeconds, bool looping, double loopingStartAt,
-      float inputGainDb,
+      float inputGainDb, char *mirrorPath, unsigned int mirrorFormat,
+      unsigned int mirrorBitsPerSample,
       unsigned int *handle, unsigned int *actualSampleRate,
       unsigned int *actualChannels, uint64_t *sessionStartHostTimeNanos,
       uint64_t *captureStartHostTimeNanos,
-      uint64_t *playbackStartHostTimeNanos)
+      uint64_t *playbackStartHostTimeNanos,
+      unsigned int *actualMirrorFormat, unsigned int *mirrorActive)
   {
     if (player.get() == nullptr)
       return backendNotInited;
     if (path == nullptr || handle == nullptr || actualSampleRate == nullptr ||
         actualChannels == nullptr || sessionStartHostTimeNanos == nullptr ||
         captureStartHostTimeNanos == nullptr ||
-        playbackStartHostTimeNanos == nullptr)
+        playbackStartHostTimeNanos == nullptr ||
+        actualMirrorFormat == nullptr || mirrorActive == nullptr)
       return nullPointer;
 
     CapturePlaybackStartInfo info;
     PlayerErrors result = player.get()->startCaptureAndPlay(
         std::string(path), soundHash, busId, sampleRate, channels,
         bufferSizeFrames, volume, pan, startAtSeconds, looping, loopingStartAt,
-        inputGainDb, &info);
+        inputGainDb,
+        mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
+        mirrorFormat, mirrorBitsPerSample, &info);
     if (result == noError)
     {
       *handle = info.handle;
@@ -551,6 +564,8 @@ extern "C"
       *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
       *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
       *playbackStartHostTimeNanos = info.playbackStartHostTimeNanos;
+      *actualMirrorFormat = info.mirrorFormat;
+      *mirrorActive = info.mirrorActive ? 1 : 0;
     }
     return result;
   }
@@ -561,7 +576,9 @@ extern "C"
               uint64_t *captureStartHostTimeNanos,
               uint64_t *firstInputBufferHostTimeNanos,
               uint64_t *firstInputBufferFrameIndex,
-              uint64_t *captureStopHostTimeNanos)
+              uint64_t *captureStopHostTimeNanos,
+              unsigned int *mirrorFormat, unsigned int *mirrorSucceeded,
+              uint64_t *mirrorFrameCount)
   {
     if (player.get() == nullptr)
       return backendNotInited;
@@ -570,7 +587,8 @@ extern "C"
         captureStartHostTimeNanos == nullptr ||
         firstInputBufferHostTimeNanos == nullptr ||
         firstInputBufferFrameIndex == nullptr ||
-        captureStopHostTimeNanos == nullptr)
+        captureStopHostTimeNanos == nullptr || mirrorFormat == nullptr ||
+        mirrorSucceeded == nullptr || mirrorFrameCount == nullptr)
       return nullPointer;
 
     CaptureStopInfo info;
@@ -585,6 +603,9 @@ extern "C"
       *firstInputBufferHostTimeNanos = info.firstInputBufferHostTimeNanos;
       *firstInputBufferFrameIndex = info.firstInputBufferFrameIndex;
       *captureStopHostTimeNanos = info.captureStopHostTimeNanos;
+      *mirrorFormat = info.mirrorFormat;
+      *mirrorSucceeded = info.mirrorSucceeded ? 1 : 0;
+      *mirrorFrameCount = info.mirrorFrameCount;
     }
     return result;
   }

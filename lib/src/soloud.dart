@@ -326,6 +326,7 @@ interface class SoLoud {
 
   /// Path of the active native miniaudio capture, if any.
   String? _capturePath;
+  String? _captureMirrorPath;
 
   /// Initializes the audio engine.
   ///
@@ -528,6 +529,9 @@ interface class SoLoud {
     Channels channels = Channels.stereo,
     int bufferSizeFrames = 256,
     double inputGainDb = 0,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
   }) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -538,13 +542,18 @@ interface class SoLoud {
       channels.count,
       bufferSizeFrames,
       inputGainDb,
+      mirrorPath,
+      mirrorFormat,
+      mirrorBitsPerSample,
     );
     _logPlayerError(ret.error, from: 'startCapture() result');
     if (ret.error != PlayerErrors.noError || ret.result == null) {
       throw SoLoudCppException.fromPlayerError(ret.error);
     }
     _capturePath = path;
-    return ret.result!;
+    final result = ret.result!;
+    _captureMirrorPath = result.mirrorActive ? mirrorPath : null;
+    return result;
   }
 
   /// Start recording and play [sound] from one native command path.
@@ -565,6 +574,9 @@ interface class SoLoud {
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
     double inputGainDb = 0,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
   }) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -582,6 +594,9 @@ interface class SoLoud {
       looping: looping,
       loopingStartAt: loopingStartAt,
       inputGainDb: inputGainDb,
+      mirrorPath: mirrorPath,
+      mirrorFormat: mirrorFormat,
+      mirrorBitsPerSample: mirrorBitsPerSample,
     );
     _logPlayerError(ret.error, from: 'startCaptureAndPlay() result');
     if (ret.error != PlayerErrors.noError || ret.result == null) {
@@ -605,6 +620,7 @@ interface class SoLoud {
     }
 
     _capturePath = path;
+    _captureMirrorPath = result.mirrorActive ? mirrorPath : null;
     return result;
   }
 
@@ -617,7 +633,9 @@ interface class SoLoud {
     }
     final result = ret.result!;
     final path = _capturePath ?? result.path;
+    final mirrorPath = _captureMirrorPath ?? result.mirrorPath;
     _capturePath = null;
+    _captureMirrorPath = null;
     return SoLoudCaptureStopResult(
       path: path,
       sampleRate: result.sampleRate,
@@ -629,6 +647,10 @@ interface class SoLoud {
       firstInputBufferHostTimeNanos: result.firstInputBufferHostTimeNanos,
       firstInputBufferFrameIndex: result.firstInputBufferFrameIndex,
       captureStopHostTimeNanos: result.captureStopHostTimeNanos,
+      mirrorPath: mirrorPath,
+      mirrorFormat: result.mirrorFormat,
+      mirrorSucceeded: result.mirrorSucceeded,
+      mirrorFrameCount: result.mirrorFrameCount,
     );
   }
 
@@ -640,6 +662,7 @@ interface class SoLoud {
       throw SoLoudCppException.fromPlayerError(ret);
     }
     _capturePath = null;
+    _captureMirrorPath = null;
   }
 
   /// Return a clock snapshot from the active miniaudio capture session.

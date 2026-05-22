@@ -1,3 +1,20 @@
+/// Native capture mirror formats supported by SoLoud capture.
+enum SoLoudCaptureMirrorFormat {
+  /// No native sidecar encoder.
+  none,
+
+  /// Native FLAC sidecar encoder.
+  flac,
+}
+
+/// Resolve a native integer mirror format value.
+SoLoudCaptureMirrorFormat soLoudCaptureMirrorFormatFromValue(int value) {
+  if (value < 0 || value >= SoLoudCaptureMirrorFormat.values.length) {
+    return SoLoudCaptureMirrorFormat.none;
+  }
+  return SoLoudCaptureMirrorFormat.values[value];
+}
+
 /// Result returned after the native miniaudio capture device starts.
 final class SoLoudCaptureStartResult {
   /// Create a native capture start result.
@@ -8,6 +25,10 @@ final class SoLoudCaptureStartResult {
     required this.bufferSizeFrames,
     required this.sessionStartHostTimeNanos,
     required this.captureStartHostTimeNanos,
+    this.mirrorPath,
+    this.mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    this.mirrorBitsPerSample = 0,
+    this.mirrorActive = false,
   });
 
   /// Destination WAV path.
@@ -27,6 +48,18 @@ final class SoLoudCaptureStartResult {
 
   /// Monotonic clock timestamp captured after the native device started.
   final int captureStartHostTimeNanos;
+
+  /// Native sidecar mirror path, if requested.
+  final String? mirrorPath;
+
+  /// Native sidecar mirror format.
+  final SoLoudCaptureMirrorFormat mirrorFormat;
+
+  /// Native sidecar mirror bit depth.
+  final int mirrorBitsPerSample;
+
+  /// Whether native capture accepted and started the sidecar mirror.
+  final bool mirrorActive;
 
   /// Capture-start timestamp expressed as a reusable clock snapshot.
   SoLoudCaptureClockSnapshot get captureStartClock =>
@@ -50,6 +83,10 @@ final class SoLoudCapturePlaybackStartResult {
     required this.sessionStartHostTimeNanos,
     required this.captureStartHostTimeNanos,
     required this.playbackStartHostTimeNanos,
+    this.mirrorPath,
+    this.mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    this.mirrorBitsPerSample = 0,
+    this.mirrorActive = false,
   });
 
   /// Destination WAV path.
@@ -75,6 +112,18 @@ final class SoLoudCapturePlaybackStartResult {
 
   /// Monotonic clock timestamp captured after the SoLoud voice is unpaused.
   final int playbackStartHostTimeNanos;
+
+  /// Native sidecar mirror path, if requested.
+  final String? mirrorPath;
+
+  /// Native sidecar mirror format.
+  final SoLoudCaptureMirrorFormat mirrorFormat;
+
+  /// Native sidecar mirror bit depth.
+  final int mirrorBitsPerSample;
+
+  /// Whether native capture accepted and started the sidecar mirror.
+  final bool mirrorActive;
 
   /// Capture-start timestamp expressed as a reusable clock snapshot.
   SoLoudCaptureClockSnapshot get captureStartClock =>
@@ -109,6 +158,10 @@ final class SoLoudCaptureStopResult {
     required this.captureStopHostTimeNanos,
     this.firstInputBufferHostTimeNanos,
     this.firstInputBufferFrameIndex,
+    this.mirrorPath,
+    this.mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    this.mirrorSucceeded = false,
+    this.mirrorFrameCount = 0,
   });
 
   /// Destination WAV path.
@@ -140,6 +193,18 @@ final class SoLoudCaptureStopResult {
 
   /// Monotonic clock timestamp captured after the native device stopped.
   final int captureStopHostTimeNanos;
+
+  /// Native sidecar mirror path, if one was requested.
+  final String? mirrorPath;
+
+  /// Native sidecar mirror format.
+  final SoLoudCaptureMirrorFormat mirrorFormat;
+
+  /// Whether the native sidecar mirror finalized successfully.
+  final bool mirrorSucceeded;
+
+  /// Number of frames accepted by the native sidecar mirror.
+  final int mirrorFrameCount;
 
   /// Capture-start timestamp expressed as a reusable clock snapshot.
   SoLoudCaptureClockSnapshot get captureStartClock =>

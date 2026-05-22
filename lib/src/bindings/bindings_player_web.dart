@@ -325,6 +325,9 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     int channels,
     int bufferSizeFrames,
     double inputGainDb,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat,
+    int mirrorBitsPerSample,
   ) {
     return (error: PlayerErrors.notImplemented, result: null);
   }
@@ -344,6 +347,9 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
     double inputGainDb = 0,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
   }) {
     return (error: PlayerErrors.notImplemented, result: null);
   }

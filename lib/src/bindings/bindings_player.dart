@@ -7,6 +7,7 @@ import 'package:flutter_soloud/src/bindings/audio_data.dart';
 import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:flutter_soloud/src/sound_hash.dart';
@@ -96,6 +97,9 @@ abstract class FlutterSoLoud {
 
   /// List available playback devices.
   List<PlaybackDevice> listPlaybackDevices();
+
+  /// List available capture devices.
+  List<CaptureDevice> listCaptureDevices();
 
   /// Must be called when the player is no more needed or when closing the app.
   @mustBeOverridden
@@ -998,6 +1002,7 @@ abstract class FlutterSoLoud {
     int channels,
     int bufferSizeFrames,
     double inputGainDb,
+    CaptureDevice? device,
     String? mirrorPath,
     SoLoudCaptureMirrorFormat mirrorFormat,
     int mirrorBitsPerSample,
@@ -1019,6 +1024,7 @@ abstract class FlutterSoLoud {
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
     double inputGainDb = 0,
+    CaptureDevice? device,
     String? mirrorPath,
     SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
     int mirrorBitsPerSample = 0,
@@ -1040,6 +1046,11 @@ abstract class FlutterSoLoud {
   @mustBeOverridden
   ({PlayerErrors error, SoLoudCaptureClockSnapshot? result})
   getCaptureClockSnapshot();
+
+  /// Return a live input-level snapshot from the active capture session.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCaptureLevelSnapshot? result})
+  getCaptureLevelSnapshot();
 
   /////////////////////////////////////////
   /// Mixing Bus

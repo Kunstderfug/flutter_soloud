@@ -36,6 +36,13 @@ struct PlaybackDevice {
   ma_device_id deviceId;  // Store the actual device ID, not just the index
 };
 
+struct CaptureDevice {
+  char *name;
+  unsigned int isDefault;
+  unsigned int id;
+  ma_device_id deviceId;  // Store the actual device ID, not just the index
+};
+
 struct CaptureStartInfo {
   unsigned int sampleRate;
   unsigned int channels;
@@ -64,6 +71,14 @@ struct CaptureClockInfo {
   uint64_t sessionStartHostTimeNanos;
   unsigned int sampleRate;
   uint64_t inputDeviceFrame;
+};
+
+struct CaptureLevelInfo {
+  float currentPeak;
+  float currentRms;
+  float peakSinceLastRead;
+  float heldPeak;
+  uint64_t frameCount;
 };
 
 struct CapturePlaybackStartInfo {
@@ -100,12 +115,15 @@ public:
 
   std::vector<PlaybackDevice> listPlaybackDevices();
 
+  std::vector<CaptureDevice> listCaptureDevices();
+
   /// @brief Start recording the native miniaudio capture device to a WAV file.
   PlayerErrors startCapture(const std::string &filePath,
                             unsigned int sampleRate,
                             unsigned int channels,
                             unsigned int bufferSizeFrames,
                             float inputGainDb,
+                            int captureDeviceID,
                             const std::string &mirrorFilePath,
                             unsigned int mirrorFormat,
                             unsigned int mirrorBitsPerSample,
@@ -124,6 +142,7 @@ public:
                                    bool looping,
                                    double loopingStartAt,
                                    float inputGainDb,
+                                   int captureDeviceID,
                                    const std::string &mirrorFilePath,
                                    unsigned int mirrorFormat,
                                    unsigned int mirrorBitsPerSample,
@@ -140,6 +159,9 @@ public:
 
   /// @brief Capture a same-clock snapshot from the active capture session.
   PlayerErrors getCaptureClockSnapshot(CaptureClockInfo *info) const;
+
+  /// @brief Capture the current input level from the active capture session.
+  PlayerErrors getCaptureLevelSnapshot(CaptureLevelInfo *info);
 
   /// @brief Set a function callback triggered when a voice is stopped/ended.
   void setVoiceEndedCallback(void (*voiceEndedCallback)(unsigned int *));
@@ -724,6 +746,7 @@ private:
   static void captureDataCallback(ma_device *device, void *output,
                                   const void *input, ma_uint32 frameCount);
   static uint64_t nowHostTimeNanos();
+  static void atomicMaxFloat(std::atomic<float> &target, float value);
   static bool writeWavHeader(FILE *file, unsigned int sampleRate,
                              unsigned int channels);
   static void finalizeWavHeader(FILE *file, uint64_t dataSizeBytes);
@@ -755,6 +778,10 @@ private:
   std::atomic<uint64_t> mCaptureFrameCount{0};
   std::atomic<uint64_t> mFirstInputBufferHostTimeNanos{0};
   std::atomic<uint64_t> mFirstInputBufferFrameIndex{0};
+  std::atomic<float> mCaptureCurrentPeak{0.0f};
+  std::atomic<float> mCaptureCurrentRms{0.0f};
+  std::atomic<float> mCapturePeakSinceLastRead{0.0f};
+  std::atomic<float> mCaptureHeldPeak{0.0f};
   std::string mCaptureMirrorFilePath;
   unsigned int mCaptureMirrorFormat = captureMirrorNone;
   unsigned int mCaptureMirrorBitsPerSample = 0;

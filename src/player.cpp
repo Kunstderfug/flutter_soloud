@@ -436,11 +436,59 @@ std::vector<PlaybackDevice> Player::listPlaybackDevices()
     return ret;
 }
 
+// List available capture devices.
+std::vector<CaptureDevice> Player::listCaptureDevices()
+{
+    ma_context context;
+    ma_device_info *pPlaybackInfos;
+    ma_uint32 playbackCount;
+    ma_device_info *pCaptureInfos;
+    ma_uint32 captureCount;
+    std::vector<CaptureDevice> ret;
+    ma_result result;
+    if ((result = ma_context_init(NULL, 0, NULL, &context)) != MA_SUCCESS)
+    {
+        return ret;
+    }
+
+    if ((result = ma_context_get_devices(
+             &context,
+             &pPlaybackInfos,
+             &playbackCount,
+             &pCaptureInfos,
+             &captureCount)) != MA_SUCCESS)
+    {
+        printf("Failed to get devices %d\n", result);
+        ma_context_uninit(&context);
+        return ret;
+    }
+
+    for (ma_uint32 i = 0; i < captureCount; i++)
+    {
+        CaptureDevice cd;
+        cd.name = strdup(pCaptureInfos[i].name);
+        cd.isDefault = pCaptureInfos[i].isDefault;
+        cd.id = i;
+        cd.deviceId = pCaptureInfos[i].id;
+        ret.push_back(cd);
+    }
+    ma_context_uninit(&context);
+    return ret;
+}
+
 uint64_t Player::nowHostTimeNanos()
 {
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
+void Player::atomicMaxFloat(std::atomic<float> &target, float value)
+{
+    float current = target.load();
+    while (value > current &&
+           !target.compare_exchange_weak(current, value)) {
+    }
 }
 
 bool Player::writeWavHeader(FILE *file, unsigned int sampleRate,
@@ -521,6 +569,22 @@ void Player::handleCaptureFrames(const void *input, ma_uint32 frameCount)
         samples = mCaptureGainBuffer.data();
         fwrite(samples, 1, bytesToWrite, mCaptureFile);
     }
+    float peak = 0.0f;
+    double sumSquares = 0.0;
+    for (size_t i = 0; i < samplesToWrite; ++i) {
+        const float sample = samples[i];
+        const float absSample = std::fabs(sample);
+        if (absSample > peak)
+            peak = absSample;
+        sumSquares += static_cast<double>(sample) * sample;
+    }
+    const float rms = samplesToWrite == 0
+        ? 0.0f
+        : static_cast<float>(std::sqrt(sumSquares / samplesToWrite));
+    mCaptureCurrentPeak.store(peak);
+    mCaptureCurrentRms.store(rms);
+    atomicMaxFloat(mCapturePeakSinceLastRead, peak);
+    atomicMaxFloat(mCaptureHeldPeak, peak);
     if (mCaptureMirrorActive && !encodeCaptureMirror(samples, frameCount)) {
         mCaptureMirrorFailed = true;
         finishCaptureMirror(true);
@@ -715,6 +779,10 @@ void Player::resetCaptureState()
     mCaptureFrameCount.store(0);
     mFirstInputBufferHostTimeNanos.store(0);
     mFirstInputBufferFrameIndex.store(0);
+    mCaptureCurrentPeak.store(0.0f);
+    mCaptureCurrentRms.store(0.0f);
+    mCapturePeakSinceLastRead.store(0.0f);
+    mCaptureHeldPeak.store(0.0f);
     resetCaptureMirrorState();
 }
 
@@ -723,6 +791,7 @@ PlayerErrors Player::startCapture(const std::string &filePath,
                                   unsigned int channels,
                                   unsigned int bufferSizeFrames,
                                   float inputGainDb,
+                                  int captureDeviceID,
                                   const std::string &mirrorFilePath,
                                   unsigned int mirrorFormat,
                                   unsigned int mirrorBitsPerSample,
@@ -752,6 +821,24 @@ PlayerErrors Player::startCapture(const std::string &filePath,
     config.periodSizeInFrames = bufferSizeFrames;
     config.dataCallback = captureDataCallback;
     config.pUserData = this;
+    ma_device_id selectedCaptureDeviceId;
+    if (captureDeviceID >= 0) {
+        auto devices = listCaptureDevices();
+        if (devices.size() == 0 ||
+            captureDeviceID >= static_cast<int>(devices.size())) {
+            for (auto &device : devices) {
+                free(device.name);
+            }
+            fclose(file);
+            remove(filePath.c_str());
+            return invalidParameter;
+        }
+        selectedCaptureDeviceId = devices[captureDeviceID].deviceId;
+        for (auto &device : devices) {
+            free(device.name);
+        }
+        config.capture.pDeviceID = &selectedCaptureDeviceId;
+    }
 
     ma_result result;
 #if defined(MA_HAS_COREAUDIO) || defined(__ANDROID__)
@@ -814,6 +901,7 @@ PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
                                          bool looping,
                                          double loopingStartAt,
                                          float inputGainDb,
+                                         int captureDeviceID,
                                          const std::string &mirrorFilePath,
                                          unsigned int mirrorFormat,
                                          unsigned int mirrorBitsPerSample,
@@ -827,6 +915,7 @@ PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
     CaptureStartInfo captureInfo;
     PlayerErrors result = startCapture(filePath, sampleRate, channels,
                                        bufferSizeFrames, inputGainDb,
+                                       captureDeviceID,
                                        mirrorFilePath, mirrorFormat,
                                        mirrorBitsPerSample,
                                        &captureInfo);
@@ -938,6 +1027,22 @@ PlayerErrors Player::getCaptureClockSnapshot(CaptureClockInfo *info) const
     info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
     info->sampleRate = mCaptureSampleRate;
     info->inputDeviceFrame = mCaptureFrameCount.load();
+    return noError;
+}
+
+PlayerErrors Player::getCaptureLevelSnapshot(CaptureLevelInfo *info)
+{
+    if (!mCaptureRecording || info == nullptr)
+        return invalidParameter;
+
+    const float currentPeak = mCaptureCurrentPeak.load();
+    const float peakSinceLastRead = mCapturePeakSinceLastRead.exchange(0.0f);
+    info->currentPeak = currentPeak;
+    info->currentRms = mCaptureCurrentRms.load();
+    info->peakSinceLastRead =
+        peakSinceLastRead > 0.0f ? peakSinceLastRead : currentPeak;
+    info->heldPeak = mCaptureHeldPeak.load();
+    info->frameCount = mCaptureFrameCount.load();
     return noError;
 }
 

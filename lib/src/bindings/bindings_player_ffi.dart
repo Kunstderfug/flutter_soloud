@@ -15,6 +15,7 @@ import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:flutter_soloud/src/sound_hash.dart';
@@ -339,6 +340,85 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     return ret;
   }
 
+  @override
+  List<CaptureDevice> listCaptureDevices() {
+    final ret = <CaptureDevice>[];
+    final ffi.Pointer<ffi.Pointer<ffi.Char>> deviceNames = calloc(
+      ffi.sizeOf<ffi.Pointer<ffi.Pointer<ffi.Char>>>() * 255,
+    );
+    final ffi.Pointer<ffi.Pointer<ffi.Int>> deviceIds = calloc(
+      ffi.sizeOf<ffi.Pointer<ffi.Pointer<ffi.Int>>>() * 50,
+    );
+    final ffi.Pointer<ffi.Pointer<ffi.Int>> deviceIsDefault = calloc(
+      ffi.sizeOf<ffi.Pointer<ffi.Pointer<ffi.Int>>>() * 50,
+    );
+    final ffi.Pointer<ffi.Int> nDevices = calloc();
+
+    _listCaptureDevices(deviceNames, deviceIds, deviceIsDefault, nDevices);
+
+    final ndev = nDevices.value;
+    for (var i = 0; i < ndev; i++) {
+      final s1 = (deviceNames + i).value;
+      final s = s1.cast<Utf8>().toDartString();
+      final id1 = (deviceIds + i).value;
+      final id = id1.value;
+      final n1 = (deviceIsDefault + i).value;
+      final n = n1.value;
+      ret.add(CaptureDevice(id, n == 1, s));
+    }
+
+    _freeListCaptureDevices(deviceNames, deviceIds, deviceIsDefault, ndev);
+
+    calloc
+      ..free(deviceNames)
+      ..free(deviceIds)
+      ..free(deviceIsDefault)
+      ..free(nDevices);
+    return ret;
+  }
+
+  late final _listCaptureDevicesPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(
+            ffi.Pointer<ffi.Pointer<ffi.Char>>,
+            ffi.Pointer<ffi.Pointer<ffi.Int>>,
+            ffi.Pointer<ffi.Pointer<ffi.Int>>,
+            ffi.Pointer<ffi.Int>,
+          )
+        >
+      >('listCaptureDevices');
+  late final _listCaptureDevices = _listCaptureDevicesPtr
+      .asFunction<
+        void Function(
+          ffi.Pointer<ffi.Pointer<ffi.Char>>,
+          ffi.Pointer<ffi.Pointer<ffi.Int>>,
+          ffi.Pointer<ffi.Pointer<ffi.Int>>,
+          ffi.Pointer<ffi.Int>,
+        )
+      >();
+
+  late final _freeListCaptureDevicesPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Void Function(
+            ffi.Pointer<ffi.Pointer<ffi.Char>>,
+            ffi.Pointer<ffi.Pointer<ffi.Int>>,
+            ffi.Pointer<ffi.Pointer<ffi.Int>>,
+            ffi.Int,
+          )
+        >
+      >('freeListCaptureDevices');
+  late final _freeListCaptureDevices = _freeListCaptureDevicesPtr
+      .asFunction<
+        void Function(
+          ffi.Pointer<ffi.Pointer<ffi.Char>>,
+          ffi.Pointer<ffi.Pointer<ffi.Int>>,
+          ffi.Pointer<ffi.Pointer<ffi.Int>>,
+          int,
+        )
+      >();
+
   late final _listPlaybackDevicesPtr =
       _lookup<
         ffi.NativeFunction<
@@ -417,6 +497,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     int channels,
     int bufferSizeFrames,
     double inputGainDb,
+    CaptureDevice? device,
     String? mirrorPath,
     SoLoudCaptureMirrorFormat mirrorFormat,
     int mirrorBitsPerSample,
@@ -435,6 +516,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       channels,
       bufferSizeFrames,
       inputGainDb,
+      device?.id ?? -1,
       mirrorPathPtr,
       mirrorFormat.index,
       mirrorBitsPerSample,
@@ -482,6 +564,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.UnsignedInt,
             ffi.UnsignedInt,
             ffi.Float,
+            ffi.Int,
             ffi.Pointer<Utf8>,
             ffi.UnsignedInt,
             ffi.UnsignedInt,
@@ -502,6 +585,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           int,
           int,
           double,
+          int,
           ffi.Pointer<Utf8>,
           int,
           int,
@@ -529,6 +613,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
     double inputGainDb = 0,
+    CaptureDevice? device,
     String? mirrorPath,
     SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
     int mirrorBitsPerSample = 0,
@@ -556,6 +641,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       looping ? 1 : 0,
       loopingStartAt.toDouble(),
       inputGainDb,
+      device?.id ?? -1,
       mirrorPathPtr,
       mirrorFormat.index,
       mirrorBitsPerSample,
@@ -616,6 +702,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.Int,
             ffi.Double,
             ffi.Float,
+            ffi.Int,
             ffi.Pointer<Utf8>,
             ffi.UnsignedInt,
             ffi.UnsignedInt,
@@ -645,6 +732,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           int,
           double,
           double,
+          int,
           ffi.Pointer<Utf8>,
           int,
           int,
@@ -830,6 +918,62 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           ffi.Pointer<ffi.Uint64>,
           ffi.Pointer<ffi.Uint64>,
           ffi.Pointer<ffi.UnsignedInt>,
+          ffi.Pointer<ffi.Uint64>,
+        )
+      >();
+
+  @override
+  ({PlayerErrors error, SoLoudCaptureLevelSnapshot? result})
+  getCaptureLevelSnapshot() {
+    final currentPeak = calloc<ffi.Float>();
+    final currentRms = calloc<ffi.Float>();
+    final peakSinceLastRead = calloc<ffi.Float>();
+    final heldPeak = calloc<ffi.Float>();
+    final frameCount = calloc<ffi.Uint64>();
+    final error = _getCaptureLevelSnapshot(
+      currentPeak,
+      currentRms,
+      peakSinceLastRead,
+      heldPeak,
+      frameCount,
+    );
+    final result = error == PlayerErrors.noError.value
+        ? SoLoudCaptureLevelSnapshot(
+            currentPeak: currentPeak.value,
+            currentRms: currentRms.value,
+            peakSinceLastRead: peakSinceLastRead.value,
+            heldPeak: heldPeak.value,
+            frameCount: frameCount.value,
+          )
+        : null;
+    calloc
+      ..free(currentPeak)
+      ..free(currentRms)
+      ..free(peakSinceLastRead)
+      ..free(heldPeak)
+      ..free(frameCount);
+    return (error: PlayerErrors.values[error], result: result);
+  }
+
+  late final _getCaptureLevelSnapshotPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Pointer<ffi.Float>,
+            ffi.Pointer<ffi.Float>,
+            ffi.Pointer<ffi.Float>,
+            ffi.Pointer<ffi.Float>,
+            ffi.Pointer<ffi.Uint64>,
+          )
+        >
+      >('getCaptureLevelSnapshot');
+  late final _getCaptureLevelSnapshot = _getCaptureLevelSnapshotPtr
+      .asFunction<
+        int Function(
+          ffi.Pointer<ffi.Float>,
+          ffi.Pointer<ffi.Float>,
+          ffi.Pointer<ffi.Float>,
+          ffi.Pointer<ffi.Float>,
           ffi.Pointer<ffi.Uint64>,
         )
       >();

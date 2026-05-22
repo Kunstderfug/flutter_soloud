@@ -264,24 +264,28 @@ FFI_PLUGIN_EXPORT void listPlaybackDevices(char **devicesName, int **deviceId,
   int numDevices = 0;
   for (int i = 0; i < (int)d.size(); i++) {
     bool hasSpecialChar = false;
+    size_t nameLength = strlen(d[i].name);
     /// check if the device name has some strange chars (happens on Linux)
     /// It happens that some results had the name composed of non-text
     /// ASCII characters with values <0x20 (blank space) which cannot be
     /// real devices and should be ignored. Doesn't happen on my Linux
     /// anymore (maybe was a bug on audio drivers?), but worth checking
     /// to be sure.
-    for (int n = 0; n < 5; n++) {
+    for (int n = 0; n < 5 && n < (int)nameLength; n++) {
       if (d[i].name[n] < 0x20 && d[i].name[n] >= 0)
         hasSpecialChar = true;
     }
-    if (strlen(d[i].name) <= 5 || hasSpecialChar)
+    if (nameLength <= 5 || hasSpecialChar) {
+      free(d[i].name);
       continue;
+    }
 
     devicesName[numDevices] = strdup(d[i].name);
     isDefault[numDevices] = (int *)malloc(sizeof(int));
     *isDefault[numDevices] = d[i].isDefault;
     deviceId[numDevices] = (int *)malloc(sizeof(int));
     *deviceId[numDevices] = d[i].id;
+    free(d[i].name);
 
     numDevices++;
   }
@@ -292,6 +296,47 @@ FFI_PLUGIN_EXPORT void listPlaybackDevices(char **devicesName, int **deviceId,
 FFI_PLUGIN_EXPORT void freeListPlaybackDevices(char **devicesName,
                                                int **deviceId, int **isDefault,
                                                int n_devices) {
+  for (int i = 0; i < n_devices; i++) {
+    free(deviceId[i]);
+    free(isDefault[i]);
+    free(devicesName[i]);
+  }
+}
+
+/// List capture devices.
+FFI_PLUGIN_EXPORT void listCaptureDevices(char **devicesName, int **deviceId,
+                                          int **isDefault, int *n_devices) {
+  std::vector<CaptureDevice> d = player.get()->listCaptureDevices();
+
+  int numDevices = 0;
+  for (int i = 0; i < (int)d.size(); i++) {
+    bool hasSpecialChar = false;
+    size_t nameLength = strlen(d[i].name);
+    for (int n = 0; n < 5 && n < (int)nameLength; n++) {
+      if (d[i].name[n] < 0x20 && d[i].name[n] >= 0)
+        hasSpecialChar = true;
+    }
+    if (nameLength == 0 || hasSpecialChar) {
+      free(d[i].name);
+      continue;
+    }
+
+    devicesName[numDevices] = strdup(d[i].name);
+    isDefault[numDevices] = (int *)malloc(sizeof(int));
+    *isDefault[numDevices] = d[i].isDefault;
+    deviceId[numDevices] = (int *)malloc(sizeof(int));
+    *deviceId[numDevices] = d[i].id;
+    free(d[i].name);
+
+    numDevices++;
+  }
+  *n_devices = numDevices;
+}
+
+/// Free the list of capture devices.
+FFI_PLUGIN_EXPORT void freeListCaptureDevices(char **devicesName,
+                                              int **deviceId, int **isDefault,
+                                              int n_devices) {
   for (int i = 0; i < n_devices; i++) {
     free(deviceId[i]);
     free(isDefault[i]);
@@ -328,6 +373,7 @@ FFI_PLUGIN_EXPORT int isInited() {
 FFI_PLUGIN_EXPORT enum PlayerErrors
 startCapture(char *path, unsigned int sampleRate, unsigned int channels,
              unsigned int bufferSizeFrames, float inputGainDb,
+             int captureDeviceID,
              char *mirrorPath, unsigned int mirrorFormat,
              unsigned int mirrorBitsPerSample,
              unsigned int *actualSampleRate,
@@ -346,6 +392,7 @@ startCapture(char *path, unsigned int sampleRate, unsigned int channels,
   CaptureStartInfo info;
   PlayerErrors result = player.get()->startCapture(
       std::string(path), sampleRate, channels, bufferSizeFrames, inputGainDb,
+      captureDeviceID,
       mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
       mirrorFormat, mirrorBitsPerSample,
       &info);
@@ -366,6 +413,7 @@ startCaptureAndPlay(char *path, unsigned int soundHash, unsigned int busId,
                     unsigned int bufferSizeFrames, float volume, float pan,
                     double startAtSeconds, bool looping,
                     double loopingStartAt, float inputGainDb,
+                    int captureDeviceID,
                     char *mirrorPath, unsigned int mirrorFormat,
                     unsigned int mirrorBitsPerSample,
                     unsigned int *handle,
@@ -389,7 +437,8 @@ startCaptureAndPlay(char *path, unsigned int soundHash, unsigned int busId,
   PlayerErrors result = player.get()->startCaptureAndPlay(
       std::string(path), soundHash, busId, sampleRate, channels,
       bufferSizeFrames, volume, pan, startAtSeconds, looping, loopingStartAt,
-      inputGainDb, mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
+      inputGainDb, captureDeviceID,
+      mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
       mirrorFormat, mirrorBitsPerSample, &info);
   if (result == noError) {
     *handle = info.handle;
@@ -473,6 +522,29 @@ getCaptureClockSnapshot(uint64_t *hostTimeNanos,
     *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
     *sampleRate = info.sampleRate;
     *inputDeviceFrame = info.inputDeviceFrame;
+  }
+  return result;
+}
+
+FFI_PLUGIN_EXPORT enum PlayerErrors
+getCaptureLevelSnapshot(float *currentPeak, float *currentRms,
+                        float *peakSinceLastRead, float *heldPeak,
+                        uint64_t *frameCount) {
+  if (player.get() == nullptr)
+    return backendNotInited;
+  if (currentPeak == nullptr || currentRms == nullptr ||
+      peakSinceLastRead == nullptr || heldPeak == nullptr ||
+      frameCount == nullptr)
+    return nullPointer;
+
+  CaptureLevelInfo info;
+  PlayerErrors result = player.get()->getCaptureLevelSnapshot(&info);
+  if (result == noError) {
+    *currentPeak = info.currentPeak;
+    *currentRms = info.currentRms;
+    *peakSinceLastRead = info.peakSinceLastRead;
+    *heldPeak = info.heldPeak;
+    *frameCount = info.frameCount;
   }
   return result;
 }

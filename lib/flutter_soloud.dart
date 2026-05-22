@@ -7,6 +7,7 @@ export 'src/capture/soloud_capture.dart';
 export 'src/enums.dart' hide PlayerErrors, PlayerStateNotification;
 export 'src/exceptions/exceptions.dart';
 export 'src/filters/filters.dart' show FilterType;
+export 'src/helpers/capture_device.dart';
 export 'src/helpers/playback_device.dart';
 export 'src/metadata.dart';
 export 'src/mixing_bus.dart';

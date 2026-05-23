@@ -149,6 +149,11 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
 
   final Map<int, _BufferStreamNativeCallbacks> _bufferStreamNativeCallables =
       {};
+  ffi.Pointer<ffi.Float>? _captureLevelCurrentPeak;
+  ffi.Pointer<ffi.Float>? _captureLevelCurrentRms;
+  ffi.Pointer<ffi.Float>? _captureLevelPeakSinceLastRead;
+  ffi.Pointer<ffi.Float>? _captureLevelHeldPeak;
+  ffi.Pointer<ffi.Uint64>? _captureLevelFrameCount;
 
   void _disposeBufferStreamCallbacks(SoundHash soundHash) {
     _bufferStreamNativeCallables.remove(soundHash.hash)?.close();
@@ -738,7 +743,11 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
 
   @override
   void deinit() {
-    return _dispose();
+    try {
+      _dispose();
+    } finally {
+      _disposeCaptureLevelPointers();
+    }
   }
 
   late final _disposePtr = _lookup<ffi.NativeFunction<ffi.Void Function()>>(
@@ -1026,6 +1035,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     final mirrorFormat = calloc<ffi.UnsignedInt>();
     final mirrorSucceeded = calloc<ffi.UnsignedInt>();
     final mirrorFrameCount = calloc<ffi.Uint64>();
+    final writerOverflowFrames = calloc<ffi.Uint64>();
+    final writerSilenceFrames = calloc<ffi.Uint64>();
+    final writerFailed = calloc<ffi.UnsignedInt>();
     final error = _stopCapture(
       sampleRate,
       channels,
@@ -1038,6 +1050,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       mirrorFormat,
       mirrorSucceeded,
       mirrorFrameCount,
+      writerOverflowFrames,
+      writerSilenceFrames,
+      writerFailed,
     );
     final result = error == PlayerErrors.noError.value
         ? SoLoudCaptureStopResult(
@@ -1068,6 +1083,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ),
             mirrorSucceeded: mirrorSucceeded.value != 0,
             mirrorFrameCount: mirrorFrameCount.value,
+            writerOverflowFrames: writerOverflowFrames.value,
+            writerSilenceFrames: writerSilenceFrames.value,
+            writerFailed: writerFailed.value != 0,
           )
         : null;
     calloc
@@ -1081,7 +1099,10 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       ..free(captureStopHostTimeNanos)
       ..free(mirrorFormat)
       ..free(mirrorSucceeded)
-      ..free(mirrorFrameCount);
+      ..free(mirrorFrameCount)
+      ..free(writerOverflowFrames)
+      ..free(writerSilenceFrames)
+      ..free(writerFailed);
     return (error: PlayerErrors.values[error], result: result);
   }
 
@@ -1100,6 +1121,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.UnsignedInt>,
             ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.Uint64>,
+            ffi.Pointer<ffi.UnsignedInt>,
           )
         >
       >('stopCapture');
@@ -1117,6 +1141,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.UnsignedInt>,
           ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.Uint64>,
+          ffi.Pointer<ffi.UnsignedInt>,
         )
       >();
 
@@ -1191,11 +1218,12 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
   @override
   ({PlayerErrors error, SoLoudCaptureLevelSnapshot? result})
   getCaptureLevelSnapshot() {
-    final currentPeak = calloc<ffi.Float>();
-    final currentRms = calloc<ffi.Float>();
-    final peakSinceLastRead = calloc<ffi.Float>();
-    final heldPeak = calloc<ffi.Float>();
-    final frameCount = calloc<ffi.Uint64>();
+    _ensureCaptureLevelPointers();
+    final currentPeak = _captureLevelCurrentPeak!;
+    final currentRms = _captureLevelCurrentRms!;
+    final peakSinceLastRead = _captureLevelPeakSinceLastRead!;
+    final heldPeak = _captureLevelHeldPeak!;
+    final frameCount = _captureLevelFrameCount!;
     final error = _getCaptureLevelSnapshot(
       currentPeak,
       currentRms,
@@ -1212,13 +1240,44 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             frameCount: frameCount.value,
           )
         : null;
-    calloc
-      ..free(currentPeak)
-      ..free(currentRms)
-      ..free(peakSinceLastRead)
-      ..free(heldPeak)
-      ..free(frameCount);
     return (error: PlayerErrors.values[error], result: result);
+  }
+
+  void _ensureCaptureLevelPointers() {
+    _captureLevelCurrentPeak ??= calloc<ffi.Float>();
+    _captureLevelCurrentRms ??= calloc<ffi.Float>();
+    _captureLevelPeakSinceLastRead ??= calloc<ffi.Float>();
+    _captureLevelHeldPeak ??= calloc<ffi.Float>();
+    _captureLevelFrameCount ??= calloc<ffi.Uint64>();
+  }
+
+  void _disposeCaptureLevelPointers() {
+    final currentPeak = _captureLevelCurrentPeak;
+    final currentRms = _captureLevelCurrentRms;
+    final peakSinceLastRead = _captureLevelPeakSinceLastRead;
+    final heldPeak = _captureLevelHeldPeak;
+    final frameCount = _captureLevelFrameCount;
+
+    if (currentPeak != null) {
+      calloc.free(currentPeak);
+      _captureLevelCurrentPeak = null;
+    }
+    if (currentRms != null) {
+      calloc.free(currentRms);
+      _captureLevelCurrentRms = null;
+    }
+    if (peakSinceLastRead != null) {
+      calloc.free(peakSinceLastRead);
+      _captureLevelPeakSinceLastRead = null;
+    }
+    if (heldPeak != null) {
+      calloc.free(heldPeak);
+      _captureLevelHeldPeak = null;
+    }
+    if (frameCount != null) {
+      calloc.free(frameCount);
+      _captureLevelFrameCount = null;
+    }
   }
 
   late final _getCaptureLevelSnapshotPtr =

@@ -732,17 +732,13 @@ void Player::handleCaptureFrames(const void *input, ma_uint32 frameCount)
 
     const size_t samplesToWrite =
         static_cast<size_t>(frameCount) * mCaptureChannels;
-    const size_t bytesToWrite = samplesToWrite * sizeof(float);
     const float *samples = static_cast<const float *>(input);
-    if (std::fabs(mCaptureInputGain - 1.0f) < 0.0001f) {
-        fwrite(samples, 1, bytesToWrite, mCaptureFile);
-    } else {
+    if (std::fabs(mCaptureInputGain - 1.0f) >= 0.0001f) {
         if (mCaptureGainBuffer.size() < samplesToWrite)
             mCaptureGainBuffer.resize(samplesToWrite);
         for (size_t i = 0; i < samplesToWrite; ++i)
             mCaptureGainBuffer[i] = samples[i] * mCaptureInputGain;
         samples = mCaptureGainBuffer.data();
-        fwrite(samples, 1, bytesToWrite, mCaptureFile);
     }
     float peak = 0.0f;
     double sumSquares = 0.0;
@@ -760,11 +756,197 @@ void Player::handleCaptureFrames(const void *input, ma_uint32 frameCount)
     mCaptureCurrentRms.store(rms);
     atomicMaxFloat(mCapturePeakSinceLastRead, peak);
     atomicMaxFloat(mCaptureHeldPeak, peak);
-    if (mCaptureMirrorActive && !encodeCaptureMirror(samples, frameCount)) {
+    enqueueCaptureFrames(samples, frameCount);
+    mCaptureFrameCount.fetch_add(frameCount);
+}
+
+bool Player::startCaptureWriter(unsigned int bufferSizeFrames)
+{
+    stopCaptureWriter();
+
+    if (mCaptureFile == nullptr || mCaptureSampleRate == 0 ||
+        mCaptureChannels == 0 || bufferSizeFrames == 0) {
+        return false;
+    }
+
+    const uint64_t minimumCapacityFrames = std::max<uint64_t>(
+        static_cast<uint64_t>(bufferSizeFrames) * 64,
+        static_cast<uint64_t>(mCaptureSampleRate) * 2);
+    mCaptureWriteCapacitySamples =
+        minimumCapacityFrames * static_cast<uint64_t>(mCaptureChannels);
+
+    try {
+        mCaptureWriteRing.assign(
+            static_cast<size_t>(mCaptureWriteCapacitySamples),
+            0.0f);
+        mCaptureSilenceBuffer.assign(
+            static_cast<size_t>(std::max<unsigned int>(
+                bufferSizeFrames,
+                4096) * mCaptureChannels),
+            0.0f);
+        mCaptureWriteReadSample.store(0);
+        mCaptureWriteWriteSample.store(0);
+        mCaptureWriterStopRequested.store(false);
+        mCaptureWriterFailed.store(false);
+        mCaptureWrittenFrameCount.store(0);
+        mCaptureWriterOverflowFrames.store(0);
+        mCaptureWriterSilenceFrames.store(0);
+        mCapturePendingSilenceFrames.store(0);
+        mCaptureWriterThread = std::thread(&Player::captureWriterLoop, this);
+    } catch (...) {
+        mCaptureWriteRing.clear();
+        mCaptureSilenceBuffer.clear();
+        mCaptureWriteCapacitySamples = 0;
+        return false;
+    }
+
+    return true;
+}
+
+void Player::stopCaptureWriter()
+{
+    mCaptureWriterStopRequested.store(true);
+    mCaptureWriterCondition.notify_one();
+    if (mCaptureWriterThread.joinable()) {
+        mCaptureWriterThread.join();
+    }
+}
+
+bool Player::enqueueCaptureFrames(const float *samples, ma_uint32 frameCount)
+{
+    if (samples == nullptr || frameCount == 0 || mCaptureChannels == 0 ||
+        mCaptureWriteCapacitySamples == 0 || mCaptureWriteRing.empty()) {
+        return false;
+    }
+
+    const uint64_t sampleCount =
+        static_cast<uint64_t>(frameCount) * mCaptureChannels;
+    const uint64_t read =
+        mCaptureWriteReadSample.load(std::memory_order_acquire);
+    const uint64_t write =
+        mCaptureWriteWriteSample.load(std::memory_order_relaxed);
+    const uint64_t used = write - read;
+    const uint64_t freeSamples =
+        used >= mCaptureWriteCapacitySamples
+            ? 0
+            : mCaptureWriteCapacitySamples - used;
+
+    if (sampleCount > freeSamples) {
+        mCaptureWriterOverflowFrames.fetch_add(frameCount);
+        mCapturePendingSilenceFrames.fetch_add(frameCount);
+        mCaptureWriterCondition.notify_one();
+        return false;
+    }
+
+    uint64_t index = write % mCaptureWriteCapacitySamples;
+    uint64_t firstSampleCount =
+        std::min(sampleCount, mCaptureWriteCapacitySamples - index);
+    memcpy(&mCaptureWriteRing[static_cast<size_t>(index)], samples,
+           static_cast<size_t>(firstSampleCount) * sizeof(float));
+
+    const uint64_t remaining = sampleCount - firstSampleCount;
+    if (remaining > 0) {
+        memcpy(mCaptureWriteRing.data(), samples + firstSampleCount,
+               static_cast<size_t>(remaining) * sizeof(float));
+    }
+
+    mCaptureWriteWriteSample.store(write + sampleCount,
+                                   std::memory_order_release);
+    mCaptureWriterCondition.notify_one();
+    return true;
+}
+
+void Player::captureWriterLoop()
+{
+    while (true) {
+        const uint64_t read =
+            mCaptureWriteReadSample.load(std::memory_order_relaxed);
+        const uint64_t write =
+            mCaptureWriteWriteSample.load(std::memory_order_acquire);
+        const uint64_t availableSamples = write - read;
+
+        if (availableSamples > 0 && mCaptureChannels > 0 &&
+            mCaptureWriteCapacitySamples > 0) {
+            const uint64_t index = read % mCaptureWriteCapacitySamples;
+            uint64_t sampleCount =
+                std::min(availableSamples,
+                         mCaptureWriteCapacitySamples - index);
+            sampleCount -= sampleCount % mCaptureChannels;
+            if (sampleCount == 0) {
+                mCaptureWriteReadSample.store(write,
+                                              std::memory_order_release);
+                continue;
+            }
+
+            const ma_uint32 frameCount =
+                static_cast<ma_uint32>(sampleCount / mCaptureChannels);
+            writeCaptureFrames(
+                &mCaptureWriteRing[static_cast<size_t>(index)],
+                frameCount);
+            mCaptureWriteReadSample.store(read + sampleCount,
+                                          std::memory_order_release);
+            continue;
+        }
+
+        const uint64_t pendingSilence =
+            mCapturePendingSilenceFrames.exchange(0);
+        if (pendingSilence > 0) {
+            writeCaptureSilenceFrames(pendingSilence);
+            continue;
+        }
+
+        if (mCaptureWriterStopRequested.load(std::memory_order_acquire)) {
+            break;
+        }
+
+        std::unique_lock<std::mutex> lock(mCaptureWriterConditionMutex);
+        mCaptureWriterCondition.wait_for(lock, std::chrono::milliseconds(5));
+    }
+}
+
+bool Player::writeCaptureFrames(const float *samples, ma_uint32 frameCount)
+{
+    if (samples == nullptr || frameCount == 0 || mCaptureChannels == 0 ||
+        mCaptureFile == nullptr) {
+        return false;
+    }
+
+    const size_t sampleCount =
+        static_cast<size_t>(frameCount) * mCaptureChannels;
+    const size_t bytesToWrite = sampleCount * sizeof(float);
+    if (fwrite(samples, 1, bytesToWrite, mCaptureFile) != bytesToWrite) {
+        mCaptureWriterFailed.store(true);
+        return false;
+    }
+
+    if (mCaptureMirrorActive && !mCaptureMirrorFailed &&
+        !encodeCaptureMirror(samples, frameCount)) {
         mCaptureMirrorFailed = true;
         finishCaptureMirror(true);
     }
-    mCaptureFrameCount.fetch_add(frameCount);
+
+    mCaptureWrittenFrameCount.fetch_add(frameCount);
+    return true;
+}
+
+void Player::writeCaptureSilenceFrames(uint64_t frameCount)
+{
+    if (mCaptureChannels == 0 || frameCount == 0 ||
+        mCaptureSilenceBuffer.empty()) {
+        return;
+    }
+
+    const ma_uint32 maxChunkFrames = static_cast<ma_uint32>(
+        std::max<uint64_t>(1, mCaptureSilenceBuffer.size() / mCaptureChannels));
+    while (frameCount > 0) {
+        const ma_uint32 chunkFrames = static_cast<ma_uint32>(
+            std::min<uint64_t>(frameCount, maxChunkFrames));
+        if (!writeCaptureFrames(mCaptureSilenceBuffer.data(), chunkFrames)) {
+            return;
+        }
+        mCaptureWriterSilenceFrames.fetch_add(chunkFrames);
+        frameCount -= chunkFrames;
+    }
 }
 
 bool Player::prepareCaptureMirror(const std::string &mirrorFilePath,
@@ -941,6 +1123,7 @@ void Player::resetCaptureMirrorState()
 
 void Player::resetCaptureState()
 {
+    stopCaptureWriter();
     mCaptureDeviceInitialized = false;
     mCaptureRecording = false;
     mCaptureFile = nullptr;
@@ -951,6 +1134,17 @@ void Player::resetCaptureState()
     mCaptureStartHostTimeNanos = 0;
     mCaptureInputGain = 1.0f;
     mCaptureGainBuffer.clear();
+    mCaptureWriteRing.clear();
+    mCaptureSilenceBuffer.clear();
+    mCaptureWriteCapacitySamples = 0;
+    mCaptureWriteReadSample.store(0);
+    mCaptureWriteWriteSample.store(0);
+    mCaptureWriterStopRequested.store(false);
+    mCaptureWriterFailed.store(false);
+    mCaptureWrittenFrameCount.store(0);
+    mCaptureWriterOverflowFrames.store(0);
+    mCaptureWriterSilenceFrames.store(0);
+    mCapturePendingSilenceFrames.store(0);
     mCaptureFrameCount.store(0);
     mFirstInputBufferHostTimeNanos.store(0);
     mFirstInputBufferFrameIndex.store(0);
@@ -1040,6 +1234,14 @@ PlayerErrors Player::startCapture(const std::string &filePath,
     if (std::fabs(mCaptureInputGain - 1.0f) >= 0.0001f)
         mCaptureGainBuffer.resize(static_cast<size_t>(bufferSizeFrames) * channels);
     prepareCaptureMirror(mirrorFilePath, mirrorFormat, mirrorBitsPerSample);
+    if (!startCaptureWriter(bufferSizeFrames)) {
+        ma_device_uninit(&mCaptureDevice);
+        finishCaptureMirror(true);
+        fclose(file);
+        remove(filePath.c_str());
+        resetCaptureState();
+        return unknownError;
+    }
     mCaptureSessionStartHostTimeNanos = nowHostTimeNanos();
     mCaptureRecording = true;
 
@@ -1047,6 +1249,7 @@ PlayerErrors Player::startCapture(const std::string &filePath,
     if (result != MA_SUCCESS) {
         mCaptureRecording = false;
         ma_device_uninit(&mCaptureDevice);
+        stopCaptureWriter();
         finishCaptureMirror(true);
         fclose(file);
         remove(filePath.c_str());
@@ -1136,8 +1339,9 @@ PlayerErrors Player::stopCapture(CaptureStopInfo *info)
     ma_device_stop(&mCaptureDevice);
     const uint64_t stopHostTimeNanos = nowHostTimeNanos();
     ma_device_uninit(&mCaptureDevice);
+    stopCaptureWriter();
 
-    const uint64_t frameCount = mCaptureFrameCount.load();
+    const uint64_t frameCount = mCaptureWrittenFrameCount.load();
     const uint64_t dataSizeBytes =
         frameCount * mCaptureChannels * sizeof(float);
     const unsigned int mirrorFormat = mCaptureMirrorFormat;
@@ -1163,6 +1367,9 @@ PlayerErrors Player::stopCapture(CaptureStopInfo *info)
     info->mirrorFormat = mirrorFormat;
     info->mirrorSucceeded = mirrorSucceeded;
     info->mirrorFrameCount = mirrorFrameCount;
+    info->writerOverflowFrames = mCaptureWriterOverflowFrames.load();
+    info->writerSilenceFrames = mCaptureWriterSilenceFrames.load();
+    info->writerFailed = mCaptureWriterFailed.load();
     resetCaptureState();
     return noError;
 }
@@ -1177,6 +1384,7 @@ PlayerErrors Player::cancelCapture()
         ma_device_stop(&mCaptureDevice);
         ma_device_uninit(&mCaptureDevice);
     }
+    stopCaptureWriter();
     if (mCaptureFile != nullptr) {
         fclose(mCaptureFile);
     }

@@ -70,6 +70,9 @@ struct CaptureStopInfo
   unsigned int mirrorFormat;
   bool mirrorSucceeded;
   uint64_t mirrorFrameCount;
+  uint64_t writerOverflowFrames;
+  uint64_t writerSilenceFrames;
+  bool writerFailed;
 };
 
 struct CaptureClockInfo
@@ -943,6 +946,12 @@ private:
                              unsigned int channels);
   static void finalizeWavHeader(FILE *file, uint64_t dataSizeBytes);
   void handleCaptureFrames(const void *input, ma_uint32 frameCount);
+  bool startCaptureWriter(unsigned int bufferSizeFrames);
+  void stopCaptureWriter();
+  bool enqueueCaptureFrames(const float *samples, ma_uint32 frameCount);
+  void captureWriterLoop();
+  bool writeCaptureFrames(const float *samples, ma_uint32 frameCount);
+  void writeCaptureSilenceFrames(uint64_t frameCount);
   bool prepareCaptureMirror(const std::string &mirrorFilePath,
                             unsigned int mirrorFormat,
                             unsigned int mirrorBitsPerSample);
@@ -967,6 +976,20 @@ private:
   uint64_t mCaptureStartHostTimeNanos = 0;
   float mCaptureInputGain = 1.0f;
   std::vector<float> mCaptureGainBuffer;
+  std::thread mCaptureWriterThread;
+  std::mutex mCaptureWriterConditionMutex;
+  std::condition_variable mCaptureWriterCondition;
+  std::vector<float> mCaptureWriteRing;
+  std::vector<float> mCaptureSilenceBuffer;
+  uint64_t mCaptureWriteCapacitySamples = 0;
+  std::atomic<uint64_t> mCaptureWriteReadSample{0};
+  std::atomic<uint64_t> mCaptureWriteWriteSample{0};
+  std::atomic<bool> mCaptureWriterStopRequested{false};
+  std::atomic<bool> mCaptureWriterFailed{false};
+  std::atomic<uint64_t> mCaptureWrittenFrameCount{0};
+  std::atomic<uint64_t> mCaptureWriterOverflowFrames{0};
+  std::atomic<uint64_t> mCaptureWriterSilenceFrames{0};
+  std::atomic<uint64_t> mCapturePendingSilenceFrames{0};
   std::atomic<uint64_t> mCaptureFrameCount{0};
   std::atomic<uint64_t> mFirstInputBufferHostTimeNanos{0};
   std::atomic<uint64_t> mFirstInputBufferFrameIndex{0};

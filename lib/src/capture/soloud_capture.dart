@@ -165,6 +165,9 @@ final class SoLoudCaptureStopResult {
     this.mirrorFormat = SoLoudCaptureMirrorFormat.none,
     this.mirrorSucceeded = false,
     this.mirrorFrameCount = 0,
+    this.writerOverflowFrames = 0,
+    this.writerSilenceFrames = 0,
+    this.writerFailed = false,
   });
 
   /// Destination WAV path.
@@ -208,6 +211,15 @@ final class SoLoudCaptureStopResult {
 
   /// Number of frames accepted by the native sidecar mirror.
   final int mirrorFrameCount;
+
+  /// Number of capture frames that could not fit in the writer ring.
+  final int writerOverflowFrames;
+
+  /// Number of silence frames inserted to preserve duration after overflow.
+  final int writerSilenceFrames;
+
+  /// Whether the asynchronous capture writer reported a WAV write failure.
+  final bool writerFailed;
 
   /// Capture-start timestamp expressed as a reusable clock snapshot.
   SoLoudCaptureClockSnapshot get captureStartClock =>

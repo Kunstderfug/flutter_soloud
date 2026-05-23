@@ -631,7 +631,8 @@ extern "C"
               uint64_t *firstInputBufferFrameIndex,
               uint64_t *captureStopHostTimeNanos,
               unsigned int *mirrorFormat, unsigned int *mirrorSucceeded,
-              uint64_t *mirrorFrameCount)
+              uint64_t *mirrorFrameCount, uint64_t *writerOverflowFrames,
+              uint64_t *writerSilenceFrames, unsigned int *writerFailed)
   {
     if (player.get() == nullptr)
       return backendNotInited;
@@ -641,7 +642,9 @@ extern "C"
         firstInputBufferHostTimeNanos == nullptr ||
         firstInputBufferFrameIndex == nullptr ||
         captureStopHostTimeNanos == nullptr || mirrorFormat == nullptr ||
-        mirrorSucceeded == nullptr || mirrorFrameCount == nullptr)
+        mirrorSucceeded == nullptr || mirrorFrameCount == nullptr ||
+        writerOverflowFrames == nullptr || writerSilenceFrames == nullptr ||
+        writerFailed == nullptr)
       return nullPointer;
 
     CaptureStopInfo info;
@@ -659,6 +662,9 @@ extern "C"
       *mirrorFormat = info.mirrorFormat;
       *mirrorSucceeded = info.mirrorSucceeded ? 1 : 0;
       *mirrorFrameCount = info.mirrorFrameCount;
+      *writerOverflowFrames = info.writerOverflowFrames;
+      *writerSilenceFrames = info.writerSilenceFrames;
+      *writerFailed = info.writerFailed ? 1 : 0;
     }
     return result;
   }

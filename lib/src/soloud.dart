@@ -662,6 +662,9 @@ interface class SoLoud {
       mirrorFormat: result.mirrorFormat,
       mirrorSucceeded: result.mirrorSucceeded,
       mirrorFrameCount: result.mirrorFrameCount,
+      writerOverflowFrames: result.writerOverflowFrames,
+      writerSilenceFrames: result.writerSilenceFrames,
+      writerFailed: result.writerFailed,
     );
   }
 

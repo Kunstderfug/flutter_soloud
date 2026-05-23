@@ -462,7 +462,10 @@ stopCapture(unsigned int *sampleRate, unsigned int *channels,
             uint64_t *captureStopHostTimeNanos,
             unsigned int *mirrorFormat,
             unsigned int *mirrorSucceeded,
-            uint64_t *mirrorFrameCount) {
+            uint64_t *mirrorFrameCount,
+            uint64_t *writerOverflowFrames,
+            uint64_t *writerSilenceFrames,
+            unsigned int *writerFailed) {
   if (player.get() == nullptr)
     return backendNotInited;
   if (sampleRate == nullptr || channels == nullptr || frameCount == nullptr ||
@@ -471,7 +474,9 @@ stopCapture(unsigned int *sampleRate, unsigned int *channels,
       firstInputBufferHostTimeNanos == nullptr ||
       firstInputBufferFrameIndex == nullptr ||
       captureStopHostTimeNanos == nullptr || mirrorFormat == nullptr ||
-      mirrorSucceeded == nullptr || mirrorFrameCount == nullptr)
+      mirrorSucceeded == nullptr || mirrorFrameCount == nullptr ||
+      writerOverflowFrames == nullptr || writerSilenceFrames == nullptr ||
+      writerFailed == nullptr)
     return nullPointer;
 
   CaptureStopInfo info;
@@ -488,6 +493,9 @@ stopCapture(unsigned int *sampleRate, unsigned int *channels,
     *mirrorFormat = info.mirrorFormat;
     *mirrorSucceeded = info.mirrorSucceeded ? 1 : 0;
     *mirrorFrameCount = info.mirrorFrameCount;
+    *writerOverflowFrames = info.writerOverflowFrames;
+    *writerSilenceFrames = info.writerSilenceFrames;
+    *writerFailed = info.writerFailed ? 1 : 0;
   }
   return result;
 }

@@ -26,7 +26,13 @@
 #endif
 
 #if !defined(NO_WAVPACK_LIBS)
-#include "wavpack.h"
+#if defined(__APPLE__)
+#define ChunkHeader WavpackChunkHeader
+#endif
+#include "wavpack/include/wavpack.h"
+#if defined(__APPLE__)
+#undef ChunkHeader
+#endif
 #endif
 
 #ifdef _IS_WIN_

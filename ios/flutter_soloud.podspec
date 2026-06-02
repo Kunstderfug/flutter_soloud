@@ -33,6 +33,10 @@ Flutter audio plugin using SoLoud library and FFI
   if disable_xiph_libs
     preprocessor_definitions << 'NO_XIPH_LIBS'
   end
+  # The CocoaPods wrapper framework includes flutter_soloud.cpp directly and
+  # does not compile WavPack's C sources. The CMake FFI library built below is
+  # the WavPack-enabled capture path that gets force-loaded into the app.
+  preprocessor_definitions << 'NO_WAVPACK_LIBS'
   preprocessor_definitions << 'SIGNALSMITH_USE_PFFFT'
 
   # Build the plugin's native code using CMake with release optimizations.
@@ -61,6 +65,7 @@ Flutter audio plugin using SoLoud library and FFI
 
     # Build flutter_soloud with CMake
     #{disable_xiph_libs ? 'export NO_XIPH_LIBS=1' : 'unset NO_XIPH_LIBS'}
+    unset NO_WAVPACK_LIBS
     bash "${PODS_TARGET_SRCROOT}/build_cmake.sh"
   SCRIPT
 

@@ -30,6 +30,9 @@ var baseCSettings: [CSetting] = [
     .headerSearchPath("../../include"),
     .headerSearchPath("src"),
     .headerSearchPath("src/soloud/include"),
+    .headerSearchPath("src/wavpack/include"),
+    .headerSearchPath("src/wavpack/src"),
+    .define("NO_WAVPACK_LIBS"),
     .unsafeFlags(["-O3", "-ffast-math"]),
 ]
 
@@ -37,6 +40,9 @@ var baseCXXSettings: [CXXSetting] = [
     .headerSearchPath("../../include"),
     .headerSearchPath("src"),
     .headerSearchPath("src/soloud/include"),
+    .headerSearchPath("src/wavpack/include"),
+    .headerSearchPath("src/wavpack/src"),
+    .define("NO_WAVPACK_LIBS"),
     .unsafeFlags(["-O3", "-ffast-math"]),
 ]
 

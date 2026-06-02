@@ -14,6 +14,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <new>
 #include <random>
 
@@ -48,6 +49,106 @@ extern ma_context context;
 }
 
 namespace {
+constexpr unsigned int kOggOpusBufferStreamMaxBytes = 512u * 1024u * 1024u;
+
+bool readFileBytes(const std::string &filePath,
+                   std::vector<unsigned char> &bytes)
+{
+    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
+    if (!file.good()) {
+        return false;
+    }
+
+    const std::streamoff fileSize = file.tellg();
+    if (fileSize <= 0) {
+        return false;
+    }
+
+    bytes.resize(static_cast<size_t>(fileSize));
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char *>(bytes.data()), fileSize);
+    return file.good();
+}
+
+bool isOggOpusBytes(const std::vector<unsigned char> &bytes)
+{
+    if (bytes.size() < 35 || std::memcmp(bytes.data(), "OggS", 4) != 0) {
+        return false;
+    }
+
+    size_t scanOffset = 0;
+    const size_t scanLimit = std::min(bytes.size(), static_cast<size_t>(64 * 1024));
+    while (scanOffset + 27 < scanLimit) {
+        if (std::memcmp(bytes.data() + scanOffset, "OggS", 4) != 0) {
+            ++scanOffset;
+            continue;
+        }
+
+        const uint8_t segmentCount = bytes[scanOffset + 26];
+        const size_t segmentTableOffset = scanOffset + 27;
+        if (segmentTableOffset + segmentCount > scanLimit) {
+            return false;
+        }
+
+        size_t payloadSize = 0;
+        for (uint8_t i = 0; i < segmentCount; ++i) {
+            payloadSize += bytes[segmentTableOffset + i];
+        }
+
+        const size_t payloadOffset = segmentTableOffset + segmentCount;
+        if (payloadOffset + payloadSize > bytes.size()) {
+            return false;
+        }
+
+        if (payloadSize >= 8 &&
+            std::memcmp(bytes.data() + payloadOffset, "OpusHead", 8) == 0) {
+            return true;
+        }
+
+        scanOffset = payloadOffset + payloadSize;
+    }
+
+    return false;
+}
+
+PlayerErrors loadOggOpusBufferStream(Player *player,
+                                     ActiveSound *activeSound,
+                                     const std::vector<unsigned char> &bytes)
+{
+    if (player == nullptr || activeSound == nullptr || bytes.empty()) {
+        return invalidParameter;
+    }
+
+    activeSound->sound = std::make_unique<SoLoud::BufferStream>();
+    activeSound->soundType = TYPE_BUFFER_STREAM;
+    PCMformat pcmFormat = {player->mSampleRate, player->mChannels, 4, AUTO};
+    auto *bufferStream =
+        static_cast<SoLoud::BufferStream *>(activeSound->sound.get());
+    PlayerErrors error = bufferStream->setBufferStream(
+        player,
+        activeSound,
+        kOggOpusBufferStreamMaxBytes,
+        BufferingType::PRESERVED,
+        0.0f,
+        pcmFormat);
+    if (error != noError) {
+        return error;
+    }
+
+    error = bufferStream->addData(bytes.data(),
+                                  static_cast<unsigned int>(bytes.size()));
+    if (error != noError) {
+        return error;
+    }
+
+    bufferStream->setDataIsEnded();
+    if (bufferStream->getLength() <= 0.0) {
+        return fileLoadFailed;
+    }
+
+    return noError;
+}
+
 bool writeBytes(FILE *file, const void *data, size_t size) {
     return file != nullptr && fwrite(data, 1, size, file) == size;
 }
@@ -1388,7 +1489,16 @@ PlayerErrors Player::loadFile(
         result = static_cast<SoLoud::WavStream *>(newSound.get()->sound.get())->load(completeFileName.c_str());
     }
 
+    PlayerErrors loadError = static_cast<PlayerErrors>(result);
     if (result != SoLoud::SO_NO_ERROR)
+    {
+        std::vector<unsigned char> bytes;
+        if (readFileBytes(completeFileName, bytes) && isOggOpusBytes(bytes)) {
+            loadError = loadOggOpusBufferStream(this, newSound.get(), bytes);
+        }
+    }
+
+    if (loadError != noError)
     {
         *hash = 0;
     }
@@ -1404,11 +1514,11 @@ PlayerErrors Player::loadFile(
 
     // Return fileAlreadyLoaded if the filename hash was already in use,
     // even though we've now loaded a new instance with a unique hash.
-    if (s != nullptr && result == SoLoud::SO_NO_ERROR) {
+    if (s != nullptr && loadError == noError) {
         return fileAlreadyLoaded;
     }
 
-    return (PlayerErrors)result;
+    return loadError;
 }
 
 PlayerErrors Player::loadMem(

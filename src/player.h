@@ -369,6 +369,14 @@ public:
                     float volume = 1.0f, float pan = 0.0f, bool paused = false,
                     bool looping = false, double loopingStartAt = 0.0);
 
+  /// Play a loaded sound after an output-sample delay. The voice is created
+  /// paused, configured, and released by this native call so Dart does not
+  /// initiate the audible edge.
+  PlayerErrors playDelayed(unsigned int soundHash, unsigned int &handle,
+                           unsigned int delaySamples,
+                           unsigned int busId = 0,
+                           float volume = 1.0f, float pan = 0.0f);
+
   /// @brief Stop already loaded sound identified by [handle] and clear it.
   /// @param handle handle of the sound.
   void stop(unsigned int handle);

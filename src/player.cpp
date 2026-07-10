@@ -2048,6 +2048,24 @@ PlayerErrors Player::play(
     return PlayerErrors::noError;
 }
 
+PlayerErrors Player::playDelayed(
+    unsigned int soundHash,
+    unsigned int &handle,
+    unsigned int delaySamples,
+    unsigned int busId,
+    float volume,
+    float pan)
+{
+    PlayerErrors result = play(soundHash, handle, busId, volume, pan, true,
+                               false, 0.0);
+    if (result != PlayerErrors::noError || handle == 0)
+        return result;
+
+    soloud.setDelaySamples(handle, delaySamples);
+    soloud.setPause(handle, false);
+    return PlayerErrors::noError;
+}
+
 void Player::stop(unsigned int handle)
 {
     soloud.stop(handle);

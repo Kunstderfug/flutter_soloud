@@ -196,6 +196,16 @@ external int wasmPlay(
   int handlePtr,
 );
 
+@JS('Module_soloud._playDelayed')
+external int wasmPlayDelayed(
+  int soundHash,
+  int delaySamples,
+  int busId,
+  double volume,
+  double pan,
+  int handlePtr,
+);
+
 @JS('Module_soloud._stop')
 external void wasmStop(int handle);
 

@@ -552,6 +552,28 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
+  ({PlayerErrors error, SoundHandle newHandle}) playDelayed(
+    SoundHash soundHash, {
+    required int delaySamples,
+    int busId = 0,
+    double volume = 1,
+    double pan = 0,
+  }) {
+    final handlePtr = wasmMalloc(4);
+    final result = wasmPlayDelayed(
+      soundHash.hash,
+      delaySamples,
+      busId,
+      volume,
+      pan,
+      handlePtr,
+    );
+    final handle = SoundHandle(wasmGetI32Value(handlePtr, 'i32'));
+    wasmFree(handlePtr);
+    return (error: PlayerErrors.values[result], newHandle: handle);
+  }
+
+  @override
   void stop(SoundHandle handle) {
     return wasmStop(handle.id);
   }

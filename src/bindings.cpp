@@ -996,6 +996,20 @@ FFI_PLUGIN_EXPORT enum PlayerErrors play(unsigned int soundHash, unsigned int bu
   return result;
 }
 
+/// Play a loaded sound after [delaySamples] output samples. The voice is
+/// prepared paused and released natively so the audible edge is not driven by
+/// a later Dart callback.
+FFI_PLUGIN_EXPORT enum PlayerErrors playDelayed(unsigned int soundHash,
+                                                unsigned int delaySamples,
+                                                unsigned int busId,
+                                                float volume, float pan,
+                                                unsigned int *handle) {
+  if (player.get() == nullptr || !player.get()->isInited())
+    return backendNotInited;
+  return player.get()->playDelayed(soundHash, *handle, delaySamples, busId,
+                                   volume, pan);
+}
+
 /// Stop already loaded sound identified by [handle] and clear it
 ///
 /// [handle]

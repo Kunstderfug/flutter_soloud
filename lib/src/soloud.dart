@@ -1642,6 +1642,48 @@ interface class SoLoud {
     return ret.newHandle;
   }
 
+  /// Schedule [sound] to become audible after [delay] on the native output
+  /// sample clock. The native engine prepares and releases the voice; no Dart
+  /// timer is involved in its audible start.
+  SoundHandle playDelayed(
+    AudioSource sound, {
+    required Duration delay,
+    int busId = 0,
+    double volume = 1,
+    double pan = 0,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final delaySamples =
+        (delay.inMicroseconds * _sampleRate / Duration.microsecondsPerSecond)
+            .round()
+            .clamp(0, 0xFFFFFFFF);
+    final ret = _controller.soLoudFFI.playDelayed(
+      sound.soundHash,
+      delaySamples: delaySamples,
+      busId: busId,
+      volume: volume,
+      pan: pan,
+    );
+    _logPlayerError(ret.error, from: 'playDelayed()');
+    if (!(ret.error == PlayerErrors.noError ||
+        ret.error == PlayerErrors.maxActiveVoiceCountReached)) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+
+    final filtered = _activeSounds
+        .where((activeSound) => activeSound.soundHash == sound.soundHash)
+        .toSet();
+    if (filtered.isEmpty) {
+      throw SoLoudSoundHashNotFoundDartException(sound.soundHash);
+    }
+    for (final activeSound in filtered) {
+      activeSound.handlesInternal.add(ret.newHandle);
+    }
+    return ret.newHandle;
+  }
+
   /// A simpler way to process the loading of the sound and then play it.
   ///
   /// Provide either [asset], [file], or [url] (assert only one of these 3).

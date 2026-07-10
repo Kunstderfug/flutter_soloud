@@ -337,6 +337,16 @@ abstract class FlutterSoLoud {
     Duration loopingStartAt = Duration.zero,
   });
 
+  /// Play a loaded sound after [delaySamples] output samples.
+  @mustBeOverridden
+  ({PlayerErrors error, SoundHandle newHandle}) playDelayed(
+    SoundHash soundHash, {
+    required int delaySamples,
+    int busId = 0,
+    double volume = 1,
+    double pan = 0,
+  });
+
   /// Stop already loaded sound identified by [handle] and clear it.
   ///
   /// [handle] the sound handle.

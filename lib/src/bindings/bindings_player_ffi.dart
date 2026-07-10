@@ -1564,6 +1564,56 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       >();
 
   @override
+  ({PlayerErrors error, SoundHandle newHandle}) playDelayed(
+    SoundHash soundHash, {
+    required int delaySamples,
+    int busId = 0,
+    double volume = 1,
+    double pan = 0,
+  }) {
+    final ffi.Pointer<ffi.UnsignedInt> handle = calloc();
+    final e = _playDelayed(
+      soundHash.hash,
+      delaySamples,
+      busId,
+      volume,
+      pan,
+      handle,
+    );
+    final ret = (
+      error: PlayerErrors.values[e],
+      newHandle: SoundHandle(handle.value),
+    );
+    calloc.free(handle);
+    return ret;
+  }
+
+  late final _playDelayedPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.Float,
+            ffi.Float,
+            ffi.Pointer<ffi.UnsignedInt>,
+          )
+        >
+      >('playDelayed');
+  late final _playDelayed = _playDelayedPtr
+      .asFunction<
+        int Function(
+          int,
+          int,
+          int,
+          double,
+          double,
+          ffi.Pointer<ffi.UnsignedInt>,
+        )
+      >();
+
+  @override
   void stop(SoundHandle handle) {
     return _stop(handle.id);
   }

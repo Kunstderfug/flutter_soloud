@@ -527,6 +527,7 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     bool paused = false,
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
+    Duration? loopingEndAt,
   }) {
     final handlePtr = wasmMalloc(4); // 4 bytes for an int32
     final result = wasmPlay(
@@ -537,6 +538,7 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
       paused,
       looping,
       loopingStartAt.toDouble(),
+      loopingEndAt?.toDouble() ?? 0,
       handlePtr,
     );
 
@@ -610,6 +612,17 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   @override
   void setLoopPoint(SoundHandle handle, Duration timestamp) {
     wasmSetLoopPoint(handle.id, timestamp.toDouble());
+  }
+
+  @override
+  Duration? getLoopEndPoint(SoundHandle handle) {
+    final seconds = wasmGetLoopEndPoint(handle.id);
+    return seconds > 0 ? seconds.toDuration() : null;
+  }
+
+  @override
+  void setLoopEndPoint(SoundHandle handle, Duration? timestamp) {
+    wasmSetLoopEndPoint(handle.id, timestamp?.toDouble() ?? 0);
   }
 
   @override
@@ -1072,6 +1085,7 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     bool paused = false,
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
+    Duration? loopingEndAt,
   }) {
     final handlePtr = wasmMalloc(4); // 4 bytes for an int32
     final result = wasmPlay3d(
@@ -1087,6 +1101,7 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
       paused ? 1 : 0,
       looping ? 1 : 0,
       loopingStartAt.toDouble(),
+      loopingEndAt?.toDouble() ?? 0,
       handlePtr,
     );
 

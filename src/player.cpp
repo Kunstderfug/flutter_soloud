@@ -1984,7 +1984,8 @@ PlayerErrors Player::play(
     float pan,
     bool paused,
     bool looping,
-    double loopingStartAt)
+    double loopingStartAt,
+    double loopingEndAt)
 {
     ActiveSound *sound = findByHash(soundHash);
 
@@ -2020,18 +2021,30 @@ PlayerErrors Player::play(
 
     handle = 0;
     SoLoud::handle newHandle = 0;
+    const bool startPaused = paused || looping;
     if (busId == 0) {
-        newHandle = soloud.play(*sound->sound.get(), volume, pan, paused, 0);
+        newHandle = soloud.play(*sound->sound.get(), volume, pan, startPaused, 0);
     } else {
         auto it = busMap.find(busId);
         if (it != busMap.end())
-            newHandle = it->second.bus.play(*sound->sound.get(), volume, pan, paused);
+            newHandle = it->second.bus.play(*sound->sound.get(), volume, pan, startPaused);
         else
             return PlayerErrors::busIdNotFound;
     }
 
+    if (newHandle != 0 && looping)
+    {
+        setLoopPoint(newHandle, loopingStartAt);
+        setLoopEndPoint(newHandle, loopingEndAt);
+        setLooping(newHandle, true);
+    }
+
     if (newHandle != 0) {
         sound->handle.push_back({newHandle, MAX_DOUBLE});
+        if (looping)
+        {
+            setPause(newHandle, paused);
+        }
         // Check if this buffer has enough data to be played
         if (sound->soundType == SoundType::TYPE_BUFFER_STREAM)
         {
@@ -2039,11 +2052,6 @@ PlayerErrors Player::play(
         }
     }
 
-    if (looping)
-    {
-        setLoopPoint(newHandle, loopingStartAt);
-        setLooping(newHandle, true);
-    }
     handle = newHandle;
     return PlayerErrors::noError;
 }
@@ -2057,7 +2065,7 @@ PlayerErrors Player::playDelayed(
     float pan)
 {
     PlayerErrors result = play(soundHash, handle, busId, volume, pan, true,
-                               false, 0.0);
+                               false, 0.0, 0.0);
     if (result != PlayerErrors::noError || handle == 0)
         return result;
 
@@ -2245,6 +2253,16 @@ double Player::getLoopPoint(unsigned int handle)
 void Player::setLoopPoint(unsigned int handle, double time)
 {
     soloud.setLoopPoint(handle, time);
+}
+
+double Player::getLoopEndPoint(unsigned int handle)
+{
+    return soloud.getLoopEndPoint(handle);
+}
+
+void Player::setLoopEndPoint(unsigned int handle, double time)
+{
+    soloud.setLoopEndPoint(handle, time);
 }
 
 PlayerErrors Player::textToSpeech(const std::string &textToSpeech, unsigned int &handle)
@@ -2614,7 +2632,8 @@ PlayerErrors Player::play3d(
     bool paused,
     unsigned int busId,
     bool looping,
-    double loopingStartAt)
+    double loopingStartAt,
+    double loopingEndAt)
 {
     ActiveSound *sound = findByHash(soundHash);
     if (sound == 0)
@@ -2649,13 +2668,14 @@ PlayerErrors Player::play3d(
 
     handle = 0;
     SoLoud::handle newHandle = 0;
+    const bool startPaused = paused || looping;
     if (busId == 0) {
         newHandle = soloud.play3d(
             *sound->sound.get(),
             posX, posY, posZ,
             velX, velY, velZ,
             volume,
-            paused,
+            startPaused,
             0);
     } else {
         auto it = busMap.find(busId);
@@ -2665,7 +2685,7 @@ PlayerErrors Player::play3d(
                 posX, posY, posZ,
                 velX, velY, velZ,
                 volume,
-                paused
+                startPaused
             );
         else
             return PlayerErrors::busIdNotFound;
@@ -2673,18 +2693,19 @@ PlayerErrors Player::play3d(
 
     if (newHandle != 0) {
         sound->handle.push_back({newHandle, MAX_DOUBLE});
+        if (looping)
+        {
+            setLoopPoint(newHandle, loopingStartAt);
+            setLoopEndPoint(newHandle, loopingEndAt);
+            setLooping(newHandle, true);
+            seek(newHandle, loopingStartAt);
+            setPause(newHandle, paused);
+        }
         // Check if this buffer has enough data to be played
         if (sound->soundType == SoundType::TYPE_BUFFER_STREAM)
         {
             static_cast<SoLoud::BufferStream *>(sound->sound.get())->checkBuffering(0);
         }
-    }
-    if (looping)
-    {
-        seek(newHandle, loopingStartAt);
-        setLoopPoint(newHandle, loopingStartAt);
-        setLooping(newHandle, true);
-        setPause(newHandle, paused);
     }
     handle = newHandle;
     return PlayerErrors::noError;

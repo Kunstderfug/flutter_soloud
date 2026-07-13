@@ -1,3 +1,6 @@
+#### Unreleased
+- added native loop end points through `loopingEndAt` and the live `getLoopEndPoint` / `setLoopEndPoint` APIs, allowing half-open `[start, end)` loop regions.
+
 #### 4.0.11 (22 Jun 2026)
 - fix web: don't spawn the deferred-pause std::thread on web (Aborted() in initEngine) #488. Thanks to @felixmin
 
@@ -638,4 +641,3 @@ Initial release:
 * Includes a speech synthesizer
 * Supports various common formats such as 8, 16, and 32-bit WAVs, floating point WAVs, OGG, MP3, and FLAC
 * Enables real-time retrieval of audio FFT and wave data
-

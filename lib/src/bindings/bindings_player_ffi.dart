@@ -1513,6 +1513,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     bool paused = false,
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
+    Duration? loopingEndAt,
   }) {
     final ffi.Pointer<ffi.UnsignedInt> handle = calloc();
     final hash = soundHash.hash;
@@ -1524,6 +1525,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       paused ? 1 : 0,
       looping ? 1 : 0,
       loopingStartAt.toDouble(),
+      loopingEndAt?.toDouble() ?? 0,
       handle,
     );
     final ret = (
@@ -1545,10 +1547,11 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.Int,
             ffi.Int,
             ffi.Double,
+            ffi.Double,
             ffi.Pointer<ffi.UnsignedInt>,
           )
         >
-      >('play');
+      >('playWithLoopPoints');
   late final _play = _playPtr
       .asFunction<
         int Function(
@@ -1558,6 +1561,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           double,
           int,
           int,
+          double,
           double,
           ffi.Pointer<ffi.UnsignedInt>,
         )
@@ -1689,6 +1693,31 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
         ffi.NativeFunction<ffi.Void Function(ffi.UnsignedInt, ffi.Double)>
       >('setLoopPoint');
   late final _setLoopPoint = _setLoopPointPtr
+      .asFunction<void Function(int, double)>();
+
+  @override
+  Duration? getLoopEndPoint(SoundHandle handle) {
+    final seconds = _getLoopEndPoint(handle.id);
+    return seconds > 0 ? seconds.toDuration() : null;
+  }
+
+  late final _getLoopEndPointPtr =
+      _lookup<ffi.NativeFunction<ffi.Double Function(ffi.UnsignedInt)>>(
+        'getLoopEndPoint',
+      );
+  late final _getLoopEndPoint = _getLoopEndPointPtr
+      .asFunction<double Function(int)>();
+
+  @override
+  void setLoopEndPoint(SoundHandle handle, Duration? timestamp) {
+    _setLoopEndPoint(handle.id, timestamp?.toDouble() ?? 0);
+  }
+
+  late final _setLoopEndPointPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.UnsignedInt, ffi.Double)>
+      >('setLoopEndPoint');
+  late final _setLoopEndPoint = _setLoopEndPointPtr
       .asFunction<void Function(int, double)>();
 
   @override
@@ -2604,6 +2633,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     bool paused = false,
     bool looping = false,
     Duration loopingStartAt = Duration.zero,
+    Duration? loopingEndAt,
   }) {
     final ffi.Pointer<ffi.UnsignedInt> handle = calloc();
     final e = _play3d(
@@ -2619,6 +2649,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       paused ? 1 : 0,
       looping ? 1 : 0,
       loopingStartAt.toDouble(),
+      loopingEndAt?.toDouble() ?? 0,
       handle,
     );
     final ret = (
@@ -2645,10 +2676,11 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
             ffi.Int,
             ffi.Int,
             ffi.Double,
+            ffi.Double,
             ffi.Pointer<ffi.UnsignedInt>,
           )
         >
-      >('play3d');
+      >('play3dWithLoopPoints');
   late final _play3d = _play3dPtr
       .asFunction<
         int Function(
@@ -2663,6 +2695,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
           double,
           int,
           int,
+          double,
           double,
           ffi.Pointer<ffi.UnsignedInt>,
         )

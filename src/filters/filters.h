@@ -84,7 +84,18 @@ struct BusData {
   Filters filters;
 
   explicit BusData(unsigned int busId, SoLoud::Soloud *soloud)
-      : id(busId), filters(soloud, nullptr, this) {}
+      : id(busId), filters(soloud, nullptr, this) {
+    syncSampleRate(soloud);
+  }
+
+  void syncSampleRate(SoLoud::Soloud *soloud) {
+    if (soloud != nullptr) {
+      const unsigned int sampleRate = soloud->getBackendSamplerate();
+      if (sampleRate > 0) {
+        bus.mBaseSamplerate = static_cast<float>(sampleRate);
+      }
+    }
+  }
 };
 
 #endif // PLAYER_H

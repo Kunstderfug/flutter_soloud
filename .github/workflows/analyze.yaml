@@ -28,6 +28,11 @@ jobs:
     - name: Check pub dependencies
       run: flutter pub get
 
+    - name: Run native correctness tests
+      run: |
+        ./test/run_limiter_test.sh
+        ./test/run_mixing_bus_sample_rate_test.sh
+
     - name: "Run Dart Analyze"
       uses: invertase/github-action-dart-analyzer@v3
       with:

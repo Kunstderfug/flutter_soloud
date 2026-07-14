@@ -2813,6 +2813,7 @@ unsigned int Player::busPlayOnEngine(unsigned int busId, float volume,
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return 0;
+    it->second.syncSampleRate(&soloud);
     SoLoud::handle handle = soloud.play(it->second.bus, volume, 0.0f, paused);
     it->second.handle = handle;
     // Playing a sound inside a bus decreases the volume compared to playing it directly.

@@ -529,6 +529,11 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     Duration loopingStartAt = Duration.zero,
     Duration? loopingEndAt,
   }) {
+    if (loopingEndAt != null) {
+      throw UnsupportedError(
+        'Bounded loop end points require regenerated web artifacts.',
+      );
+    }
     final handlePtr = wasmMalloc(4); // 4 bytes for an int32
     final result = wasmPlay(
       soundHash.hash,
@@ -538,7 +543,6 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
       paused,
       looping,
       loopingStartAt.toDouble(),
-      loopingEndAt?.toDouble() ?? 0,
       handlePtr,
     );
 
@@ -615,14 +619,15 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
-  Duration? getLoopEndPoint(SoundHandle handle) {
-    final seconds = wasmGetLoopEndPoint(handle.id);
-    return seconds > 0 ? seconds.toDuration() : null;
-  }
+  Duration? getLoopEndPoint(SoundHandle handle) => null;
 
   @override
   void setLoopEndPoint(SoundHandle handle, Duration? timestamp) {
-    wasmSetLoopEndPoint(handle.id, timestamp?.toDouble() ?? 0);
+    if (timestamp != null) {
+      throw UnsupportedError(
+        'Bounded loop end points require regenerated web artifacts.',
+      );
+    }
   }
 
   @override
@@ -1087,6 +1092,11 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     Duration loopingStartAt = Duration.zero,
     Duration? loopingEndAt,
   }) {
+    if (loopingEndAt != null) {
+      throw UnsupportedError(
+        'Bounded loop end points require regenerated web artifacts.',
+      );
+    }
     final handlePtr = wasmMalloc(4); // 4 bytes for an int32
     final result = wasmPlay3d(
       soundHash.hash,
@@ -1101,7 +1111,6 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
       paused ? 1 : 0,
       looping ? 1 : 0,
       loopingStartAt.toDouble(),
-      loopingEndAt?.toDouble() ?? 0,
       handlePtr,
     );
 

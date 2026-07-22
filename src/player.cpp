@@ -447,10 +447,17 @@ void Player::setStateChangedCallback(void (*stateChangedCallback)(unsigned int))
     soloud.setStateChangedCallback(stateChangedCallback);
 }
 
-PlayerErrors Player::init(unsigned int sampleRate, unsigned int bufferSize, unsigned int channels, int deviceID)
+// Defined in the miniaudio backend (soloud_miniaudio.cpp). Forward-declared
+// here so we don't need to pull in the backend-internal header.
+namespace SoLoud { void miniaudio_setLowLatency(bool aLowLatency); }
+
+PlayerErrors Player::init(unsigned int sampleRate, unsigned int bufferSize, unsigned int channels, int deviceID, bool lowLatency)
 {
     if (mInited)
         return playerAlreadyInited;
+
+    // Choose the device performance profile before SoLoud opens the backend.
+    SoLoud::miniaudio_setLowLatency(lowLatency);
 
     void *playbackInfos_id = nullptr;
     if (deviceID != -1)
@@ -1758,7 +1765,9 @@ PlayerErrors Player::loadWaveform(
         sounds.push_back(std::make_unique<ActiveSound>());
         sounds.back().get()->completeFileName = "";
         sounds.back().get()->soundHash = hash;
-        sounds.back().get()->sound = std::make_unique<Basicwave>((SoLoud::Soloud::WAVEFORM)waveform, superWave, detune, scale);
+        auto basicWave = std::make_unique<Basicwave>((SoLoud::Soloud::WAVEFORM)waveform, superWave, detune, scale);
+        basicWave->setSamplerate(mSampleRate);
+        sounds.back().get()->sound = std::move(basicWave);
         sounds.back().get()->soundType = TYPE_SYNTH;
         sounds.back().get()->filters = std::make_unique<Filters>(&soloud, sounds.back().get(), nullptr);
     }

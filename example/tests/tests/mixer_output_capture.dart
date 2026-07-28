@@ -212,7 +212,33 @@ Future<OutputBuffer> testMixerOutputCapture() async {
     await delay(100);
   }
 
+  output.writeln('Testing deinit with mixer output capture active');
+  final activeDeinitDone = Completer<void>();
+  final activeDeinitStream = SoLoud.instance.startMixerOutputStream();
+  final activeDeinitSubscription = activeDeinitStream.listen(
+    (_) {},
+    onDone: activeDeinitDone.complete,
+  );
+  await delay(100);
   deinit();
+  await activeDeinitDone.future.timeout(const Duration(seconds: 2));
+  await activeDeinitSubscription.cancel();
+  assert(
+    !SoLoud.instance.isMixerOutputStreamRunning,
+    'Mixer output capture remained active after deinit',
+  );
+  output.writeln('  active capture closed during deinit');
+
+  await initialize();
+  final restartedChunks = <Uint8List>[];
+  final restartedStream = SoLoud.instance.startMixerOutputStream();
+  final restartedSubscription = restartedStream.listen(restartedChunks.add);
+  await delay(100);
+  SoLoud.instance.stopMixerOutputStream();
+  await restartedSubscription.cancel();
+  assert(restartedChunks.isNotEmpty, 'Capture did not restart after deinit');
+  deinit();
+  output.writeln('  capture restarted cleanly after deinit');
 
   return output;
 }

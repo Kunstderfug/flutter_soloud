@@ -7,6 +7,7 @@
 #include "audiobuffer/audiobuffer.h"
 #include "audiobuffer/buffer.h"
 #include "audiobuffer/metadata_ffi.h"
+#include "capture/capture_models.h"
 #include "enums.h"
 #include "filters/filters.h"
 #include "soloud/include/soloud.h"
@@ -24,13 +25,6 @@
 #include <thread>
 #include <vector>
 
-enum CaptureMirrorFormat
-{
-  captureMirrorNone = 0,
-  captureMirrorFlac = 1,
-  captureMirrorWavPack = 2,
-};
-
 struct PlaybackDevice
 {
   char *name;
@@ -39,70 +33,7 @@ struct PlaybackDevice
   ma_device_id deviceId; // Store the actual device ID, not just the index
 };
 
-struct CaptureDevice
-{
-  char *name;
-  unsigned int isDefault;
-  unsigned int id;
-  ma_device_id deviceId; // Store the actual device ID, not just the index
-};
-
-struct CaptureStartInfo
-{
-  unsigned int sampleRate;
-  unsigned int channels;
-  uint64_t sessionStartHostTimeNanos;
-  uint64_t captureStartHostTimeNanos;
-  unsigned int mirrorFormat;
-  bool mirrorActive;
-};
-
-struct CaptureStopInfo
-{
-  unsigned int sampleRate;
-  unsigned int channels;
-  uint64_t frameCount;
-  uint64_t sessionStartHostTimeNanos;
-  uint64_t captureStartHostTimeNanos;
-  uint64_t firstInputBufferHostTimeNanos;
-  uint64_t firstInputBufferFrameIndex;
-  uint64_t captureStopHostTimeNanos;
-  unsigned int mirrorFormat;
-  bool mirrorSucceeded;
-  uint64_t mirrorFrameCount;
-  uint64_t writerOverflowFrames;
-  uint64_t writerSilenceFrames;
-  bool writerFailed;
-};
-
-struct CaptureClockInfo
-{
-  uint64_t hostTimeNanos;
-  uint64_t sessionStartHostTimeNanos;
-  unsigned int sampleRate;
-  uint64_t inputDeviceFrame;
-};
-
-struct CaptureLevelInfo
-{
-  float currentPeak;
-  float currentRms;
-  float peakSinceLastRead;
-  float heldPeak;
-  uint64_t frameCount;
-};
-
-struct CapturePlaybackStartInfo
-{
-  unsigned int handle;
-  unsigned int sampleRate;
-  unsigned int channels;
-  uint64_t sessionStartHostTimeNanos;
-  uint64_t captureStartHostTimeNanos;
-  uint64_t playbackStartHostTimeNanos;
-  unsigned int mirrorFormat;
-  bool mirrorActive;
-};
+class CaptureSession;
 
 class Player
 {
@@ -938,73 +869,12 @@ public:
   unsigned int mChannels;
 
 private:
-  static void captureDataCallback(ma_device *device, void *output,
-                                  const void *input, ma_uint32 frameCount);
-  static uint64_t nowHostTimeNanos();
-  static void atomicMaxFloat(std::atomic<float> &target, float value);
-  static bool writeWavHeader(FILE *file, unsigned int sampleRate,
-                             unsigned int channels);
-  static void finalizeWavHeader(FILE *file, uint64_t dataSizeBytes);
-  void handleCaptureFrames(const void *input, ma_uint32 frameCount);
-  bool startCaptureWriter(unsigned int bufferSizeFrames);
-  void stopCaptureWriter();
-  bool enqueueCaptureFrames(const float *samples, ma_uint32 frameCount);
-  void captureWriterLoop();
-  bool writeCaptureFrames(const float *samples, ma_uint32 frameCount);
-  void writeCaptureSilenceFrames(uint64_t frameCount);
-  bool prepareCaptureMirror(const std::string &mirrorFilePath,
-                            unsigned int mirrorFormat,
-                            unsigned int mirrorBitsPerSample);
-  bool encodeCaptureMirror(const float *samples, ma_uint32 frameCount);
-  bool finishCaptureMirror(bool deleteOutput);
-  void resetCaptureMirrorState();
-  void resetCaptureState();
-
   ma_device_info *pPlaybackInfos;
   std::mutex remove_handle_mutex;
   mutable std::recursive_mutex sounds_mutex; // Protects the sounds vector (recursive to avoid deadlock in destructors)
   unsigned int mBufferSize;
 
-  ma_device mCaptureDevice;
-  bool mCaptureDeviceInitialized = false;
-  bool mCaptureRecording = false;
-  FILE *mCaptureFile = nullptr;
-  std::string mCaptureFilePath;
-  unsigned int mCaptureSampleRate = 0;
-  unsigned int mCaptureChannels = 0;
-  uint64_t mCaptureSessionStartHostTimeNanos = 0;
-  uint64_t mCaptureStartHostTimeNanos = 0;
-  float mCaptureInputGain = 1.0f;
-  std::vector<float> mCaptureGainBuffer;
-  std::thread mCaptureWriterThread;
-  std::mutex mCaptureWriterConditionMutex;
-  std::condition_variable mCaptureWriterCondition;
-  std::vector<float> mCaptureWriteRing;
-  std::vector<float> mCaptureSilenceBuffer;
-  uint64_t mCaptureWriteCapacitySamples = 0;
-  std::atomic<uint64_t> mCaptureWriteReadSample{0};
-  std::atomic<uint64_t> mCaptureWriteWriteSample{0};
-  std::atomic<bool> mCaptureWriterStopRequested{false};
-  std::atomic<bool> mCaptureWriterFailed{false};
-  std::atomic<uint64_t> mCaptureWrittenFrameCount{0};
-  std::atomic<uint64_t> mCaptureWriterOverflowFrames{0};
-  std::atomic<uint64_t> mCaptureWriterSilenceFrames{0};
-  std::atomic<uint64_t> mCapturePendingSilenceFrames{0};
-  std::atomic<uint64_t> mCaptureFrameCount{0};
-  std::atomic<uint64_t> mFirstInputBufferHostTimeNanos{0};
-  std::atomic<uint64_t> mFirstInputBufferFrameIndex{0};
-  std::atomic<float> mCaptureCurrentPeak{0.0f};
-  std::atomic<float> mCaptureCurrentRms{0.0f};
-  std::atomic<float> mCapturePeakSinceLastRead{0.0f};
-  std::atomic<float> mCaptureHeldPeak{0.0f};
-  std::string mCaptureMirrorFilePath;
-  unsigned int mCaptureMirrorFormat = captureMirrorNone;
-  unsigned int mCaptureMirrorBitsPerSample = 0;
-  bool mCaptureMirrorActive = false;
-  bool mCaptureMirrorFailed = false;
-  void *mCaptureMirrorEncoder = nullptr;
-  std::vector<int32_t> mCaptureMirrorIntBuffer;
-  uint64_t mCaptureMirrorFrameCount = 0;
+  std::unique_ptr<CaptureSession> mCaptureSession;
 
   std::map<unsigned int, BusData> busMap;
   unsigned int busIdCounter = 0;

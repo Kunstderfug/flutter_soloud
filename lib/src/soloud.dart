@@ -708,7 +708,7 @@ interface class SoLoud {
     _log.finest('deinit() called');
     _nativeCallbacksInitialized = false;
     if (_controller.soLoudFFI.isMixerOutputCaptureRunning()) {
-      _controller.soLoudFFI.stopMixerOutputCapture();
+      _mixerOutputStreamManager.stop();
     }
     // Stop the engine first: natively this stops all sounds, clears the
     // Dart callback registrations and stops the audio device, joining the

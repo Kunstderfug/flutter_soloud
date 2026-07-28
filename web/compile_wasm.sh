@@ -148,6 +148,11 @@ SOURCES=(
     ../src/soloud_common.cpp
     ../src/bindings.cpp
     ../src/player.cpp
+    ../src/capture/capture_mirror.cpp
+    ../src/capture/capture_processing.cpp
+    ../src/capture/capture_session.cpp
+    ../src/capture/capture_writer.cpp
+    ../src/capture/wavpack_capture_encoder.cpp
     ../src/pffft/*.c*
     ../src/analyzer.cpp
     ../src/synth/*.cpp

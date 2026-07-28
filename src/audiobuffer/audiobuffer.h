@@ -17,6 +17,7 @@
 #include "metadata_ffi.h"
 #include "mp3_stream_decoder.h"
 #include "stream_decoder.h"
+#include "wav_stream_decoder.h"
 
 class Player;
 
@@ -60,7 +61,6 @@ public:
   bool dataIsEnded;
   bool mIsBuffering;
   int mIcyMetaInt;
-  BufferStreamInstance *mInstance;
   
   // Flag to indicate the BufferStream is being destroyed
   std::atomic<bool> mIsDestroyed{false};

@@ -1,4 +1,10 @@
 /// Native capture mirror formats supported by SoLoud capture.
+///
+/// Encoder availability is build-dependent. Check
+/// [SoLoudCaptureStartResult.mirrorActive] after starting capture. In
+/// particular, the Apple Swift Package Manager wrapper omits WavPack because
+/// it does not compile the vendored WavPack C target; Apple CocoaPods/CMake
+/// builds include it.
 enum SoLoudCaptureMirrorFormat {
   /// No native sidecar encoder.
   none,
@@ -62,6 +68,9 @@ final class SoLoudCaptureStartResult {
   final int mirrorBitsPerSample;
 
   /// Whether native capture accepted and started the sidecar mirror.
+  ///
+  /// A requested encoder can be unavailable in a particular platform build;
+  /// the WAV safety recording still starts and this value is then `false`.
   final bool mirrorActive;
 
   /// Capture-start timestamp expressed as a reusable clock snapshot.
@@ -126,6 +135,9 @@ final class SoLoudCapturePlaybackStartResult {
   final int mirrorBitsPerSample;
 
   /// Whether native capture accepted and started the sidecar mirror.
+  ///
+  /// A requested encoder can be unavailable in a particular platform build;
+  /// the WAV safety recording still starts and this value is then `false`.
   final bool mirrorActive;
 
   /// Capture-start timestamp expressed as a reusable clock snapshot.
@@ -245,13 +257,12 @@ final class SoLoudCaptureStopResult {
   }
 
   /// Capture-stop timestamp expressed as a reusable clock snapshot.
-  SoLoudCaptureClockSnapshot get captureStopClock =>
-      SoLoudCaptureClockSnapshot(
-        hostTimeNanos: captureStopHostTimeNanos,
-        sessionStartHostTimeNanos: sessionStartHostTimeNanos,
-        sampleRate: sampleRate,
-        inputDeviceFrame: frameCount,
-      );
+  SoLoudCaptureClockSnapshot get captureStopClock => SoLoudCaptureClockSnapshot(
+    hostTimeNanos: captureStopHostTimeNanos,
+    sessionStartHostTimeNanos: sessionStartHostTimeNanos,
+    sampleRate: sampleRate,
+    inputDeviceFrame: frameCount,
+  );
 }
 
 /// A clock snapshot from the active miniaudio capture session.

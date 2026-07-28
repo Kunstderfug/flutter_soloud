@@ -3,7 +3,7 @@ import 'package:flutter_soloud/flutter_soloud.dart';
 import 'common.dart';
 
 /// Test looping state and a bounded `[loopingStartAt, loopingEndAt)` region.
-Future<StringBuffer> loopingTests() async {
+Future<OutputBuffer> loopingTests() async {
   await initialize();
 
   /// Load sample
@@ -42,5 +42,5 @@ Future<StringBuffer> loopingTests() async {
   );
 
   deinit();
-  return StringBuffer();
+  return OutputBuffer();
 }

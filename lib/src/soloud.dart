@@ -17,6 +17,7 @@ import 'package:flutter_soloud/src/helpers/capture_device.dart';
 import 'package:flutter_soloud/src/helpers/looping_region.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/metadata.dart';
+import 'package:flutter_soloud/src/mixer_output_stream_manager.dart';
 import 'package:flutter_soloud/src/mixing_bus.dart';
 import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:flutter_soloud/src/sound_hash.dart';
@@ -134,6 +135,19 @@ Float32List _readSamplesFromMem(Map<String, dynamic> args) {
     endTime: args['endTime'] as double,
     average: args['average'] as bool,
   );
+}
+
+/// How SoLoud sets the Android (AAudio) stream's `AudioAttributes` when
+/// low-latency is disabled. See [SoLoud.init]'s `androidAAudioAttributes`.
+enum AndroidAAudioAttributes {
+  /// Tag the stream as `usage = media` / `contentType = music` (default).
+  /// Sensible for a media app and capturable by system screen recorders.
+  mediaMusic,
+
+  /// Leave usage/contentType unset so the app can manage `AudioAttributes`
+  /// externally (e.g. via the `audio_session` plugin) without SoLoud
+  /// overriding them. The screen-record capture policy is still applied.
+  unmanaged,
 }
 
 /// The main class to call all the audio methods that play sounds.
@@ -258,6 +272,15 @@ interface class SoLoud {
   /// The current status of the engine. This is `true` when the engine
   /// has been initialized and is immediately ready.
   ///
+  /// It will be always true if checking from another isolate than the main
+  /// isolate. This is because it is supposed the user has already initialized
+  /// the engine in the main isolate, and the engine is a singleton in C++ land.
+  /// This behavior is meant to use the engine in a separate isolate for
+  /// various tools like output mixer capture, waveform reading, etc. having
+  /// the main isolate free for UI and other tasks.
+  /// NOTE: operations like `load*` and `play*` will fail if not in the
+  /// main isolate.
+  ///
   /// The result will be `false` in all the following cases:
   ///
   /// - the engine was never initialized
@@ -269,9 +292,15 @@ interface class SoLoud {
   /// Use [isInitialized] only if you want to check the current status of
   /// the engine synchronously and you don't care that it might be ready soon.
   bool get isInitialized =>
+      _isMainIsolate &&
       _nativeCallbacksInitialized &&
       _controller.soLoudFFI.isInited() &&
       _loader.isInitialized;
+
+  /// Whether this is the main isolate. Always true on web: there are no
+  /// isolates there and accessing the root isolate token throws an
+  /// [UnsupportedError].
+  bool get _isMainIsolate => kIsWeb || ServicesBinding.rootIsolateToken != null;
 
   /// Backing of [activeSounds].
   final List<AudioSource> _activeSounds = [];
@@ -345,12 +374,36 @@ interface class SoLoud {
   /// The default value is 2048.
   ///
   /// [channels] mono, stereo, quad, 5.1, 7.1.
+  ///
+  /// [lowLatency] selects the audio backend's performance profile and defaults
+  /// to `true` (the historical behavior). On Android the low-latency profile
+  /// uses AAudio's MMAP path, which cannot be captured by system screen
+  /// recorders and leaves little CPU headroom for heavy filters (e.g. the FFT
+  /// pitch shift). Pass `false` to use the conservative (legacy mixer) profile
+  /// instead: the output becomes capturable by screen recording and gains
+  /// callback headroom for DSP, at the cost of higher output latency. Only the
+  /// native (miniaudio) backends honor this; the Web backend ignores it.
+  ///
+  /// [androidAAudioAttributes] (Android, native, `lowLatency: false` only)
+  /// controls the AAudio stream's `AudioAttributes`. The default
+  /// [AndroidAAudioAttributes.mediaMusic] tags the stream as `usage = media` /
+  /// `contentType = music` — sensible for a media app and capturable by screen
+  /// recorders. Pass [AndroidAAudioAttributes.unmanaged] if you set the app's
+  /// attributes/focus yourself (e.g. via the `audio_session` plugin): SoLoud
+  /// then leaves usage/contentType unset so they don't fight your
+  /// configuration. Either way the choice is preserved across output-device
+  /// changes. (Note these are the *stream's* attributes; `audio_session`
+  /// controls the *focus request* — for correct ducking they should match.)
+  /// Ignored when `lowLatency` is true, on non-Android platforms, and on web.
   Future<void> init({
     PlaybackDevice? device,
     bool automaticCleanup = false,
     int sampleRate = 44100,
     int bufferSize = 2048,
     Channels channels = Channels.stereo,
+    bool lowLatency = true,
+    AndroidAAudioAttributes androidAAudioAttributes =
+        AndroidAAudioAttributes.mediaMusic,
   }) async {
     final nativeIsInitialized = _controller.soLoudFFI.isInited();
     _log.finest('init() called');
@@ -393,11 +446,18 @@ interface class SoLoud {
       deinit();
     }
 
+    // Must be set before the engine opens the device so the backend picks it
+    // up at stream creation (and re-applies it on device changes).
+    _controller.soLoudFFI.setAndroidAAudioAttributes(
+      androidAAudioAttributes == AndroidAAudioAttributes.mediaMusic,
+    );
+
     final error = _controller.soLoudFFI.initEngine(
       device?.id ?? -1,
       sampleRate,
       bufferSize,
       channels,
+      lowLatency,
     );
     _logPlayerError(error, from: 'initialize() result');
     if (error == PlayerErrors.noError) {
@@ -647,9 +707,18 @@ interface class SoLoud {
   void deinit() {
     _log.finest('deinit() called');
     _nativeCallbacksInitialized = false;
+    if (_controller.soLoudFFI.isMixerOutputCaptureRunning()) {
+      _mixerOutputStreamManager.stop();
+    }
+    // Stop the engine first: natively this stops all sounds, clears the
+    // Dart callback registrations and stops the audio device, joining the
+    // audio thread. Closing the NativeCallable trampolines before this
+    // point races with the audio thread invoking them (voices ending from
+    // the mixing thread) and crashes with "Callback invoked after it has
+    // been deleted".
+    _controller.soLoudFFI.deinit();
     _controller.soLoudFFI.disposeNativeCallables();
     _controller.soLoudFFI.disposeAllSound();
-    _controller.soLoudFFI.deinit();
     _activeSounds.clear();
   }
 
@@ -700,7 +769,10 @@ interface class SoLoud {
             // All instances of the sound have finished.
             soundHandleFound.allInstancesFinishedController.add(null);
           }
-          voiceEndedCompleters[SoundHandle(handle)]?.complete();
+          final voiceEndedCompleter = voiceEndedCompleters[SoundHandle(handle)];
+          if (voiceEndedCompleter != null && !voiceEndedCompleter.isCompleted) {
+            voiceEndedCompleter.complete();
+          }
 
           // if there are no more handles palying and the "autoDispose"
           // parameter has been set, dispose the sound.
@@ -894,9 +966,9 @@ interface class SoLoud {
   /// See the [seek] note problem when using [LoadMode.disk].
   /// The default is [LoadMode.memory].
   ///
-  /// IMPORTANT: on Web [LoadMode.disk] is is overridden to [LoadMode.memory].
-  /// This could cause UI freeze problems for long duration audio files so
-  /// it is recommended to load them when the app starts.
+  /// NOTE: on Web the [mode] parameter is ignored. The audio data is fed
+  /// to the engine in chunks, yielding to the event loop between each
+  /// chunk to keep the UI responsive.
   ///
   /// This is the only choice to load a file when using this plugin on the Web
   /// because browsers cannot read directly files from the loal storage.
@@ -956,6 +1028,95 @@ interface class SoLoud {
         });
   }
 
+  /// Manager for the mixer output capture stream. It is intentionally separate
+  /// from the public API so that the same logic can be reused by
+  /// SoLoudIsolate from non-main isolates.
+  late final _mixerOutputStreamManager = MixerOutputStreamManager(
+    bindings: _controller.soLoudFFI,
+    isReady: () => isInitialized,
+  );
+
+  ////////////////////////////////////////////////////////////////////
+  // Mixer output capture
+  ////////////////////////////////////////////////////////////////////
+
+  /// Captures the master mixer output as a [Stream] of [Uint8List] chunks.
+  ///
+  /// [format] the desired output format. PCM formats are supported on all
+  /// platforms. Compressed formats (Opus, Vorbis, FLAC, WAV) are available when
+  /// the plugin is built with Xiph libraries. The default is PCM F32LE and
+  /// it is the only format that doesn't require conversion (when [sampleRate]
+  /// and [channels] are set to -1) on the native side, so it is
+  /// the most efficient and preferred on mobile.
+  ///
+  /// **WAV caveat:** When [format] is [MixerOutputFormat.wav], the stream emits
+  /// a 44-byte header followed by PCM chunks incrementally, just like the other
+  /// formats. However, the header size fields are placeholders until capture
+  /// stops. To produce a valid WAV file, call [getMixerOutputWavHeader] after
+  /// [stopMixerOutputStream] and overwrite the first 44 bytes of the saved file
+  /// with the returned header.
+  ///
+  /// [sampleRate] the sample rate. Use -1 to follow the engine sample rate.
+  ///
+  /// [channels] the channel count. Use -1 to follow the engine channels.
+  ///
+  /// [bufferSizeBytes] total size of the circular capture buffer.
+  ///
+  /// [notificationThresholdBytes] bytes that must be available before a chunk
+  /// is emitted. Used for compressed formats and for PCM when
+  /// [chunkPCMFrames] is -1; ignored when [chunkPCMFrames] is set.
+  ///
+  /// [chunkPCMFrames] when set, the stream emits fixed-size chunks containing
+  /// exactly this many PCM frames. Only valid for PCM formats; must be at least
+  /// 2048. Set to -1 to disable fixed-size chunking and use
+  /// [notificationThresholdBytes] instead.
+  ///
+  /// Returns a [Stream] that yields captured audio data. The stream is closed
+  /// when [stopMixerOutputStream] is called or when the engine is deinited.
+  @experimental
+  Stream<Uint8List> startMixerOutputStream({
+    MixerOutputFormat format = MixerOutputFormat.pcmF32le,
+    int sampleRate = -1,
+    int channels = -1,
+    int bufferSizeBytes = 1024 * 1024,
+    int notificationThresholdBytes = 4096,
+    int chunkPCMFrames = -1,
+  }) => _mixerOutputStreamManager.start(
+    format: format,
+    sampleRate: sampleRate,
+    channels: channels,
+    bufferSizeBytes: bufferSizeBytes,
+    notificationThresholdBytes: notificationThresholdBytes,
+    chunkPCMFrames: chunkPCMFrames,
+  );
+
+  /// Stops the mixer output capture stream and releases associated resources.
+  @experimental
+  void stopMixerOutputStream() => _mixerOutputStreamManager.stop();
+
+  /// Whether mixer output capture is currently active.
+  @experimental
+  bool get isMixerOutputStreamRunning => _mixerOutputStreamManager.isRunning;
+
+  /// Returns the current 44-byte WAV header for the active mixer output
+  /// capture.
+  ///
+  /// This is only meaningful when the capture format is
+  /// [MixerOutputFormat.wav].
+  /// Because the WAV container stores the total PCM size in its header, the
+  /// header emitted at the start of the stream has placeholder size values.
+  /// The stream emits PCM bytes incrementally like the other formats, but the
+  /// file is not fully valid until the caller overwrites the first 44 bytes
+  /// with the header returned by this method after [stopMixerOutputStream] is
+  /// called.
+  ///
+  /// Returns an empty [Uint8List] if WAV capture is not active or the header
+  /// is unavailable.
+  @experimental
+  Uint8List getMixerOutputWavHeader() {
+    return _mixerOutputStreamManager.getWavHeader();
+  }
+
   /// Set up an audio stream.
   ///
   /// [maxBufferSizeBytes] the max buffer size in **bytes**. When adding audio
@@ -1000,6 +1161,10 @@ interface class SoLoud {
   /// or Vorbis. With this format, the samplerate and channels parameters
   /// are ignored.
   ///
+  /// [autoDispose] if set to true, this source will be automatically disposed
+  /// when all its handles have finished playing. There will be no need to call
+  /// [disposeSource] manually.
+  ///
   /// [onBuffering] a callback that is called when starting to buffer
   /// (isBuffering = true) and when the buffering is done (isBuffering = false).
   /// The callback is called with the `handle` which triggered the event and
@@ -1017,6 +1182,7 @@ interface class SoLoud {
     int sampleRate = 24000,
     Channels channels = Channels.mono,
     BufferType format = BufferType.s16le,
+    bool autoDispose = false,
     void Function(bool isBuffering, int handle, double time)? onBuffering,
     void Function(AudioMetadata)? onMetadata,
   }) {
@@ -1073,7 +1239,8 @@ interface class SoLoud {
       throw SoLoudCppException.fromPlayerError(ret.error);
     }
 
-    final newSound = _addNewSound(ret.error, '', ret.soundHash.hash);
+    final newSound = _addNewSound(ret.error, '', ret.soundHash.hash)
+      ..autoDispose = autoDispose;
     return newSound;
   }
 
@@ -1332,6 +1499,207 @@ interface class SoLoud {
     return e.sizeInBytes;
   }
 
+  /// Set up a pull-based audio stream.
+  ///
+  /// The engine requests encoded data on demand via the [onMoreDataIsNeeded]
+  /// callback. The user fetches the bytes from any source (network, file,
+  /// decryption) and feeds them back with [addPullBufferDataStream].
+  ///
+  /// [bufferSizeBytes] the decoded circular buffer size in **bytes**. This is
+  /// the maximum amount of decoded audio that will be kept in memory. For
+  /// example, 10 MB at 44100 Hz stereo float32 holds roughly 30 seconds of
+  /// audio. Default is 10 MB (1024 * 1024 * 10).
+  ///
+  /// [bufferTriggerPosition] the position inside the decoded circular buffer,
+  /// as a normalized fraction in the range `[0.0, 1.0]`, where
+  /// [onMoreDataIsNeeded] is fired. A value of `0.0` means the callback is
+  /// fired as soon as the buffer has any room (i.e. at the start), `1.0` means
+  /// it is fired only when the buffer is exhausted (at the end), and `0.5`
+  /// means it is fired when playback reaches the middle of the buffer. Values
+  /// outside this range are clamped. Default is `0.8` (request more data when
+  /// the buffer is down to the last 20%).
+  ///
+  /// [sampleRate] the sample rate of the decoded audio. Usually 22050 or
+  /// 44100. Ignored when [format] is [BufferType.auto].
+  ///
+  /// [channels] the number of channels. Ignored when format is
+  /// [BufferType.auto].
+  ///
+  /// [format] audio data format. Options: `f32le`, `s8`, `s16le`, `s32le`, or
+  /// `auto` (MP3, OGG/Opus, OGG/Vorbis, FLAC, WAV are automatically detected).
+  ///
+  /// [audioSizeBytes] total size in **bytes** of the original encoded or PCM
+  /// stream. Used to determine the total audio duration and to request the
+  /// tail chunk for Ogg formats where the duration is not in the header.
+  ///
+  /// [autoDispose] if true, this source will be automatically disposed when
+  /// all its handles have finished playing.
+  ///
+  /// [onBuffering] called when the engine starts buffering or stops buffering.
+  ///
+  /// [onMetadata] called when the stream format is detected and metadata is
+  /// available.
+  ///
+  /// [onAudioDuration] called once the total audio duration has been
+  /// determined.
+  ///
+  /// [onMoreDataIsNeeded] called when the engine needs more encoded audio data.
+  /// The parameter is the byte offset in the original encoded stream. The user
+  /// decides how many bytes to fetch and must call [addPullBufferDataStream]
+  /// to feed the data back.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  @experimental
+  AudioSource setPullBufferStream({
+    int bufferSizeBytes = 1024 * 1024 * 10, // 10 MB
+    double bufferTriggerPosition = 0.8,
+    int sampleRate = 44100,
+    Channels channels = Channels.stereo,
+    BufferType format = BufferType.auto,
+    int audioSizeBytes = 0,
+    bool autoDispose = false,
+    void Function(bool isBuffering, int handle, double time)? onBuffering,
+    void Function(AudioMetadata)? onMetadata,
+    void Function(double duration)? onAudioDuration,
+    void Function(int offset)? onMoreDataIsNeeded,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+
+    if (audioSizeBytes == 0) {
+      throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
+    }
+
+    final ret = SoLoudController().soLoudFFI.setPullBufferStream(
+      bufferSizeBytes,
+      bufferTriggerPosition,
+      sampleRate,
+      channels.count,
+      format.value,
+      audioSizeBytes,
+      onBuffering,
+      onMetadata == null
+          ? null
+          : (dynamic metadata) {
+              final data = kIsWeb
+                  ? NativeAudioMetadata.fromJSPointer(metadata as int)
+                  : (metadata as NativeAudioMetadata).toAudioMetadata();
+              onMetadata(data);
+            },
+      onMoreDataIsNeeded,
+      onAudioDuration,
+    );
+
+    if (ret.error != PlayerErrors.noError) {
+      _logPlayerError(ret.error, from: 'setPullBufferStream() result');
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+
+    final newSound = _addNewSound(ret.error, '', ret.soundHash.hash)
+      ..autoDispose = autoDispose;
+    return newSound;
+  }
+
+  /// Reset the pull buffer stream.
+  ///
+  /// [sound] the pull buffer stream sound.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  @experimental
+  void resetPullBufferStream(AudioSource sound) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final e = SoLoudController().soLoudFFI.resetPullBufferStream(
+      sound.soundHash,
+    );
+
+    if (e != PlayerErrors.noError) {
+      _logPlayerError(e, from: 'resetPullBufferStream() result');
+      throw SoLoudCppException.fromPlayerError(e);
+    }
+  }
+
+  /// Add encoded audio data to a pull buffer stream.
+  ///
+  /// [source] the pull buffer audio source.
+  ///
+  /// [audioChunk] the encoded audio data to add. The format is determined by
+  /// the format parameter passed to [setPullBufferStream].
+  ///
+  /// [offset] the byte offset of this chunk in the original encoded stream,
+  /// or 0 to append the next sequential chunk. Out-of-order chunks are
+  /// supported for special cases like duration probing.
+  ///
+  /// Returns [PlayerErrors.noError] if success.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  ///
+  /// Throws [SoLoudSoundHashNotFoundDartException] if the [source] is not
+  /// found.
+  @experimental
+  PlayerErrors addPullBufferDataStream(
+    AudioSource source,
+    Uint8List audioChunk, {
+    int offset = 0,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+
+    if (audioChunk.isEmpty) {
+      return PlayerErrors.noError;
+    }
+
+    final result = SoLoudController().soLoudFFI.addPullBufferDataStream(
+      source.soundHash.hash,
+      audioChunk,
+      offset: offset,
+    );
+
+    if (result != PlayerErrors.noError) {
+      _logPlayerError(result, from: 'addPullBufferDataStream() result');
+      throw SoLoudCppException.fromPlayerError(result);
+    }
+
+    return result;
+  }
+
+  /// Get the current decoded time range of the pull buffer stream.
+  ///
+  /// [source] the pull buffer stream sound.
+  ///
+  /// Returns the start and end positions, in seconds, of the decoded audio
+  /// currently stored in the pull buffer stream.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  ///
+  /// Throws [SoLoudSoundHashNotFoundDartException] if the [source] is not
+  /// found.
+  @experimental
+  ({PlayerErrors error, Duration startTime, Duration endTime})
+  getPullBufferTimeRange(AudioSource source) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+
+    final result = SoLoudController().soLoudFFI.getPullBufferTimeRange(
+      source.soundHash.hash,
+    );
+
+    if (result.error != PlayerErrors.noError) {
+      _logPlayerError(result.error, from: 'getPullBufferTimeRange() result');
+      throw SoLoudCppException.fromPlayerError(result.error);
+    }
+
+    return (
+      error: result.error,
+      startTime: result.startTime.toDuration(),
+      endTime: result.endTime.toDuration(),
+    );
+  }
+
   /// Load a new sound to be played once or multiple times later, from
   /// an asset.
   ///
@@ -1585,6 +1953,17 @@ interface class SoLoud {
   /// duration also loops at the natural end. Looping requires a source that
   /// can seek back to the start, so [BufferingType.released] is unsupported.
   ///
+  /// **When to use [play] vs [playClocked]:** [play] starts the sound at the
+  /// next output buffer boundary, so it has the lowest possible latency
+  /// (0–1 buffer) and supports [paused] and [looping]. The downside is that
+  /// the start time is quantized to buffer boundaries: sounds launched
+  /// rapidly within the same buffer all start at the same sample and
+  /// "clump" together, and periodic sounds (eg a metronome) get audibly
+  /// irregular spacing, especially with large buffer sizes. Use [playClocked]
+  /// instead when the *timing* of the sounds matters (scheduled or rhythmic
+  /// playback); use [play] for one-shot, reactive sounds where "as soon as
+  /// possible" is the right answer.
+  ///
   /// Returns the [SoundHandle] of the new sound instance.
   ///
   /// **NOTE**: by default, the maximum number of sounds you can play is 16 and
@@ -1647,12 +2026,65 @@ interface class SoLoud {
     return ret.newHandle;
   }
 
-  /// Schedule [sound] to become audible after [delay] on the native output
-  /// sample clock. The native engine prepares and releases the voice; no Dart
-  /// timer is involved in its audible start.
-  SoundHandle playDelayed(
-    AudioSource sound, {
-    required Duration delay,
+  /// Variant of [play] that takes an additional parameter, the time offset
+  /// for the sound.
+  ///
+  /// While the vanilla [play] tries to play sounds as soon as possible,
+  /// [playClocked] will delay the start of sounds so that rapidly launched
+  /// sounds don't all get clumped to the start of the next outgoing sound
+  /// buffer.
+  ///
+  /// [soundTime] is your app's "physics time". The first clocked play (after
+  /// init, or after the physics clock is restarted) anchors that time to the
+  /// audio output clock, leading by two output buffers to keep at least one
+  /// buffer of scheduling slack at any phase and absorb the jitter of the
+  /// caller's clock. Subsequent calls are then scheduled with sample
+  /// accuracy relative to that anchor, so the spacing between sounds matches
+  /// the spacing of the given times even when several calls land inside the
+  /// same output buffer or the buffer size is large.
+  ///
+  /// **Note**: the given times must be monotonically increasing. If the
+  /// engine detects the clock going backwards (eg a new session with its own
+  /// time base) or a jump of more than 2 seconds, it re-anchors to the new
+  /// time. A call whose scheduled time is already in the past plays as soon
+  /// as possible, so make sure to call slightly ahead of time.
+  ///
+  /// **Pros vs [play]:** sample-accurate spacing between sounds (sub-ms),
+  /// independent of the engine buffer size; no clumping of rapidly launched
+  /// sounds; no rhythm drift over time.
+  ///
+  /// **Cons vs [play]:** higher, constant latency (about two output buffers
+  /// behind the given times, by design); the caller must provide a
+  /// monotonically increasing time and call slightly ahead of the scheduled
+  /// time; no `paused` or looping parameters; all clocked calls share
+  /// a single anchor, so they must use the same time base.
+  ///
+  /// Example of use for a metronome:
+  /// ```dart
+  /// var physicsTime = Duration.zero;
+  /// Timer.periodic(const Duration(milliseconds: 100), (_) {
+  ///   physicsTime += const Duration(milliseconds: 100);
+  ///   SoLoud.instance.playClocked(tickSound, physicsTime);
+  /// });
+  /// ```
+  ///
+  /// [busId] if not 0, the sound will be played on the mixing bus with this
+  /// ID instead of the main engine. See [Bus.playClocked].
+  ///
+  /// The rest of the parameters are equivalent to [play].
+  ///
+  /// Returns the [SoundHandle] of the new sound instance.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  ///
+  /// Throws [SoLoudBufferStreamCanBePlayedOnlyOnceCppException] if we try to
+  /// play a BufferStream using `release` buffer type more than once.
+  ///
+  /// Throws [SoLoudSoundHashNotFoundDartException] if the given [sound]
+  /// is not found.
+  SoundHandle playClocked(
+    AudioSource sound,
+    Duration soundTime, {
     int busId = 0,
     double volume = 1,
     double pan = 0,
@@ -1660,33 +2092,246 @@ interface class SoLoud {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
     }
-    final delaySamples =
-        (delay.inMicroseconds * _sampleRate / Duration.microsecondsPerSecond)
-            .round()
-            .clamp(0, 0xFFFFFFFF);
-    final ret = _controller.soLoudFFI.playDelayed(
+    final ret = _controller.soLoudFFI.playClocked(
       sound.soundHash,
-      delaySamples: delaySamples,
+      soundTime,
       busId: busId,
       volume: volume,
       pan: pan,
     );
-    _logPlayerError(ret.error, from: 'playDelayed()');
+    _logPlayerError(ret.error, from: 'playClocked()');
     if (!(ret.error == PlayerErrors.noError ||
         ret.error == PlayerErrors.maxActiveVoiceCountReached)) {
       throw SoLoudCppException.fromPlayerError(ret.error);
     }
 
     final filtered = _activeSounds
-        .where((activeSound) => activeSound.soundHash == sound.soundHash)
+        .where((s) => s.soundHash == sound.soundHash)
         .toSet();
     if (filtered.isEmpty) {
+      _log.severe(
+        () => 'playClocked(): soundHash ${sound.soundHash} not found',
+      );
       throw SoLoudSoundHashNotFoundDartException(sound.soundHash);
     }
+
+    assert(filtered.length == 1, 'Duplicate sounds found');
     for (final activeSound in filtered) {
       activeSound.handlesInternal.add(ret.newHandle);
     }
+
     return ret.newHandle;
+  }
+
+  /// Set the number of samples to delay before starting to play a sound.
+  ///
+  /// This is used internally by [playClocked]. In the unlikely event that
+  /// you may want to use it manually, it's available here:
+  /// ```dart
+  /// final handle = SoLoud.instance.play(sound, paused: true);
+  /// SoLoud.instance.setDelaySamples(handle, 44100); // delay for a second
+  /// SoLoud.instance.setPause(handle, false);
+  /// ```
+  ///
+  /// **Note**: calling this on a "live" voice will cause silence to be
+  /// inserted at the start of the next audio buffer. Since this is rather
+  /// unpredictable (as audio buffer sizes may vary), it's not recommended,
+  /// even if it may be a rather funky effect.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  void setDelaySamples(SoundHandle handle, int samples) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    _controller.soLoudFFI.setDelaySamples(handle, samples);
+  }
+
+  /// Get the current stream time of a voice identified by its [handle].
+  ///
+  /// Returns [Duration.zero] if [handle] is invalid.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  Duration getStreamTime(SoundHandle handle) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    return _controller.soLoudFFI.getStreamTime(handle);
+  }
+
+  /// Reset the clock used by [playClocked] and [play3dClocked] to the state
+  /// as if they were never called.
+  ///
+  /// The next clocked play will anchor the given "physics time" to the
+  /// audio clock again (leading by two output buffers). This is useful when
+  /// starting a new scheduling session or when resuming a clock that was
+  /// paused for a while: without a reset, the first calls after the pause
+  /// would still be placed against the old anchor (playing as soon as
+  /// possible until the gap exceeds ~2 seconds and the engine re-anchors by
+  /// itself).
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  void resetStreamTime() {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    _controller.soLoudFFI.resetStreamTime();
+  }
+
+  /// Get the engine's global stream time.
+  ///
+  /// This is the clock the mixer advances at the start of every output
+  /// buffer and the time base used by [playScheduled], [stopScheduled] and
+  /// [fadeScheduled]. Read it once, then schedule a batch of sounds against
+  /// it — everything lands sample-accurately on the engine's own timeline.
+  ///
+  /// **Note**: the engine time only advances while the audio device is
+  /// mixing. A pending [playScheduled] voice keeps the device running, so
+  /// the clock keeps advancing while anything is scheduled.
+  ///
+  /// Not to be confused with [getStreamTime], which returns the stream
+  /// time of a single voice.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  Duration getEngineTime() {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    return _controller.soLoudFFI.getEngineTime();
+  }
+
+  /// Start playing [sound] at an absolute engine time (see [getEngineTime]),
+  /// with sample accuracy.
+  ///
+  /// While [play] starts sounds as soon as possible and [playClocked]
+  /// schedules sounds relative to your own "physics time" (within a ~2
+  /// seconds window), [playScheduled] pins the start to the engine's own
+  /// clock with no anchor and no time-window limit, so sounds can be
+  /// scheduled arbitrarily far in the future. An [atTime] in the past
+  /// plays as soon as possible.
+  ///
+  /// The typical workflow is to read [getEngineTime] once and schedule a
+  /// batch of sounds against it (think score or "playback manifest"
+  /// playback):
+  /// ```dart
+  /// final now = SoLoud.instance.getEngineTime();
+  /// for (final note in upcomingNotes) {
+  ///   final atTime = now + note.offsetFromNow;
+  ///   final handle = SoLoud.instance.playScheduled(
+  ///     note.audioSource,
+  ///     atTime,
+  ///     duration: note.duration,
+  ///   );
+  /// }
+  /// ```
+  ///
+  /// [atTime] the absolute engine time at which the sound should start.
+  ///
+  /// [duration] if provided, the sound is automatically stopped at
+  /// [atTime] + [duration], scheduled atomically on the native side in the
+  /// same call (unlike [scheduleStop], which measures from call time). The
+  /// cutoff is sample-accurate, so durations shorter than one output
+  /// buffer are honored.
+  ///
+  /// [busId] if not 0, the sound will be played on the mixing bus with this
+  /// ID instead of the main engine. See [Bus.playScheduled].
+  ///
+  /// The rest of the parameters are equivalent to [play].
+  ///
+  /// Returns the [SoundHandle] of the new sound instance. The handle can be
+  /// used to cancel a still-pending sound with [stop].
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  ///
+  /// Throws [SoLoudBufferStreamCanBePlayedOnlyOnceCppException] if we try to
+  /// play a BufferStream using `release` buffer type more than once.
+  ///
+  /// Throws [SoLoudSoundHashNotFoundDartException] if the given [sound]
+  /// is not found.
+  SoundHandle playScheduled(
+    AudioSource sound,
+    Duration atTime, {
+    Duration? duration,
+    int busId = 0,
+    double volume = 1,
+    double pan = 0,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final ret = _controller.soLoudFFI.playScheduled(
+      sound.soundHash,
+      atTime,
+      duration: duration ?? Duration.zero,
+      busId: busId,
+      volume: volume,
+      pan: pan,
+    );
+    _logPlayerError(ret.error, from: 'playScheduled()');
+    if (!(ret.error == PlayerErrors.noError ||
+        ret.error == PlayerErrors.maxActiveVoiceCountReached)) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+
+    final filtered = _activeSounds
+        .where((s) => s.soundHash == sound.soundHash)
+        .toSet();
+    if (filtered.isEmpty) {
+      _log.severe(
+        () => 'playScheduled(): soundHash ${sound.soundHash} not found',
+      );
+      throw SoLoudSoundHashNotFoundDartException(sound.soundHash);
+    }
+
+    assert(filtered.length == 1, 'Duplicate sounds found');
+    for (final activeSound in filtered) {
+      activeSound.handlesInternal.add(ret.newHandle);
+    }
+
+    return ret.newHandle;
+  }
+
+  /// Stop [handle] at an absolute engine time (see [getEngineTime]).
+  ///
+  /// Unlike [scheduleStop], which measures from the time of the call, this
+  /// is pinned to the engine clock, so it composes with sounds whose start
+  /// is itself scheduled in the future (see [playScheduled]). An [atTime]
+  /// in the past stops the sound immediately. The stop is sample-accurate:
+  /// it is not quantized to output buffer boundaries.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  void stopScheduled(SoundHandle handle, Duration atTime) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    _controller.soLoudFFI.stopScheduled(handle, atTime);
+  }
+
+  /// Fade the volume of [handle] starting at an absolute engine time
+  /// (see [getEngineTime]).
+  ///
+  /// The fade goes from the volume the sound has at call time to [to] over
+  /// [time]. If [thenStop] is true, the sound is stopped when the fade
+  /// ends (at [atTime] + [time]). An [atTime] in the past starts the fade
+  /// immediately, like [fadeVolume].
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  void fadeScheduled(
+    SoundHandle handle,
+    Duration atTime,
+    double to,
+    Duration time, {
+    bool thenStop = false,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    _controller.soLoudFFI.fadeScheduled(
+      handle,
+      atTime,
+      to,
+      time,
+      thenStop: thenStop,
+    );
   }
 
   /// A simpler way to process the loading of the sound and then play it.
@@ -1868,7 +2513,7 @@ interface class SoLoud {
             'This is not expected but not blocking. Worth to file a bug with '
             'a simple reproducible code.',
           );
-          voiceEndedCompleters[handle]?.complete();
+          if (!completer.isCompleted) completer.complete();
         })
         .whenComplete(() {
           voiceEndedCompleters.removeWhere((key, __) => key == handle);
@@ -1925,6 +2570,12 @@ interface class SoLoud {
 
     /// remove all sounds
     _activeSounds.clear();
+  }
+
+  /// Query whether [source] is a valid audio source.
+  ///
+  bool isValidAudioSource(AudioSource source) {
+    return _activeSounds.contains(source);
   }
 
   /// Query whether a sound (supplied via [handle]) is set to loop.
@@ -1988,6 +2639,8 @@ interface class SoLoud {
   /// Get the exclusive loop end point of a currently playing sound.
   ///
   /// Returns `null` when the sound loops at its natural end.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
   Duration? getLoopEndPoint(SoundHandle handle) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -1998,6 +2651,13 @@ interface class SoLoud {
   /// Set the exclusive loop end point of a currently playing sound.
   ///
   /// Set [time] to `null` to loop at the sound's natural end.
+  /// Getters reflect the requested region immediately. Playback applies a
+  /// live change at the next source refill, so up to 512 already-decoded
+  /// source frames, plus backend latency, can still use the previous region.
+  /// Pass loop bounds to [play] or [play3d] when they must apply before the
+  /// first decoded sample.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
   void setLoopEndPoint(SoundHandle handle, Duration? time) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -2435,10 +3095,12 @@ interface class SoLoud {
   /// clipping. The default number of maximum concurrent voices is 16,
   /// but this can be adjusted at runtime using [setMaxActiveVoiceCount].
   ///
-  /// The hard maximum count is 4095, but if more are
-  /// required, SoLoud can be modified to support more. But seriously, if you
-  /// need more than 4095 sounds playing _at once_,
-  /// you're probably going to need some serious changes anyway.
+  /// The hard maximum count is 1023 (the engine's internal voice pool,
+  /// `VOICE_COUNT`, holds 1024 voices). Passing a value of 0 or greater than
+  /// 1023 is rejected by the native engine and silently ignored, leaving the
+  /// previous count unchanged. But seriously, if you need more than 1023
+  /// sounds playing _at once_, you're probably going to need some serious
+  /// changes anyway.
   ///
   /// See also:
   ///
@@ -2966,6 +3628,11 @@ interface class SoLoud {
   /// The rest of the parameters are equivalent to the non-3D version of this
   /// method ([play]).
   ///
+  /// As with [play], the start of the sound is quantized to output buffer
+  /// boundaries. Use [play3dClocked] when the *timing* of the sounds matters
+  /// (scheduled or rhythmic playback); use [play3d] for one-shot, reactive
+  /// 3D sounds where the lowest latency is preferred.
+  ///
   /// Returns the [SoundHandle] of this new sound.
   ///
   /// **Note**: by default, the maximum number of sounds you can play is 16 and
@@ -2997,7 +3664,6 @@ interface class SoLoud {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
     }
-
     validateLoopRegion(start: loopingStartAt, end: loopingEndAt);
 
     final ret = _controller.soLoudFFI.play3d(
@@ -3035,6 +3701,89 @@ interface class SoLoud {
       activeSound.handlesInternal.add(ret.newHandle);
     }
     sound.handlesInternal.add(ret.newHandle);
+    return ret.newHandle;
+  }
+
+  /// play3dClocked() is the 3d version of the [playClocked] call.
+  ///
+  /// Instead of panning like with the "2d" version of the call, the 3d
+  /// version requires 3d position and optionally velocity vector. Like its
+  /// 2d version, this one delays the start of the sound based on the
+  /// [soundTime] parameter, so that firing off sounds rapidly won't cause
+  /// the sounds to "clump" together at the start of the next sound buffer.
+  ///
+  /// [soundTime] is your app's "physics time". The engine will use that time
+  /// (as well as the time previously used) to calculate the delay between
+  /// two sound effects.
+  ///
+  /// The scheduling behavior and the pros/cons versus [play3d] are the same
+  /// as for [playClocked] (see its documentation): sample-accurate spacing
+  /// at the cost of a constant ~2 output buffers of latency, a monotonically
+  /// increasing time to provide, and no paused/looping parameters.
+  ///
+  /// [busId] if not 0, the sound will be played on the mixing bus with this
+  /// ID instead of the main engine. See [Bus.play3dClocked].
+  ///
+  /// The rest of the parameters are equivalent to [play3d].
+  ///
+  /// Returns the [SoundHandle] of this new sound.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  ///
+  /// Throws [SoLoudBufferStreamCanBePlayedOnlyOnceCppException] if we try to
+  /// play a BufferStream using `release` buffer type more than once.
+  ///
+  /// Throws [SoLoudSoundHashNotFoundDartException] if the given [sound]
+  /// is not found.
+  SoundHandle play3dClocked(
+    AudioSource sound,
+    Duration soundTime,
+    double posX,
+    double posY,
+    double posZ, {
+    double velX = 0,
+    double velY = 0,
+    double velZ = 0,
+    int busId = 0,
+    double volume = 1,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+
+    final ret = _controller.soLoudFFI.play3dClocked(
+      sound.soundHash,
+      soundTime,
+      posX,
+      posY,
+      posZ,
+      velX: velX,
+      velY: velY,
+      velZ: velZ,
+      busId: busId,
+      volume: volume,
+    );
+
+    _logPlayerError(ret.error, from: 'play3dClocked()');
+    if (!(ret.error == PlayerErrors.noError ||
+        ret.error == PlayerErrors.maxActiveVoiceCountReached)) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+
+    final filtered = _activeSounds
+        .where((s) => s.soundHash == sound.soundHash)
+        .toSet();
+    if (filtered.isEmpty) {
+      _log.severe(
+        () => 'play3dClocked(): soundHash ${sound.soundHash} not found',
+      );
+      throw SoLoudSoundHashNotFoundDartException(sound.soundHash);
+    }
+
+    assert(filtered.length == 1, 'Duplicate sounds found');
+    for (final activeSound in filtered) {
+      activeSound.handlesInternal.add(ret.newHandle);
+    }
     return ret.newHandle;
   }
 

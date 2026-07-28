@@ -1,5 +1,8 @@
 #include "soloud_common.h"
 #include "player.h"
+#include "capture/capture_session.h"
+#include "audiobuffer/circular_float_buffer.h"
+#include "audiobuffer/pull_buffer_stream.h"
 #include "filters/filters.h"
 #include "soloud.h"
 #include "soloud/include/soloud.h"
@@ -15,23 +18,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <new>
 #include <random>
 #include <thread>
-
-#if !defined(NO_XIPH_LIBS)
-#include <FLAC/stream_encoder.h>
-#endif
-
-#if !defined(NO_WAVPACK_LIBS)
-#if defined(__APPLE__)
-#define ChunkHeader WavpackChunkHeader
-#endif
-#include "wavpack/include/wavpack.h"
-#if defined(__APPLE__)
-#undef ChunkHeader
-#endif
-#endif
 
 #ifdef _IS_WIN_
 #include <stddef.h> // for size_t
@@ -45,355 +33,148 @@
 #define __WEB__ 0
 #endif
 
-namespace SoLoud {
-extern ma_context context;
+namespace SoLoud
+{
+    extern ma_context context;
 }
 
-namespace {
-constexpr unsigned int kOggXiphBufferStreamMaxBytes = 512u * 1024u * 1024u;
-
-bool readFileBytes(const std::string &filePath,
-                   std::vector<unsigned char> &bytes)
+namespace
 {
-    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
-    if (!file.good()) {
-        return false;
-    }
+    constexpr unsigned int kOggXiphBufferStreamMaxBytes = 512u * 1024u * 1024u;
 
-    const std::streamoff fileSize = file.tellg();
-    if (fileSize <= 0) {
-        return false;
-    }
-
-    bytes.resize(static_cast<size_t>(fileSize));
-    file.seekg(0, std::ios::beg);
-    file.read(reinterpret_cast<char *>(bytes.data()), fileSize);
-    return file.gcount() == fileSize;
-}
-
-bool isOggXiphBytes(const std::vector<unsigned char> &bytes)
-{
-    if (bytes.size() < 35 || std::memcmp(bytes.data(), "OggS", 4) != 0) {
-        return false;
-    }
-
-    size_t scanOffset = 0;
-    const size_t scanLimit = std::min(bytes.size(), static_cast<size_t>(64 * 1024));
-    while (scanOffset + 27 < scanLimit) {
-        if (std::memcmp(bytes.data() + scanOffset, "OggS", 4) != 0) {
-            ++scanOffset;
-            continue;
-        }
-
-        const uint8_t segmentCount = bytes[scanOffset + 26];
-        const size_t segmentTableOffset = scanOffset + 27;
-        if (segmentTableOffset + segmentCount > scanLimit) {
+    bool readFileBytes(const std::string &filePath,
+                       std::vector<unsigned char> &bytes)
+    {
+        std::ifstream file(filePath, std::ios::binary | std::ios::ate);
+        if (!file.good())
+        {
             return false;
         }
 
-        size_t payloadSize = 0;
-        for (uint8_t i = 0; i < segmentCount; ++i) {
-            payloadSize += bytes[segmentTableOffset + i];
-        }
-
-        const size_t payloadOffset = segmentTableOffset + segmentCount;
-        if (payloadOffset + payloadSize > bytes.size()) {
+        const std::streamoff fileSize = file.tellg();
+        if (fileSize <= 0)
+        {
             return false;
         }
 
-        if (payloadSize >= 8 &&
-            std::memcmp(bytes.data() + payloadOffset, "OpusHead", 8) == 0) {
-            return true;
-        }
-
-        if (payloadSize >= 13 &&
-            std::memcmp(bytes.data() + payloadOffset + 1, "FLAC", 4) == 0 &&
-            std::memcmp(bytes.data() + payloadOffset + 9, "fLaC", 4) == 0) {
-            return true;
-        }
-
-        scanOffset = payloadOffset + payloadSize;
+        bytes.resize(static_cast<size_t>(fileSize));
+        file.seekg(0, std::ios::beg);
+        file.read(reinterpret_cast<char *>(bytes.data()), fileSize);
+        return file.gcount() == fileSize;
     }
 
-    return false;
-}
-
-PlayerErrors loadOggXiphBufferStream(Player *player,
-                                     ActiveSound *activeSound,
-                                     const std::vector<unsigned char> &bytes)
-{
-    if (player == nullptr || activeSound == nullptr || bytes.empty()) {
-        return invalidParameter;
-    }
-
-    activeSound->sound = std::make_unique<SoLoud::BufferStream>();
-    activeSound->soundType = TYPE_BUFFER_STREAM;
-    PCMformat pcmFormat = {player->mSampleRate, player->mChannels, 4, AUTO};
-    auto *bufferStream =
-        static_cast<SoLoud::BufferStream *>(activeSound->sound.get());
-    PlayerErrors error = bufferStream->setBufferStream(
-        player,
-        activeSound,
-        kOggXiphBufferStreamMaxBytes,
-        BufferingType::PRESERVED,
-        0.0f,
-        pcmFormat);
-    if (error != noError) {
-        return error;
-    }
-
-    error = bufferStream->addData(bytes.data(),
-                                  static_cast<unsigned int>(bytes.size()));
-    if (error != noError) {
-        return error;
-    }
-
-    bufferStream->setDataIsEnded();
-    if (bufferStream->getLength() <= 0.0) {
-        return fileLoadFailed;
-    }
-
-    return noError;
-}
-
-bool writeBytes(FILE *file, const void *data, size_t size) {
-    return file != nullptr && fwrite(data, 1, size, file) == size;
-}
-
-bool writeU16le(FILE *file, uint16_t value) {
-    const unsigned char bytes[2] = {
-        static_cast<unsigned char>(value & 0xff),
-        static_cast<unsigned char>((value >> 8) & 0xff),
-    };
-    return writeBytes(file, bytes, sizeof(bytes));
-}
-
-bool writeU32le(FILE *file, uint32_t value) {
-    const unsigned char bytes[4] = {
-        static_cast<unsigned char>(value & 0xff),
-        static_cast<unsigned char>((value >> 8) & 0xff),
-        static_cast<unsigned char>((value >> 16) & 0xff),
-        static_cast<unsigned char>((value >> 24) & 0xff),
-    };
-    return writeBytes(file, bytes, sizeof(bytes));
-}
-
-uint32_t clampWavSize(uint64_t value) {
-    return value > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(value);
-}
-
-int32_t floatToPcmSample(float sample, unsigned int bitsPerSample) {
-    if (!std::isfinite(sample))
-        sample = 0.0f;
-    const float clamped = std::clamp(sample, -1.0f, 1.0f);
-    const int32_t maxValue =
-        static_cast<int32_t>((uint32_t{1} << (bitsPerSample - 1)) - 1);
-    const int32_t minValue =
-        -static_cast<int32_t>(uint32_t{1} << (bitsPerSample - 1));
-    const int64_t scaled =
-        static_cast<int64_t>(std::lrintf(clamped * maxValue));
-    return static_cast<int32_t>(
-        std::clamp<int64_t>(scaled, minValue, maxValue));
-}
-
-unsigned int normalizeCaptureMirrorBits(unsigned int mirrorFormat,
-                                        unsigned int bitsPerSample)
-{
-    if (mirrorFormat == captureMirrorWavPack) {
-        if (bitsPerSample == 16 || bitsPerSample == 24 || bitsPerSample == 32) {
-            return bitsPerSample;
-        }
-        return 24;
-    }
-    if (mirrorFormat == captureMirrorFlac) {
-        return bitsPerSample == 16 ? 16 : 24;
-    }
-    return 0;
-}
-
-#if !defined(NO_WAVPACK_LIBS)
-struct CaptureWavPackMirrorEncoder {
-    WavpackContext *context = nullptr;
-    FILE *file = nullptr;
-    unsigned int channels = 0;
-    unsigned int bitsPerSample = 0;
-    bool isFloat = false;
-    bool failed = false;
-    std::vector<int32_t> sampleBuffer;
-};
-
-int wavPackWriteBlock(void *id, void *data, int32_t length)
-{
-    CaptureWavPackMirrorEncoder *encoder =
-        static_cast<CaptureWavPackMirrorEncoder *>(id);
-    if (encoder == nullptr || encoder->file == nullptr || data == nullptr ||
-        length <= 0 || encoder->failed) {
-        return 0;
-    }
-    const size_t written = fwrite(data, 1, static_cast<size_t>(length),
-                                  encoder->file);
-    if (written != static_cast<size_t>(length)) {
-        encoder->failed = true;
-        return 0;
-    }
-    return 1;
-}
-
-uint32_t captureWavPackChannelMask(unsigned int channels)
-{
-    if (channels == 1) {
-        return 0x4;
-    }
-    if (channels == 2) {
-        return 0x3;
-    }
-    if (channels >= 32) {
-        return 0;
-    }
-    return (uint32_t{1} << channels) - 1;
-}
-
-bool prepareWavPackCaptureMirror(const std::string &filePath,
-                                 unsigned int sampleRate,
-                                 unsigned int channels,
-                                 unsigned int bitsPerSample,
-                                 void **outEncoder)
-{
-    if (outEncoder == nullptr || filePath.empty() || sampleRate == 0 ||
-        channels == 0 ||
-        (bitsPerSample != 16 && bitsPerSample != 24 && bitsPerSample != 32)) {
-        return false;
-    }
-
-    CaptureWavPackMirrorEncoder *encoder =
-        new (std::nothrow) CaptureWavPackMirrorEncoder();
-    if (encoder == nullptr) {
-        return false;
-    }
-
-    encoder->channels = channels;
-    encoder->bitsPerSample = bitsPerSample;
-    encoder->isFloat = bitsPerSample == 32;
-    encoder->file = fopen(filePath.c_str(), "wb");
-    if (encoder->file == nullptr) {
-        delete encoder;
-        return false;
-    }
-
-    encoder->context = WavpackOpenFileOutput(wavPackWriteBlock, encoder,
-                                             nullptr);
-    if (encoder->context == nullptr) {
-        fclose(encoder->file);
-        delete encoder;
-        return false;
-    }
-
-    WavpackConfig config;
-    memset(&config, 0, sizeof(config));
-    config.sample_rate = static_cast<int32_t>(sampleRate);
-    config.num_channels = static_cast<int>(channels);
-    config.bits_per_sample = static_cast<int>(bitsPerSample);
-    config.bytes_per_sample = static_cast<int>((bitsPerSample + 7) / 8);
-    config.channel_mask = static_cast<int32_t>(
-        captureWavPackChannelMask(channels));
-    if (encoder->isFloat) {
-        config.float_norm_exp = 127;
-    }
-
-    if (!WavpackSetConfiguration64(encoder->context, &config, -1, nullptr) ||
-        !WavpackPackInit(encoder->context)) {
-        WavpackCloseFile(encoder->context);
-        fclose(encoder->file);
-        delete encoder;
-        return false;
-    }
-
-    *outEncoder = encoder;
-    return true;
-}
-
-bool encodeWavPackCaptureMirror(void *opaqueEncoder, const float *samples,
-                                ma_uint32 frameCount)
-{
-    CaptureWavPackMirrorEncoder *encoder =
-        static_cast<CaptureWavPackMirrorEncoder *>(opaqueEncoder);
-    if (encoder == nullptr || encoder->context == nullptr ||
-        samples == nullptr || frameCount == 0 || encoder->channels == 0) {
-        return false;
-    }
-
-    const size_t sampleCount =
-        static_cast<size_t>(frameCount) * encoder->channels;
-    if (encoder->sampleBuffer.size() < sampleCount) {
-        try {
-            encoder->sampleBuffer.resize(sampleCount);
-        } catch (...) {
-            encoder->failed = true;
+    bool isOggXiphBytes(const std::vector<unsigned char> &bytes)
+    {
+        if (bytes.size() < 35 || std::memcmp(bytes.data(), "OggS", 4) != 0)
+        {
             return false;
         }
-    }
 
-    for (size_t i = 0; i < sampleCount; ++i) {
-        if (encoder->isFloat) {
-            float sample = std::isfinite(samples[i]) ? samples[i] : 0.0f;
-            sample = std::clamp(sample, -1.0f, 1.0f);
-            memcpy(&encoder->sampleBuffer[i], &sample, sizeof(sample));
-        } else {
-            encoder->sampleBuffer[i] =
-                floatToPcmSample(samples[i], encoder->bitsPerSample);
+        size_t scanOffset = 0;
+        const size_t scanLimit = std::min(bytes.size(), static_cast<size_t>(64 * 1024));
+        while (scanOffset + 27 < scanLimit)
+        {
+            if (std::memcmp(bytes.data() + scanOffset, "OggS", 4) != 0)
+            {
+                ++scanOffset;
+                continue;
+            }
+
+            const uint8_t segmentCount = bytes[scanOffset + 26];
+            const size_t segmentTableOffset = scanOffset + 27;
+            if (segmentTableOffset + segmentCount > scanLimit)
+            {
+                return false;
+            }
+
+            size_t payloadSize = 0;
+            for (uint8_t i = 0; i < segmentCount; ++i)
+            {
+                payloadSize += bytes[segmentTableOffset + i];
+            }
+
+            const size_t payloadOffset = segmentTableOffset + segmentCount;
+            if (payloadOffset + payloadSize > bytes.size())
+            {
+                return false;
+            }
+
+            if (payloadSize >= 8 &&
+                std::memcmp(bytes.data() + payloadOffset, "OpusHead", 8) == 0)
+            {
+                return true;
+            }
+
+            if (payloadSize >= 13 &&
+                std::memcmp(bytes.data() + payloadOffset + 1, "FLAC", 4) == 0 &&
+                std::memcmp(bytes.data() + payloadOffset + 9, "fLaC", 4) == 0)
+            {
+                return true;
+            }
+
+            scanOffset = payloadOffset + payloadSize;
         }
-    }
 
-    if (!WavpackPackSamples(encoder->context, encoder->sampleBuffer.data(),
-                            frameCount)) {
-        encoder->failed = true;
         return false;
     }
-    return true;
-}
 
-bool finishWavPackCaptureMirror(void *opaqueEncoder)
-{
-    CaptureWavPackMirrorEncoder *encoder =
-        static_cast<CaptureWavPackMirrorEncoder *>(opaqueEncoder);
-    if (encoder == nullptr) {
-        return false;
-    }
-
-    bool succeeded = !encoder->failed;
-    if (encoder->context != nullptr) {
-        succeeded = WavpackFlushSamples(encoder->context) && succeeded;
-    }
-    if (encoder->file != nullptr && fflush(encoder->file) != 0) {
-        succeeded = false;
-    }
-    if (encoder->context != nullptr) {
-        WavpackCloseFile(encoder->context);
-        encoder->context = nullptr;
-    }
-    if (encoder->file != nullptr) {
-        if (fclose(encoder->file) != 0) {
-            succeeded = false;
+    PlayerErrors loadOggXiphBufferStream(Player *player,
+                                         ActiveSound *activeSound,
+                                         const std::vector<unsigned char> &bytes)
+    {
+        if (player == nullptr || activeSound == nullptr || bytes.empty())
+        {
+            return invalidParameter;
         }
-        encoder->file = nullptr;
+
+        activeSound->sound = std::make_unique<SoLoud::BufferStream>();
+        activeSound->soundType = TYPE_BUFFER_STREAM;
+        PCMformat pcmFormat = {player->mSampleRate, player->mChannels, 4, AUTO};
+        auto *bufferStream =
+            static_cast<SoLoud::BufferStream *>(activeSound->sound.get());
+        PlayerErrors error = bufferStream->setBufferStream(
+            player,
+            activeSound,
+            kOggXiphBufferStreamMaxBytes,
+            BufferingType::PRESERVED,
+            0.0f,
+            pcmFormat);
+        if (error != noError)
+        {
+            return error;
+        }
+
+        error = bufferStream->addData(bytes.data(),
+                                      static_cast<unsigned int>(bytes.size()));
+        if (error != noError)
+        {
+            return error;
+        }
+
+        bufferStream->setDataIsEnded();
+        return noError;
     }
-    delete encoder;
-    return succeeded;
-}
-#endif
 }
 
 Player::Player() : mInited(false), mFilters(&soloud, nullptr, nullptr),
+                   mCaptureSession(std::make_unique<CaptureSession>(*this)),
                    mPauseRequested(false), mStopPauseThread(false),
                    mPauseThreadRunning(false)
 {
 }
 
-Player::~Player() {
+Player::~Player()
+{
     // If the scheduler was started, stop it before touching Soloud.
     stopPauseEngineScheduler();
 
-    if (!mInited) {
+    // Capture owns an independent miniaudio device and writer thread. It must
+    // always be stopped, including when SoLoud was never initialized or was
+    // already disposed.
+    cancelCapture();
+
+    if (!mInited)
+    {
         // dispose() was called properly — Soloud is already deinited and safe.
         // Let ~Soloud() run normally to free its remaining allocations.
         return;
@@ -411,20 +192,21 @@ Player::~Player() {
     soloud.mVoiceGroupCount = 0;
     soloud.mResampleData = nullptr;
     soloud.mResampleDataOwner = nullptr;
-    for (int i = 0; i < FILTERS_PER_STREAM; i++) {
+    for (int i = 0; i < FILTERS_PER_STREAM; i++)
+    {
         soloud.mFilterInstance[i] = nullptr;
     }
 }
 
-void Player::dispose() {
+void Player::dispose()
+{
     if (!mInited)
         return;
-
-    cancelCapture();
 
     // Stop accepting new pause requests and wake the scheduler so it exits.
     stopPauseEngineScheduler();
 
+    cancelCapture();
     mInited = false;
 
     // Clean up SoLoud
@@ -447,10 +229,17 @@ void Player::setStateChangedCallback(void (*stateChangedCallback)(unsigned int))
     soloud.setStateChangedCallback(stateChangedCallback);
 }
 
-PlayerErrors Player::init(unsigned int sampleRate, unsigned int bufferSize, unsigned int channels, int deviceID)
+// Defined in the miniaudio backend (soloud_miniaudio.cpp). Forward-declared
+// here so we don't need to pull in the backend-internal header.
+namespace SoLoud { void miniaudio_setLowLatency(bool aLowLatency); }
+
+PlayerErrors Player::init(unsigned int sampleRate, unsigned int bufferSize, unsigned int channels, int deviceID, bool lowLatency)
 {
     if (mInited)
         return playerAlreadyInited;
+
+    // Choose the device performance profile before SoLoud opens the backend.
+    SoLoud::miniaudio_setLowLatency(lowLatency);
 
     void *playbackInfos_id = nullptr;
     if (deviceID != -1)
@@ -465,20 +254,14 @@ PlayerErrors Player::init(unsigned int sampleRate, unsigned int bufferSize, unsi
 
     // initialize SoLoud.
     SoLoud::result result;
-    try {
-        result = soloud.init(
-            0,
-            SoLoud::Soloud::MINIAUDIO, sampleRate, bufferSize, channels, playbackInfos_id);
-        if (result == SoLoud::SO_NO_ERROR)
-        {
-            soloud.setPostClipScaler(1.0f);
-        }
-    } catch (...) {
+    result = soloud.init(0, SoLoud::Soloud::MINIAUDIO, sampleRate, bufferSize, channels, playbackInfos_id);
+    if (result != SoLoud::SO_NO_ERROR)
+    {
         return backendNotInited;
     }
-
-    if (result == SoLoud::SO_NO_ERROR)
+    else
     {
+        soloud.setPostClipScaler(1.0f);
         mInited = true;
         mSampleRate = sampleRate;
         mBufferSize = bufferSize;
@@ -486,8 +269,6 @@ PlayerErrors Player::init(unsigned int sampleRate, unsigned int bufferSize, unsi
         // Start the deferred-pause scheduler now that the engine is in use.
         startPauseEngineScheduler();
     }
-    else
-        result = backendNotInited;
     return (PlayerErrors)result;
 }
 
@@ -500,7 +281,7 @@ PlayerErrors Player::changeDevice(int deviceID)
     auto const devices = listPlaybackDevices();
     if (devices.size() == 0 || deviceID >= devices.size())
         return noPlaybackDevicesFound;
-    
+
     // Use the stored device ID from the PlaybackDevice struct
     void *playbackInfos_id = (void *)&devices[deviceID].deviceId;
 
@@ -555,830 +336,12 @@ std::vector<PlaybackDevice> Player::listPlaybackDevices()
         cd.name = strdup(pPlaybackInfos[i].name);
         cd.isDefault = pPlaybackInfos[i].isDefault;
         cd.id = i;
-        cd.deviceId = pPlaybackInfos[i].id;  // Copy the device ID
+        cd.deviceId = pPlaybackInfos[i].id; // Copy the device ID
         ret.push_back(cd);
     }
     // printf("***************** LIST DEVICES END\n");
     ma_context_uninit(&context);
     return ret;
-}
-
-// List available capture devices.
-std::vector<CaptureDevice> Player::listCaptureDevices()
-{
-    ma_context context;
-    ma_device_info *pPlaybackInfos;
-    ma_uint32 playbackCount;
-    ma_device_info *pCaptureInfos;
-    ma_uint32 captureCount;
-    std::vector<CaptureDevice> ret;
-    ma_result result;
-    if ((result = ma_context_init(NULL, 0, NULL, &context)) != MA_SUCCESS)
-    {
-        return ret;
-    }
-
-    if ((result = ma_context_get_devices(
-             &context,
-             &pPlaybackInfos,
-             &playbackCount,
-             &pCaptureInfos,
-             &captureCount)) != MA_SUCCESS)
-    {
-        printf("Failed to get devices %d\n", result);
-        ma_context_uninit(&context);
-        return ret;
-    }
-
-    for (ma_uint32 i = 0; i < captureCount; i++)
-    {
-        CaptureDevice cd;
-        cd.name = strdup(pCaptureInfos[i].name);
-        cd.isDefault = pCaptureInfos[i].isDefault;
-        cd.id = i;
-        cd.deviceId = pCaptureInfos[i].id;
-        ret.push_back(cd);
-    }
-    ma_context_uninit(&context);
-    return ret;
-}
-
-uint64_t Player::nowHostTimeNanos()
-{
-    const auto now = std::chrono::steady_clock::now().time_since_epoch();
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
-}
-
-void Player::atomicMaxFloat(std::atomic<float> &target, float value)
-{
-    float current = target.load();
-    while (value > current &&
-           !target.compare_exchange_weak(current, value)) {
-    }
-}
-
-bool Player::writeWavHeader(FILE *file, unsigned int sampleRate,
-                            unsigned int channels)
-{
-    if (file == nullptr || sampleRate == 0 || channels == 0)
-        return false;
-
-    const uint16_t audioFormat = 3; // IEEE float.
-    const uint16_t bitsPerSample = 32;
-    const uint16_t blockAlign = static_cast<uint16_t>(channels * sizeof(float));
-    const uint32_t byteRate = sampleRate * blockAlign;
-
-    return writeBytes(file, "RIFF", 4) &&
-           writeU32le(file, 36) &&
-           writeBytes(file, "WAVE", 4) &&
-           writeBytes(file, "fmt ", 4) &&
-           writeU32le(file, 16) &&
-           writeU16le(file, audioFormat) &&
-           writeU16le(file, static_cast<uint16_t>(channels)) &&
-           writeU32le(file, sampleRate) &&
-           writeU32le(file, byteRate) &&
-           writeU16le(file, blockAlign) &&
-           writeU16le(file, bitsPerSample) &&
-           writeBytes(file, "data", 4) &&
-           writeU32le(file, 0);
-}
-
-void Player::finalizeWavHeader(FILE *file, uint64_t dataSizeBytes)
-{
-    if (file == nullptr)
-        return;
-
-    const uint32_t riffSize = clampWavSize(dataSizeBytes + 36);
-    const uint32_t dataSize = clampWavSize(dataSizeBytes);
-    fseek(file, 4, SEEK_SET);
-    writeU32le(file, riffSize);
-    fseek(file, 40, SEEK_SET);
-    writeU32le(file, dataSize);
-    fseek(file, 0, SEEK_END);
-}
-
-void Player::captureDataCallback(ma_device *device, void *output,
-                                 const void *input, ma_uint32 frameCount)
-{
-    (void)output;
-    if (device == nullptr || device->pUserData == nullptr)
-        return;
-
-    Player *player = static_cast<Player *>(device->pUserData);
-    player->handleCaptureFrames(input, frameCount);
-}
-
-void Player::handleCaptureFrames(const void *input, ma_uint32 frameCount)
-{
-    if (!mCaptureRecording || mCaptureFile == nullptr || input == nullptr ||
-        frameCount == 0)
-        return;
-
-    uint64_t expected = 0;
-    const uint64_t currentFrame = mCaptureFrameCount.load();
-    if (mFirstInputBufferHostTimeNanos.compare_exchange_strong(
-            expected, nowHostTimeNanos())) {
-        mFirstInputBufferFrameIndex.store(currentFrame);
-    }
-
-    const size_t samplesToWrite =
-        static_cast<size_t>(frameCount) * mCaptureChannels;
-    const float *samples = static_cast<const float *>(input);
-    if (std::fabs(mCaptureInputGain - 1.0f) >= 0.0001f) {
-        if (mCaptureGainBuffer.size() < samplesToWrite)
-            mCaptureGainBuffer.resize(samplesToWrite);
-        for (size_t i = 0; i < samplesToWrite; ++i)
-            mCaptureGainBuffer[i] = samples[i] * mCaptureInputGain;
-        samples = mCaptureGainBuffer.data();
-    }
-    float peak = 0.0f;
-    double sumSquares = 0.0;
-    for (size_t i = 0; i < samplesToWrite; ++i) {
-        const float sample = samples[i];
-        const float absSample = std::fabs(sample);
-        if (absSample > peak)
-            peak = absSample;
-        sumSquares += static_cast<double>(sample) * sample;
-    }
-    const float rms = samplesToWrite == 0
-        ? 0.0f
-        : static_cast<float>(std::sqrt(sumSquares / samplesToWrite));
-    mCaptureCurrentPeak.store(peak);
-    mCaptureCurrentRms.store(rms);
-    atomicMaxFloat(mCapturePeakSinceLastRead, peak);
-    atomicMaxFloat(mCaptureHeldPeak, peak);
-    enqueueCaptureFrames(samples, frameCount);
-    mCaptureFrameCount.fetch_add(frameCount);
-}
-
-bool Player::startCaptureWriter(unsigned int bufferSizeFrames)
-{
-    stopCaptureWriter();
-
-    if (mCaptureFile == nullptr || mCaptureSampleRate == 0 ||
-        mCaptureChannels == 0 || bufferSizeFrames == 0) {
-        return false;
-    }
-
-    const uint64_t minimumCapacityFrames = std::max<uint64_t>(
-        static_cast<uint64_t>(bufferSizeFrames) * 64,
-        static_cast<uint64_t>(mCaptureSampleRate) * 2);
-    mCaptureWriteCapacitySamples =
-        minimumCapacityFrames * static_cast<uint64_t>(mCaptureChannels);
-
-    try {
-        mCaptureWriteRing.assign(
-            static_cast<size_t>(mCaptureWriteCapacitySamples),
-            0.0f);
-        mCaptureSilenceBuffer.assign(
-            static_cast<size_t>(std::max<unsigned int>(
-                bufferSizeFrames,
-                4096) * mCaptureChannels),
-            0.0f);
-        mCaptureWriteReadSample.store(0);
-        mCaptureWriteWriteSample.store(0);
-        mCaptureWriterStopRequested.store(false);
-        mCaptureWriterFailed.store(false);
-        mCaptureWrittenFrameCount.store(0);
-        mCaptureWriterOverflowFrames.store(0);
-        mCaptureWriterSilenceFrames.store(0);
-        mCapturePendingSilenceFrames.store(0);
-        mCaptureWriterThread = std::thread(&Player::captureWriterLoop, this);
-    } catch (...) {
-        mCaptureWriteRing.clear();
-        mCaptureSilenceBuffer.clear();
-        mCaptureWriteCapacitySamples = 0;
-        return false;
-    }
-
-    return true;
-}
-
-void Player::stopCaptureWriter()
-{
-    mCaptureWriterStopRequested.store(true);
-    mCaptureWriterCondition.notify_one();
-    if (mCaptureWriterThread.joinable()) {
-        mCaptureWriterThread.join();
-    }
-}
-
-bool Player::enqueueCaptureFrames(const float *samples, ma_uint32 frameCount)
-{
-    if (samples == nullptr || frameCount == 0 || mCaptureChannels == 0 ||
-        mCaptureWriteCapacitySamples == 0 || mCaptureWriteRing.empty()) {
-        return false;
-    }
-
-    const uint64_t sampleCount =
-        static_cast<uint64_t>(frameCount) * mCaptureChannels;
-    const uint64_t read =
-        mCaptureWriteReadSample.load(std::memory_order_acquire);
-    const uint64_t write =
-        mCaptureWriteWriteSample.load(std::memory_order_relaxed);
-    const uint64_t used = write - read;
-    const uint64_t freeSamples =
-        used >= mCaptureWriteCapacitySamples
-            ? 0
-            : mCaptureWriteCapacitySamples - used;
-
-    if (sampleCount > freeSamples) {
-        mCaptureWriterOverflowFrames.fetch_add(frameCount);
-        mCapturePendingSilenceFrames.fetch_add(frameCount);
-        mCaptureWriterCondition.notify_one();
-        return false;
-    }
-
-    uint64_t index = write % mCaptureWriteCapacitySamples;
-    uint64_t firstSampleCount =
-        std::min(sampleCount, mCaptureWriteCapacitySamples - index);
-    memcpy(&mCaptureWriteRing[static_cast<size_t>(index)], samples,
-           static_cast<size_t>(firstSampleCount) * sizeof(float));
-
-    const uint64_t remaining = sampleCount - firstSampleCount;
-    if (remaining > 0) {
-        memcpy(mCaptureWriteRing.data(), samples + firstSampleCount,
-               static_cast<size_t>(remaining) * sizeof(float));
-    }
-
-    mCaptureWriteWriteSample.store(write + sampleCount,
-                                   std::memory_order_release);
-    mCaptureWriterCondition.notify_one();
-    return true;
-}
-
-void Player::captureWriterLoop()
-{
-    while (true) {
-        const uint64_t read =
-            mCaptureWriteReadSample.load(std::memory_order_relaxed);
-        const uint64_t write =
-            mCaptureWriteWriteSample.load(std::memory_order_acquire);
-        const uint64_t availableSamples = write - read;
-
-        if (availableSamples > 0 && mCaptureChannels > 0 &&
-            mCaptureWriteCapacitySamples > 0) {
-            const uint64_t index = read % mCaptureWriteCapacitySamples;
-            uint64_t sampleCount =
-                std::min(availableSamples,
-                         mCaptureWriteCapacitySamples - index);
-            sampleCount -= sampleCount % mCaptureChannels;
-            if (sampleCount == 0) {
-                mCaptureWriteReadSample.store(write,
-                                              std::memory_order_release);
-                continue;
-            }
-
-            const ma_uint32 frameCount =
-                static_cast<ma_uint32>(sampleCount / mCaptureChannels);
-            writeCaptureFrames(
-                &mCaptureWriteRing[static_cast<size_t>(index)],
-                frameCount);
-            mCaptureWriteReadSample.store(read + sampleCount,
-                                          std::memory_order_release);
-            continue;
-        }
-
-        const uint64_t pendingSilence =
-            mCapturePendingSilenceFrames.exchange(0);
-        if (pendingSilence > 0) {
-            writeCaptureSilenceFrames(pendingSilence);
-            continue;
-        }
-
-        if (mCaptureWriterStopRequested.load(std::memory_order_acquire)) {
-            break;
-        }
-
-        std::unique_lock<std::mutex> lock(mCaptureWriterConditionMutex);
-        mCaptureWriterCondition.wait_for(lock, std::chrono::milliseconds(5));
-    }
-}
-
-bool Player::writeCaptureFrames(const float *samples, ma_uint32 frameCount)
-{
-    if (samples == nullptr || frameCount == 0 || mCaptureChannels == 0 ||
-        mCaptureFile == nullptr) {
-        return false;
-    }
-
-    const size_t sampleCount =
-        static_cast<size_t>(frameCount) * mCaptureChannels;
-    const size_t bytesToWrite = sampleCount * sizeof(float);
-    if (fwrite(samples, 1, bytesToWrite, mCaptureFile) != bytesToWrite) {
-        mCaptureWriterFailed.store(true);
-        return false;
-    }
-
-    if (mCaptureMirrorActive && !mCaptureMirrorFailed &&
-        !encodeCaptureMirror(samples, frameCount)) {
-        mCaptureMirrorFailed = true;
-        finishCaptureMirror(true);
-    }
-
-    mCaptureWrittenFrameCount.fetch_add(frameCount);
-    return true;
-}
-
-void Player::writeCaptureSilenceFrames(uint64_t frameCount)
-{
-    if (mCaptureChannels == 0 || frameCount == 0 ||
-        mCaptureSilenceBuffer.empty()) {
-        return;
-    }
-
-    const ma_uint32 maxChunkFrames = static_cast<ma_uint32>(
-        std::max<uint64_t>(1, mCaptureSilenceBuffer.size() / mCaptureChannels));
-    while (frameCount > 0) {
-        const ma_uint32 chunkFrames = static_cast<ma_uint32>(
-            std::min<uint64_t>(frameCount, maxChunkFrames));
-        if (!writeCaptureFrames(mCaptureSilenceBuffer.data(), chunkFrames)) {
-            return;
-        }
-        mCaptureWriterSilenceFrames.fetch_add(chunkFrames);
-        frameCount -= chunkFrames;
-    }
-}
-
-bool Player::prepareCaptureMirror(const std::string &mirrorFilePath,
-                                  unsigned int mirrorFormat,
-                                  unsigned int mirrorBitsPerSample)
-{
-    resetCaptureMirrorState();
-    if (mirrorFormat == captureMirrorNone)
-        return true;
-
-    mCaptureMirrorFilePath = mirrorFilePath;
-    mCaptureMirrorFormat = mirrorFormat;
-    mCaptureMirrorBitsPerSample =
-        normalizeCaptureMirrorBits(mirrorFormat, mirrorBitsPerSample);
-
-    if (mirrorFilePath.empty() || mCaptureMirrorBitsPerSample == 0) {
-        mCaptureMirrorFailed = true;
-        return true;
-    }
-
-    if (mirrorFormat == captureMirrorFlac) {
-#if defined(NO_XIPH_LIBS)
-        mCaptureMirrorFailed = true;
-        return true;
-#else
-        FLAC__StreamEncoder *encoder = FLAC__stream_encoder_new();
-        if (encoder == nullptr) {
-            mCaptureMirrorFailed = true;
-            remove(mirrorFilePath.c_str());
-            return true;
-        }
-
-        const bool configured =
-            FLAC__stream_encoder_set_channels(encoder, mCaptureChannels) &&
-            FLAC__stream_encoder_set_sample_rate(encoder, mCaptureSampleRate) &&
-            FLAC__stream_encoder_set_bits_per_sample(
-                encoder, mCaptureMirrorBitsPerSample) &&
-            FLAC__stream_encoder_set_compression_level(encoder, 3);
-        if (!configured) {
-            FLAC__stream_encoder_delete(encoder);
-            mCaptureMirrorFailed = true;
-            remove(mirrorFilePath.c_str());
-            return true;
-        }
-
-        const FLAC__StreamEncoderInitStatus status =
-            FLAC__stream_encoder_init_file(encoder, mirrorFilePath.c_str(),
-                                           nullptr, nullptr);
-        if (status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
-            FLAC__stream_encoder_delete(encoder);
-            mCaptureMirrorFailed = true;
-            remove(mirrorFilePath.c_str());
-            return true;
-        }
-
-        mCaptureMirrorEncoder = encoder;
-        mCaptureMirrorActive = true;
-        mCaptureMirrorFailed = false;
-        mCaptureMirrorFrameCount = 0;
-        return true;
-#endif
-    }
-
-    if (mirrorFormat == captureMirrorWavPack) {
-#if defined(NO_WAVPACK_LIBS)
-        mCaptureMirrorFailed = true;
-        return true;
-#else
-        if (!prepareWavPackCaptureMirror(mirrorFilePath, mCaptureSampleRate,
-                                         mCaptureChannels,
-                                         mCaptureMirrorBitsPerSample,
-                                         &mCaptureMirrorEncoder)) {
-            mCaptureMirrorFailed = true;
-            remove(mirrorFilePath.c_str());
-            return true;
-        }
-        mCaptureMirrorActive = true;
-        mCaptureMirrorFailed = false;
-        mCaptureMirrorFrameCount = 0;
-        return true;
-#endif
-    }
-
-    mCaptureMirrorFailed = true;
-    return true;
-}
-
-bool Player::encodeCaptureMirror(const float *samples, ma_uint32 frameCount)
-{
-    if (!mCaptureMirrorActive || mCaptureMirrorEncoder == nullptr ||
-        samples == nullptr || frameCount == 0)
-        return true;
-
-    if (mCaptureMirrorFormat == captureMirrorFlac) {
-#if defined(NO_XIPH_LIBS)
-        return false;
-#else
-        const size_t sampleCount =
-            static_cast<size_t>(frameCount) * mCaptureChannels;
-        if (mCaptureMirrorIntBuffer.size() < sampleCount)
-            mCaptureMirrorIntBuffer.resize(sampleCount);
-        for (size_t i = 0; i < sampleCount; ++i) {
-            mCaptureMirrorIntBuffer[i] =
-                floatToPcmSample(samples[i], mCaptureMirrorBitsPerSample);
-        }
-
-        FLAC__StreamEncoder *encoder =
-            static_cast<FLAC__StreamEncoder *>(mCaptureMirrorEncoder);
-        const FLAC__bool ok = FLAC__stream_encoder_process_interleaved(
-            encoder, mCaptureMirrorIntBuffer.data(), frameCount);
-        if (!ok)
-            return false;
-
-        mCaptureMirrorFrameCount += frameCount;
-        return true;
-#endif
-    }
-
-    if (mCaptureMirrorFormat == captureMirrorWavPack) {
-#if defined(NO_WAVPACK_LIBS)
-        return false;
-#else
-        if (!encodeWavPackCaptureMirror(mCaptureMirrorEncoder, samples,
-                                        frameCount)) {
-            return false;
-        }
-        mCaptureMirrorFrameCount += frameCount;
-        return true;
-#endif
-    }
-
-    return false;
-}
-
-bool Player::finishCaptureMirror(bool deleteOutput)
-{
-    bool succeeded = !mCaptureMirrorFailed;
-    if (mCaptureMirrorEncoder != nullptr &&
-        mCaptureMirrorFormat == captureMirrorFlac) {
-#if !defined(NO_XIPH_LIBS)
-        FLAC__StreamEncoder *encoder =
-            static_cast<FLAC__StreamEncoder *>(mCaptureMirrorEncoder);
-        succeeded = FLAC__stream_encoder_finish(encoder) && succeeded;
-        FLAC__stream_encoder_delete(encoder);
-        mCaptureMirrorEncoder = nullptr;
-#endif
-    }
-    if (mCaptureMirrorEncoder != nullptr &&
-        mCaptureMirrorFormat == captureMirrorWavPack) {
-#if !defined(NO_WAVPACK_LIBS)
-        succeeded = finishWavPackCaptureMirror(mCaptureMirrorEncoder) &&
-                    succeeded;
-#endif
-        mCaptureMirrorEncoder = nullptr;
-    }
-    mCaptureMirrorActive = false;
-    if ((deleteOutput || !succeeded) && !mCaptureMirrorFilePath.empty()) {
-        remove(mCaptureMirrorFilePath.c_str());
-    }
-    return succeeded && !deleteOutput;
-}
-
-void Player::resetCaptureMirrorState()
-{
-    mCaptureMirrorFilePath.clear();
-    mCaptureMirrorFormat = captureMirrorNone;
-    mCaptureMirrorBitsPerSample = 0;
-    mCaptureMirrorActive = false;
-    mCaptureMirrorFailed = false;
-    mCaptureMirrorEncoder = nullptr;
-    mCaptureMirrorIntBuffer.clear();
-    mCaptureMirrorFrameCount = 0;
-}
-
-void Player::resetCaptureState()
-{
-    stopCaptureWriter();
-    mCaptureDeviceInitialized = false;
-    mCaptureRecording = false;
-    mCaptureFile = nullptr;
-    mCaptureFilePath.clear();
-    mCaptureSampleRate = 0;
-    mCaptureChannels = 0;
-    mCaptureSessionStartHostTimeNanos = 0;
-    mCaptureStartHostTimeNanos = 0;
-    mCaptureInputGain = 1.0f;
-    mCaptureGainBuffer.clear();
-    mCaptureWriteRing.clear();
-    mCaptureSilenceBuffer.clear();
-    mCaptureWriteCapacitySamples = 0;
-    mCaptureWriteReadSample.store(0);
-    mCaptureWriteWriteSample.store(0);
-    mCaptureWriterStopRequested.store(false);
-    mCaptureWriterFailed.store(false);
-    mCaptureWrittenFrameCount.store(0);
-    mCaptureWriterOverflowFrames.store(0);
-    mCaptureWriterSilenceFrames.store(0);
-    mCapturePendingSilenceFrames.store(0);
-    mCaptureFrameCount.store(0);
-    mFirstInputBufferHostTimeNanos.store(0);
-    mFirstInputBufferFrameIndex.store(0);
-    mCaptureCurrentPeak.store(0.0f);
-    mCaptureCurrentRms.store(0.0f);
-    mCapturePeakSinceLastRead.store(0.0f);
-    mCaptureHeldPeak.store(0.0f);
-    resetCaptureMirrorState();
-}
-
-PlayerErrors Player::startCapture(const std::string &filePath,
-                                  unsigned int sampleRate,
-                                  unsigned int channels,
-                                  unsigned int bufferSizeFrames,
-                                  float inputGainDb,
-                                  int captureDeviceID,
-                                  const std::string &mirrorFilePath,
-                                  unsigned int mirrorFormat,
-                                  unsigned int mirrorBitsPerSample,
-                                  CaptureStartInfo *info)
-{
-    if (!mInited)
-        return backendNotInited;
-    if (mCaptureRecording)
-        return playerAlreadyInited;
-    if (filePath.empty() || sampleRate == 0 || channels == 0 ||
-        channels > 2 || bufferSizeFrames == 0 || info == nullptr)
-        return invalidParameter;
-
-    FILE *file = fopen(filePath.c_str(), "wb");
-    if (file == nullptr)
-        return fileLoadFailed;
-    if (!writeWavHeader(file, sampleRate, channels)) {
-        fclose(file);
-        remove(filePath.c_str());
-        return fileLoadFailed;
-    }
-
-    ma_device_config config = ma_device_config_init(ma_device_type_capture);
-    config.capture.format = ma_format_f32;
-    config.capture.channels = channels;
-    config.sampleRate = sampleRate;
-    config.periodSizeInFrames = bufferSizeFrames;
-    config.dataCallback = captureDataCallback;
-    config.pUserData = this;
-    ma_device_id selectedCaptureDeviceId;
-    if (captureDeviceID >= 0) {
-        auto devices = listCaptureDevices();
-        if (devices.size() == 0 ||
-            captureDeviceID >= static_cast<int>(devices.size())) {
-            for (auto &device : devices) {
-                free(device.name);
-            }
-            fclose(file);
-            remove(filePath.c_str());
-            return invalidParameter;
-        }
-        selectedCaptureDeviceId = devices[captureDeviceID].deviceId;
-        for (auto &device : devices) {
-            free(device.name);
-        }
-        config.capture.pDeviceID = &selectedCaptureDeviceId;
-    }
-
-    ma_result result;
-#if defined(MA_HAS_COREAUDIO) || defined(__ANDROID__)
-    result = ma_device_init(&SoLoud::context, &config, &mCaptureDevice);
-#else
-    result = ma_device_init(NULL, &config, &mCaptureDevice);
-#endif
-    if (result != MA_SUCCESS) {
-        fclose(file);
-        remove(filePath.c_str());
-        return unknownError;
-    }
-
-    mCaptureDeviceInitialized = true;
-    mCaptureFile = file;
-    mCaptureFilePath = filePath;
-    mCaptureSampleRate = mCaptureDevice.sampleRate;
-    mCaptureChannels = mCaptureDevice.capture.channels;
-    mCaptureFrameCount.store(0);
-    mFirstInputBufferHostTimeNanos.store(0);
-    mFirstInputBufferFrameIndex.store(0);
-    mCaptureInputGain = std::pow(10.0f, inputGainDb / 20.0f);
-    mCaptureGainBuffer.clear();
-    if (std::fabs(mCaptureInputGain - 1.0f) >= 0.0001f)
-        mCaptureGainBuffer.resize(static_cast<size_t>(bufferSizeFrames) * channels);
-    prepareCaptureMirror(mirrorFilePath, mirrorFormat, mirrorBitsPerSample);
-    if (!startCaptureWriter(bufferSizeFrames)) {
-        ma_device_uninit(&mCaptureDevice);
-        finishCaptureMirror(true);
-        fclose(file);
-        remove(filePath.c_str());
-        resetCaptureState();
-        return unknownError;
-    }
-    mCaptureSessionStartHostTimeNanos = nowHostTimeNanos();
-    mCaptureRecording = true;
-
-    result = ma_device_start(&mCaptureDevice);
-    if (result != MA_SUCCESS) {
-        mCaptureRecording = false;
-        ma_device_uninit(&mCaptureDevice);
-        stopCaptureWriter();
-        finishCaptureMirror(true);
-        fclose(file);
-        remove(filePath.c_str());
-        resetCaptureState();
-        return unknownError;
-    }
-
-    mCaptureStartHostTimeNanos = nowHostTimeNanos();
-    info->sampleRate = mCaptureSampleRate;
-    info->channels = mCaptureChannels;
-    info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
-    info->captureStartHostTimeNanos = mCaptureStartHostTimeNanos;
-    info->mirrorFormat = mCaptureMirrorFormat;
-    info->mirrorActive = mCaptureMirrorActive && !mCaptureMirrorFailed;
-    return noError;
-}
-
-PlayerErrors Player::startCaptureAndPlay(const std::string &filePath,
-                                         unsigned int soundHash,
-                                         unsigned int busId,
-                                         unsigned int sampleRate,
-                                         unsigned int channels,
-                                         unsigned int bufferSizeFrames,
-                                         float volume,
-                                         float pan,
-                                         double startAtSeconds,
-                                         bool looping,
-                                         double loopingStartAt,
-                                         float inputGainDb,
-                                         int captureDeviceID,
-                                         const std::string &mirrorFilePath,
-                                         unsigned int mirrorFormat,
-                                         unsigned int mirrorBitsPerSample,
-                                         CapturePlaybackStartInfo *info)
-{
-    if (info == nullptr)
-        return nullPointer;
-    if (startAtSeconds < 0 || loopingStartAt < 0)
-        return invalidParameter;
-
-    CaptureStartInfo captureInfo;
-    PlayerErrors result = startCapture(filePath, sampleRate, channels,
-                                       bufferSizeFrames, inputGainDb,
-                                       captureDeviceID,
-                                       mirrorFilePath, mirrorFormat,
-                                       mirrorBitsPerSample,
-                                       &captureInfo);
-    if (result != noError)
-        return result;
-
-    unsigned int handle = 0;
-    result = play(soundHash, handle, busId, volume, pan, true, looping,
-                  loopingStartAt);
-    if (result != noError) {
-        cancelCapture();
-        return result;
-    }
-
-    if (startAtSeconds > 0) {
-        result = seek(handle, static_cast<float>(startAtSeconds));
-        if (result != noError) {
-            stop(handle);
-            cancelCapture();
-            return result;
-        }
-    }
-
-    setPause(handle, false);
-    info->handle = handle;
-    info->sampleRate = captureInfo.sampleRate;
-    info->channels = captureInfo.channels;
-    info->sessionStartHostTimeNanos = captureInfo.sessionStartHostTimeNanos;
-    info->captureStartHostTimeNanos = captureInfo.captureStartHostTimeNanos;
-    info->playbackStartHostTimeNanos = nowHostTimeNanos();
-    info->mirrorFormat = captureInfo.mirrorFormat;
-    info->mirrorActive = captureInfo.mirrorActive;
-    return noError;
-}
-
-PlayerErrors Player::stopCapture(CaptureStopInfo *info)
-{
-    if (!mCaptureRecording || !mCaptureDeviceInitialized || mCaptureFile == nullptr)
-        return invalidParameter;
-    if (info == nullptr)
-        return nullPointer;
-
-    ma_device_stop(&mCaptureDevice);
-    const uint64_t stopHostTimeNanos = nowHostTimeNanos();
-    ma_device_uninit(&mCaptureDevice);
-    stopCaptureWriter();
-
-    const uint64_t frameCount = mCaptureWrittenFrameCount.load();
-    const uint64_t dataSizeBytes =
-        frameCount * mCaptureChannels * sizeof(float);
-    const unsigned int mirrorFormat = mCaptureMirrorFormat;
-    const uint64_t mirrorFrameCount = mCaptureMirrorFrameCount;
-    bool mirrorSucceeded =
-        mirrorFormat != captureMirrorNone && mCaptureMirrorActive &&
-        !mCaptureMirrorFailed && mirrorFrameCount == frameCount;
-    if (mirrorFormat != captureMirrorNone) {
-        mirrorSucceeded = finishCaptureMirror(!mirrorSucceeded) && mirrorSucceeded;
-    }
-    finalizeWavHeader(mCaptureFile, dataSizeBytes);
-    fclose(mCaptureFile);
-
-    info->sampleRate = mCaptureSampleRate;
-    info->channels = mCaptureChannels;
-    info->frameCount = frameCount;
-    info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
-    info->captureStartHostTimeNanos = mCaptureStartHostTimeNanos;
-    info->firstInputBufferHostTimeNanos =
-        mFirstInputBufferHostTimeNanos.load();
-    info->firstInputBufferFrameIndex = mFirstInputBufferFrameIndex.load();
-    info->captureStopHostTimeNanos = stopHostTimeNanos;
-    info->mirrorFormat = mirrorFormat;
-    info->mirrorSucceeded = mirrorSucceeded;
-    info->mirrorFrameCount = mirrorFrameCount;
-    info->writerOverflowFrames = mCaptureWriterOverflowFrames.load();
-    info->writerSilenceFrames = mCaptureWriterSilenceFrames.load();
-    info->writerFailed = mCaptureWriterFailed.load();
-    resetCaptureState();
-    return noError;
-}
-
-PlayerErrors Player::cancelCapture()
-{
-    if (!mCaptureRecording && !mCaptureDeviceInitialized && mCaptureFile == nullptr)
-        return noError;
-
-    const std::string path = mCaptureFilePath;
-    if (mCaptureDeviceInitialized) {
-        ma_device_stop(&mCaptureDevice);
-        ma_device_uninit(&mCaptureDevice);
-    }
-    stopCaptureWriter();
-    if (mCaptureFile != nullptr) {
-        fclose(mCaptureFile);
-    }
-    finishCaptureMirror(true);
-    resetCaptureState();
-    if (!path.empty()) {
-        remove(path.c_str());
-    }
-    return noError;
-}
-
-bool Player::isCaptureRecording() const
-{
-    return mCaptureRecording;
-}
-
-PlayerErrors Player::getCaptureClockSnapshot(CaptureClockInfo *info) const
-{
-    if (!mCaptureRecording || info == nullptr)
-        return invalidParameter;
-
-    info->hostTimeNanos = nowHostTimeNanos();
-    info->sessionStartHostTimeNanos = mCaptureSessionStartHostTimeNanos;
-    info->sampleRate = mCaptureSampleRate;
-    info->inputDeviceFrame = mCaptureFrameCount.load();
-    return noError;
-}
-
-PlayerErrors Player::getCaptureLevelSnapshot(CaptureLevelInfo *info)
-{
-    if (!mCaptureRecording || info == nullptr)
-        return invalidParameter;
-
-    const float currentPeak = mCaptureCurrentPeak.load();
-    const float peakSinceLastRead = mCapturePeakSinceLastRead.exchange(0.0f);
-    info->currentPeak = currentPeak;
-    info->currentRms = mCaptureCurrentRms.load();
-    info->peakSinceLastRead =
-        peakSinceLastRead > 0.0f ? peakSinceLastRead : currentPeak;
-    info->heldPeak = mCaptureHeldPeak.load();
-    info->frameCount = mCaptureFrameCount.load();
-    return noError;
 }
 
 bool Player::isInited()
@@ -1457,9 +420,13 @@ const std::string Player::getErrorString(PlayerErrors errorCode) const
     case audioFormatNotSupported:
         return "error: audio format not supported!";
     case xiphLibsNotFound:
-      return "error: Xiph libraries not found!";
+        return "error: Xiph libraries not found!";
     case busIdNotFound:
-      return "error: bus id not found!";
+        return "error: bus id not found!";
+    case hashIsNotAPullBufferStream:
+        return "error: hash is not a pull buffer stream!";
+    case invalidPullBufferState:
+        return "error: pull buffer stream is in an invalid state!";
     }
     return "Other error";
 }
@@ -1480,11 +447,13 @@ PlayerErrors Player::loadFile(
 
     // If the hash already exists, create a new unique random hash.
     // This allows loading the same file multiple times with unique identifiers.
-    if (s != nullptr) {
+    if (s != nullptr)
+    {
         std::random_device rd;
         std::mt19937 g(rd());
         std::uniform_int_distribution<unsigned int> dist(0, 0x7fffffff);
-        do {
+        do
+        {
             newHash = dist(g);
         } while (findByHash(newHash) != nullptr);
     }
@@ -1513,7 +482,8 @@ PlayerErrors Player::loadFile(
     if (result != SoLoud::SO_NO_ERROR)
     {
         std::vector<unsigned char> bytes;
-        if (readFileBytes(completeFileName, bytes) && isOggXiphBytes(bytes)) {
+        if (readFileBytes(completeFileName, bytes) && isOggXiphBytes(bytes))
+        {
             loadError = loadOggXiphBufferStream(this, newSound.get(), bytes);
         }
     }
@@ -1534,7 +504,8 @@ PlayerErrors Player::loadFile(
 
     // Return fileAlreadyLoaded if the filename hash was already in use,
     // even though we've now loaded a new instance with a unique hash.
-    if (s != nullptr && loadError == noError) {
+    if (s != nullptr && loadError == noError)
+    {
         return fileAlreadyLoaded;
     }
 
@@ -1558,11 +529,13 @@ PlayerErrors Player::loadMem(
     auto const s = findByHash(newHash);
 
     // If already loaded, generate a unique hash
-    if (s != nullptr) {
+    if (s != nullptr)
+    {
         std::random_device rd;
         std::mt19937 g(rd());
         std::uniform_int_distribution<unsigned int> dist(0, 0x7fffffff);
-        do {
+        do
+        {
             newHash = dist(g);
         } while (findByHash(newHash) != nullptr);
     }
@@ -1589,7 +562,8 @@ PlayerErrors Player::loadMem(
     if (result != SoLoud::SO_NO_ERROR && mem != nullptr && length > 0)
     {
         std::vector<unsigned char> bytes(mem, mem + length);
-        if (isOggXiphBytes(bytes)) {
+        if (isOggXiphBytes(bytes))
+        {
             loadError = loadOggXiphBufferStream(this, newSound.get(), bytes);
         }
     }
@@ -1605,7 +579,8 @@ PlayerErrors Player::loadMem(
 
     // Return fileAlreadyLoaded if the unique name hash was already in use,
     // even though we've now loaded a new instance with a unique hash.
-    if (s != nullptr && loadError == noError) {
+    if (s != nullptr && loadError == noError)
+    {
         return fileAlreadyLoaded;
     }
 
@@ -1633,18 +608,11 @@ PlayerErrors Player::setBufferStream(
     auto newSound = std::make_unique<ActiveSound>();
     newSound.get()->completeFileName = "";
     newSound.get()->soundHash = hash;
-    
+
     newSound.get()->sound = std::make_unique<SoLoud::BufferStream>();
 
     newSound.get()->soundType = SoundType::TYPE_BUFFER_STREAM;
-    PlayerErrors e = static_cast<SoLoud::BufferStream *>(newSound.get()->sound.get())->setBufferStream(
-        this, newSound.get(),
-        static_cast<unsigned int>(maxBufferSize),
-        bufferingType,
-        bufferingTimeNeeds,
-        pcmFormat,
-        onBufferingCallback,
-        onMetadataCallback);
+    PlayerErrors e = static_cast<SoLoud::BufferStream *>(newSound.get()->sound.get())->setBufferStream(this, newSound.get(), static_cast<unsigned int>(maxBufferSize), bufferingType, bufferingTimeNeeds, pcmFormat, onBufferingCallback, onMetadataCallback);
 
     newSound.get()->filters = std::make_unique<Filters>(&soloud, newSound.get(), nullptr);
     {
@@ -1655,11 +623,113 @@ PlayerErrors Player::setBufferStream(
     return e;
 }
 
+PlayerErrors Player::setPullBufferStream(
+    unsigned int &hash,
+    unsigned int bufferSizeBytes,
+    double bufferTriggerPosition,
+    unsigned int sampleRate,
+    unsigned int channels,
+    BufferType format,
+    uint64_t audioSizeBytes,
+    dartOnBufferingCallback_t onBufferingCallback,
+    dartOnMetadataCallback_t onMetadataCallback,
+    dartOnMoreDataIsNeededCallback_t onMoreDataIsNeededCallback,
+    dartOnAudioDurationCallback_t onAudioDurationCallback)
+{
+    if (!mInited)
+        return backendNotInited;
+
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::uniform_int_distribution<unsigned int> dist(0, INT32_MAX);
+
+    hash = dist(g);
+
+    auto newSound = std::make_unique<ActiveSound>();
+    newSound.get()->completeFileName = "";
+    newSound.get()->soundHash = hash;
+
+    newSound.get()->sound = std::make_unique<SoLoud::PullBufferStream>();
+    newSound.get()->soundType = SoundType::TYPE_PULL_BUFFER_STREAM;
+
+    auto *pullStream = static_cast<SoLoud::PullBufferStream *>(newSound.get()->sound.get());
+    PlayerErrors e = pullStream->setPullBufferStream(
+        this, newSound.get(), bufferSizeBytes, bufferTriggerPosition,
+        sampleRate, channels, format, audioSizeBytes,
+        onBufferingCallback, onMetadataCallback, onMoreDataIsNeededCallback,
+        onAudioDurationCallback);
+
+    newSound.get()->filters = std::make_unique<Filters>(&soloud, newSound.get(), nullptr);
+    {
+        std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
+        sounds.push_back(std::move(newSound));
+    }
+
+    return e;
+}
+
+PlayerErrors Player::resetPullBufferStream(unsigned int hash)
+{
+    auto const s = findByHash(hash);
+
+    if (s == nullptr || s->soundType != SoundType::TYPE_PULL_BUFFER_STREAM)
+        return PlayerErrors::soundHashNotFound;
+
+    static_cast<SoLoud::PullBufferStream *>(s->sound.get())->resetPullBufferStream();
+    return PlayerErrors::noError;
+}
+
+PlayerErrors Player::addPullBufferDataStream(
+    unsigned int hash,
+    const unsigned char *data,
+    unsigned int aDataLen,
+    uint64_t offset)
+{
+    auto const s = findByHash(hash);
+
+    if (s == nullptr)
+        return PlayerErrors::soundHashNotFound;
+
+    if (s->soundType != SoundType::TYPE_PULL_BUFFER_STREAM)
+        return PlayerErrors::hashIsNotAPullBufferStream;
+
+    return static_cast<SoLoud::PullBufferStream *>(s->sound.get())
+        ->addAudioData(data, aDataLen, offset);
+}
+
+PlayerErrors Player::getPullBufferTimeRange(
+    unsigned int hash,
+    double *startTime,
+    double *endTime)
+{
+    auto const s = findByHash(hash);
+
+    if (s == nullptr)
+        return PlayerErrors::soundHashNotFound;
+
+    if (s->soundType != SoundType::TYPE_PULL_BUFFER_STREAM)
+        return PlayerErrors::hashIsNotAPullBufferStream;
+
+    auto *pullStream = static_cast<SoLoud::PullBufferStream *>(s->sound.get());
+    double start = 0.0;
+    double end = 0.0;
+    pullStream->getBufferTimeRange(start, end);
+    if (startTime != nullptr) *startTime = start;
+    if (endTime != nullptr) *endTime = end;
+    return PlayerErrors::noError;
+}
+
 PlayerErrors Player::addAudioDataStream(
     unsigned int hash,
     const unsigned char *data,
     unsigned int aDataLen)
 {
+    // Hold sounds_mutex for the whole call: disposeSound()/disposeAllSound()
+    // destroy the ActiveSound (and its Buffer's mutex) only after acquiring
+    // it, so this guarantees the BufferStream outlives the addData() call.
+    // Otherwise a feeder thread can lock a destroyed std::mutex, which
+    // aborts on Android (HandleUsingDestroyedMutex).
+    std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     auto const s = findByHash(hash);
 
     if (s == nullptr)
@@ -1673,9 +743,12 @@ PlayerErrors Player::addAudioDataStream(
 
 PlayerErrors Player::resetBufferStream(unsigned int hash)
 {
+    // See addAudioDataStream() for why the lock must span the whole call.
+    std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     auto const s = findByHash(hash);
 
-    if (s == nullptr || s->soundType != SoundType::TYPE_BUFFER_STREAM) {
+    if (s == nullptr || s->soundType != SoundType::TYPE_BUFFER_STREAM)
+    {
         return PlayerErrors::soundHashNotFound;
     }
 
@@ -1685,9 +758,12 @@ PlayerErrors Player::resetBufferStream(unsigned int hash)
 
 PlayerErrors Player::setBufferIcyMetaInt(unsigned int hash, int icyMetaInt)
 {
+    // See addAudioDataStream() for why the lock must span the whole call.
+    std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     auto const s = findByHash(hash);
 
-    if (s == nullptr || s->soundType != SoundType::TYPE_BUFFER_STREAM) { 
+    if (s == nullptr || s->soundType != SoundType::TYPE_BUFFER_STREAM)
+    {
         return PlayerErrors::soundHashNotFound;
     }
 
@@ -1697,6 +773,8 @@ PlayerErrors Player::setBufferIcyMetaInt(unsigned int hash, int icyMetaInt)
 
 PlayerErrors Player::getStreamTimeConsumed(unsigned int hash, float *timeConsumed)
 {
+    // See addAudioDataStream() for why the lock must span the whole call.
+    std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     auto const s = findByHash(hash);
 
     if (s == nullptr || s->soundType != SoundType::TYPE_BUFFER_STREAM)
@@ -1711,6 +789,8 @@ PlayerErrors Player::getStreamTimeConsumed(unsigned int hash, float *timeConsume
 
 PlayerErrors Player::setDataIsEnded(unsigned int hash)
 {
+    // See addAudioDataStream() for why the lock must span the whole call.
+    std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     auto const s = findByHash(hash);
 
     if (s == nullptr || s->soundType != SoundType::TYPE_BUFFER_STREAM)
@@ -1722,13 +802,15 @@ PlayerErrors Player::setDataIsEnded(unsigned int hash)
 
 PlayerErrors Player::getBufferSize(unsigned int hash, unsigned int *sizeInBytes)
 {
+    // See addAudioDataStream() for why the lock must span the whole call.
+    std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     auto const s = findByHash(hash);
 
     if (s == nullptr || s->soundType != SoundType::TYPE_BUFFER_STREAM)
         return PlayerErrors::soundHashNotFound;
 
     auto *bufferStream = static_cast<SoLoud::BufferStream *>(s->sound.get());
-    std::lock_guard<std::recursive_mutex> lock(bufferStream->mBuffer.bufferMutex);
+    std::lock_guard<std::recursive_mutex> bufferLock(bufferStream->mBuffer.bufferMutex);
     *sizeInBytes = static_cast<unsigned int>(
         bufferStream->mBuffer.getActiveSizeInBytes() +
         bufferStream->buffer.size());
@@ -1758,7 +840,9 @@ PlayerErrors Player::loadWaveform(
         sounds.push_back(std::make_unique<ActiveSound>());
         sounds.back().get()->completeFileName = "";
         sounds.back().get()->soundHash = hash;
-        sounds.back().get()->sound = std::make_unique<Basicwave>((SoLoud::Soloud::WAVEFORM)waveform, superWave, detune, scale);
+        auto basicWave = std::make_unique<Basicwave>((SoLoud::Soloud::WAVEFORM)waveform, superWave, detune, scale);
+        basicWave->setSamplerate(mSampleRate);
+        sounds.back().get()->sound = std::move(basicWave);
         sounds.back().get()->soundType = TYPE_SYNTH;
         sounds.back().get()->filters = std::make_unique<Filters>(&soloud, sounds.back().get(), nullptr);
     }
@@ -1821,7 +905,7 @@ void Player::pauseSwitch(unsigned int handle)
     setPause(handle, !soloud.getPause(handle));
 }
 
-void Player::setPause(unsigned int handle, bool pause)
+void Player::setPause(unsigned int handle, bool pause, bool isUserAction)
 {
     if (!pause)
     {
@@ -1830,9 +914,25 @@ void Player::setPause(unsigned int handle, bool pause)
         // (e.g., Control Center pause on iOS).
         soloud.resume();
     }
-    
+
     soloud.setPause(handle, pause);
-    
+
+    // Track whether this handle was paused by the user, so the BufferStream
+    // buffering logic does not automatically unpause it when data becomes
+    // available. The user must explicitly unpause it again.
+    auto s = findByHandle(handle);
+    if (s != nullptr)
+    {
+        for (size_t i = 0; i < s->handle.size(); i++)
+        {
+            if (s->handle[i].handle == handle)
+            {
+                s->handle[i].isUserPaused = pause && isUserAction;
+                break;
+            }
+        }
+    }
+
     if (pause)
     {
         // When pausing, check if there are any remaining active voices.
@@ -1902,7 +1002,8 @@ void Player::stopPauseEngineScheduler()
         mStopPauseThread = true;
     }
     mPauseCv.notify_all();
-    if (mPauseThread.joinable()) {
+    if (mPauseThread.joinable())
+    {
         mPauseThread.join();
     }
     {
@@ -1917,7 +1018,8 @@ void Player::pauseEngineScheduler()
     while (!mStopPauseThread)
     {
         std::unique_lock<std::mutex> lock(mPauseMutex);
-        mPauseCv.wait(lock, [this] { return mPauseRequested || mStopPauseThread; });
+        mPauseCv.wait(lock, [this]
+                      { return mPauseRequested || mStopPauseThread; });
         if (mStopPauseThread)
             break;
 
@@ -1925,7 +1027,8 @@ void Player::pauseEngineScheduler()
         // if another request arrives (coalescing rapid calls).
         mPauseRequested = false;
         mPauseCv.wait_for(lock, std::chrono::milliseconds(kPauseEngineDelayMs),
-                          [this] { return mPauseRequested || mStopPauseThread; });
+                          [this]
+                          { return mPauseRequested || mStopPauseThread; });
 
         if (mStopPauseThread)
             break;
@@ -2022,9 +1125,12 @@ PlayerErrors Player::play(
     handle = 0;
     SoLoud::handle newHandle = 0;
     const bool startPaused = paused || looping;
-    if (busId == 0) {
+    if (busId == 0)
+    {
         newHandle = soloud.play(*sound->sound.get(), volume, pan, startPaused, 0);
-    } else {
+    }
+    else
+    {
         auto it = busMap.find(busId);
         if (it != busMap.end())
             newHandle = it->second.bus.play(*sound->sound.get(), volume, pan, startPaused);
@@ -2039,8 +1145,9 @@ PlayerErrors Player::play(
         setLooping(newHandle, true);
     }
 
-    if (newHandle != 0) {
-        sound->handle.push_back({newHandle, MAX_DOUBLE});
+    if (newHandle != 0)
+    {
+        sound->handle.push_back({newHandle, MAX_DOUBLE, false});
         if (looping)
         {
             setPause(newHandle, paused);
@@ -2051,27 +1158,184 @@ PlayerErrors Player::play(
             static_cast<SoLoud::BufferStream *>(sound->sound.get())->checkBuffering(0);
         }
     }
-
     handle = newHandle;
     return PlayerErrors::noError;
 }
 
-PlayerErrors Player::playDelayed(
+PlayerErrors Player::playClocked(
     unsigned int soundHash,
     unsigned int &handle,
-    unsigned int delaySamples,
+    double soundTime,
     unsigned int busId,
     float volume,
     float pan)
 {
-    PlayerErrors result = play(soundHash, handle, busId, volume, pan, true,
-                               false, 0.0, 0.0);
-    if (result != PlayerErrors::noError || handle == 0)
-        return result;
+    ActiveSound *sound = findByHash(soundHash);
 
-    soloud.setDelaySamples(handle, delaySamples);
-    soloud.setPause(handle, false);
+    if (sound == nullptr)
+        return soundHashNotFound;
+
+    // A BufferStream using `release` buffer type can only have one instance.
+    if (sound->soundType == SoundType::TYPE_BUFFER_STREAM &&
+        static_cast<SoLoud::BufferStream *>(sound->sound.get())->getBufferingType() == BufferingType::RELEASED &&
+        sound->handle.size() > 0)
+    {
+        return bufferStreamCanBePlayedOnlyOnce;
+    }
+
+    // Check if playing this sound will exceed the maximum number of voice counts. If true, then
+    // check if [soudHash] has other instances playing. If true remove the first and play the new one.
+    // If no other instances are playing, this sound cannot be played and return an error.
+    // Issue https://github.com/alnitak/flutter_soloud/issues/204
+    if (getActiveVoiceCount_internal() >= getMaxActiveVoiceCount())
+    {
+        if (sound->handle.size() > 0)
+        {
+            stop(sound->handle[0].handle);
+        }
+        else
+        {
+            return PlayerErrors::maxActiveVoiceCountReached;
+        }
+    }
+
+    // Ensure miniaudio device is started if it's stopped, ie by an interruption.
+    soloud.resume();
+
+    handle = 0;
+    SoLoud::handle newHandle = 0;
+    if (busId == 0)
+    {
+        newHandle = soloud.playClocked(
+            soundTime, *sound->sound.get(), volume, pan, 0);
+    }
+    else
+    {
+        auto it = busMap.find(busId);
+        if (it != busMap.end())
+            newHandle = it->second.bus.playClocked(
+                soundTime, *sound->sound.get(), volume, pan);
+        else
+            return PlayerErrors::busIdNotFound;
+    }
+
+    if (newHandle != 0)
+    {
+        sound->handle.push_back({newHandle, MAX_DOUBLE, false});
+        // Check if this buffer has enough data to be played
+        if (sound->soundType == SoundType::TYPE_BUFFER_STREAM)
+        {
+            static_cast<SoLoud::BufferStream *>(sound->sound.get())->checkBuffering(0);
+        }
+    }
+    handle = newHandle;
     return PlayerErrors::noError;
+}
+
+void Player::setDelaySamples(unsigned int handle, unsigned int samples)
+{
+    soloud.setDelaySamples(handle, samples);
+}
+
+double Player::getStreamTime(unsigned int handle)
+{
+    return soloud.getStreamTime(handle);
+}
+
+void Player::resetStreamTime()
+{
+    soloud.resetClockedAnchor();
+}
+
+double Player::getEngineTime()
+{
+    return soloud.getEngineTime();
+}
+
+PlayerErrors Player::playScheduled(
+    unsigned int soundHash,
+    unsigned int &handle,
+    double atTime,
+    double duration,
+    unsigned int busId,
+    float volume,
+    float pan)
+{
+    ActiveSound *sound = findByHash(soundHash);
+
+    if (sound == nullptr)
+        return soundHashNotFound;
+
+    // A BufferStream using `release` buffer type can only have one instance.
+    if (sound->soundType == SoundType::TYPE_BUFFER_STREAM &&
+        static_cast<SoLoud::BufferStream *>(sound->sound.get())->getBufferingType() == BufferingType::RELEASED &&
+        sound->handle.size() > 0)
+    {
+        return bufferStreamCanBePlayedOnlyOnce;
+    }
+
+    // Check if playing this sound will exceed the maximum number of voice counts. If true, then
+    // check if [soudHash] has other instances playing. If true remove the first and play the new one.
+    // If no other instances are playing, this sound cannot be played and return an error.
+    // Issue https://github.com/alnitak/flutter_soloud/issues/204
+    if (getActiveVoiceCount_internal() >= getMaxActiveVoiceCount())
+    {
+        if (sound->handle.size() > 0)
+        {
+            stop(sound->handle[0].handle);
+        }
+        else
+        {
+            return PlayerErrors::maxActiveVoiceCountReached;
+        }
+    }
+
+    // Ensure miniaudio device is started if it's stopped, ie by an interruption.
+    soloud.resume();
+
+    handle = 0;
+    SoLoud::handle newHandle = 0;
+    if (busId == 0)
+    {
+        newHandle = soloud.playScheduled(
+            atTime, *sound->sound.get(), volume, pan, 0);
+    }
+    else
+    {
+        auto it = busMap.find(busId);
+        if (it != busMap.end())
+            newHandle = it->second.bus.playScheduled(
+                atTime, *sound->sound.get(), volume, pan);
+        else
+            return PlayerErrors::busIdNotFound;
+    }
+
+    if (newHandle != 0)
+    {
+        sound->handle.push_back({newHandle, MAX_DOUBLE, false});
+        if (duration > 0.0)
+        {
+            soloud.scheduleStopAt(newHandle, atTime + duration);
+        }
+        // Check if this buffer has enough data to be played
+        if (sound->soundType == SoundType::TYPE_BUFFER_STREAM)
+        {
+            static_cast<SoLoud::BufferStream *>(sound->sound.get())->checkBuffering(0);
+        }
+    }
+    handle = newHandle;
+    return PlayerErrors::noError;
+}
+
+void Player::stopScheduled(unsigned int handle, double atTime)
+{
+    soloud.scheduleStopAt(handle, atTime);
+}
+
+void Player::fadeScheduled(unsigned int handle, double atTime, float to,
+                           double fadeTime, bool thenStop)
+{
+    soloud.scheduleFadeAt(handle, atTime, to, fadeTime, thenStop);
 }
 
 void Player::stop(unsigned int handle)
@@ -2086,18 +1350,23 @@ void Player::stop(unsigned int handle)
 void Player::removeHandle(unsigned int handle)
 {
     std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
-    if (sounds.empty()) {
+    if (sounds.empty())
+    {
         return;
     }
 
     bool found = false;
     size_t i = 0;
-    while (i < sounds.size() && !found) {
-        auto const& sound = sounds[i];
-        if (sound) {  // Check if unique_ptr is valid
+    while (i < sounds.size() && !found)
+    {
+        auto const &sound = sounds[i];
+        if (sound)
+        { // Check if unique_ptr is valid
             size_t n = 0;
-            while (n < sound->handle.size() && !found) {
-                if (sound->handle[n].handle == handle) {
+            while (n < sound->handle.size() && !found)
+            {
+                if (sound->handle[n].handle == handle)
+                {
                     sound->handle.erase(sound->handle.begin() + n);
                     found = true;
                 }
@@ -2111,7 +1380,7 @@ void Player::removeHandle(unsigned int handle)
 void Player::disposeSound(unsigned int soundHash)
 {
     std::unique_ptr<ActiveSound> soundToDestroy;
-    
+
     {
         std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
         if (sounds.empty())
@@ -2120,7 +1389,7 @@ void Player::disposeSound(unsigned int soundHash)
         }
 
         auto it = std::find_if(sounds.begin(), sounds.end(),
-                               [soundHash](const std::unique_ptr<ActiveSound> &sound) 
+                               [soundHash](const std::unique_ptr<ActiveSound> &sound)
                                {
                                    return sound->soundHash == soundHash;
                                });
@@ -2133,7 +1402,7 @@ void Player::disposeSound(unsigned int soundHash)
             {
                 soloud.stop(handleInfo.handle);
             }
-            
+
             // Mark BufferStream for destruction before removing it
             if (it->get()->soundType == SoundType::TYPE_BUFFER_STREAM)
             {
@@ -2143,7 +1412,15 @@ void Player::disposeSound(unsigned int soundHash)
                     bufferStream->markForDestruction();
                 }
             }
-            
+            else if (it->get()->soundType == SoundType::TYPE_PULL_BUFFER_STREAM)
+            {
+                auto *pullStream = static_cast<SoLoud::PullBufferStream *>(it->get()->sound.get());
+                if (pullStream != nullptr)
+                {
+                    pullStream->markForDestruction();
+                }
+            }
+
             // Clear all filters from this sound BEFORE moving it out.
             // This prevents the audio thread from accessing filter instances
             // when the sound is destroyed.
@@ -2154,14 +1431,14 @@ void Player::disposeSound(unsigned int soundHash)
                     it->get()->sound->setFilter(i, nullptr);
                 }
             }
-            
+
             // Move the sound out of the vector before erasing
             soundToDestroy = std::move(*it);
             sounds.erase(it);
         }
     }
     // Sound (and its filters) is destroyed here when soundToDestroy goes out of scope
-    
+
     // After disposing a sound, check if there are any remaining active voices.
     // If no voices are active, pause the audio device.
     pauseEngine();
@@ -2171,17 +1448,17 @@ void Player::disposeAllSound()
 {
     // Stop all voices first. This stops all active audio processing.
     soloud.stopAll();
-    
+
     // Pause the audio device BEFORE destroying sounds to ensure the audio thread
     // is not accessing filter memory. This prevents race conditions where the
     // audio thread crashes trying to access freed filter instances.
     soloud.pause();
-    
+
     std::vector<std::unique_ptr<ActiveSound>> soundsToDestroy;
-    
+
     {
         std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
-        
+
         // First, remove all filters from sounds while the audio thread is paused.
         // This prevents the audio thread from accessing filter instances during destruction.
         for (auto &sound : sounds)
@@ -2194,6 +1471,14 @@ void Player::disposeAllSound()
                     bufferStream->markForDestruction();
                 }
             }
+            else if (sound->soundType == SoundType::TYPE_PULL_BUFFER_STREAM)
+            {
+                auto *pullStream = static_cast<SoLoud::PullBufferStream *>(sound->sound.get());
+                if (pullStream != nullptr)
+                {
+                    pullStream->markForDestruction();
+                }
+            }
             // Clear all filters from this sound
             if (sound->sound)
             {
@@ -2203,13 +1488,13 @@ void Player::disposeAllSound()
                 }
             }
         }
-        
+
         // Clear global filters
         for (int i = 0; i < FILTERS_PER_STREAM; i++)
         {
             soloud.setGlobalFilter(i, nullptr);
         }
-        
+
         // Move all sounds out to destroy them after releasing the lock
         soundsToDestroy = std::move(sounds);
         sounds.clear();
@@ -2225,12 +1510,18 @@ void Player::clearDartCallbackRegistrations()
     std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     for (auto &sound : sounds)
     {
-        if (sound != nullptr &&
-            sound->soundType == SoundType::TYPE_BUFFER_STREAM &&
-            sound->sound != nullptr)
+        if (sound != nullptr && sound->sound != nullptr)
         {
-            static_cast<SoLoud::BufferStream *>(sound->sound.get())
-                ->clearDartCallbacks();
+            if (sound->soundType == SoundType::TYPE_BUFFER_STREAM)
+            {
+                static_cast<SoLoud::BufferStream *>(sound->sound.get())
+                    ->clearDartCallbacks();
+            }
+            else if (sound->soundType == SoundType::TYPE_PULL_BUFFER_STREAM)
+            {
+                static_cast<SoLoud::PullBufferStream *>(sound->sound.get())
+                    ->clearDartCallbacks();
+            }
         }
     }
 }
@@ -2274,7 +1565,7 @@ PlayerErrors Player::textToSpeech(const std::string &textToSpeech, unsigned int 
     soloud.resume();
 
     SoLoud::result result = speech.setText(textToSpeech.c_str());
-    
+
     std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     sounds.push_back(std::make_unique<ActiveSound>());
     sounds.back().get()->completeFileName = std::string("");
@@ -2282,8 +1573,9 @@ PlayerErrors Player::textToSpeech(const std::string &textToSpeech, unsigned int 
     {
         handle = soloud.play(speech);
         sounds.back().get()->soundHash = handle;
+        sounds.back().get()->soundType = TYPE_TEXT_TO_SPEECH;
         sounds.back().get()->filters = std::make_unique<Filters>(&soloud, sounds.back().get(), nullptr);
-        sounds.back().get()->handle.push_back({handle, MAX_DOUBLE});
+        sounds.back().get()->handle.push_back({handle, MAX_DOUBLE, false});
     }
     else
     {
@@ -2341,7 +1633,7 @@ double Player::getLength(unsigned int soundHash)
 {
     auto const &s = findByHash(soundHash);
 
-    if (s == nullptr || s->soundType == TYPE_SYNTH)
+    if (s == nullptr || s->soundType == TYPE_SYNTH || s->soundType == TYPE_TEXT_TO_SPEECH)
         return 0.0;
     if (s->soundType == TYPE_WAV)
         return static_cast<SoLoud::Wav *>(s->sound.get())->getLength();
@@ -2360,7 +1652,7 @@ PlayerErrors Player::seek(SoLoud::handle handle, float time)
 
     ActiveSound *sound = findByHandle(handle);
     bool isGroupHandle = soloud.isVoiceGroup(handle);
-    
+
     if ((sound == nullptr || sound->soundType == TYPE_SYNTH) && !isGroupHandle)
         return invalidParameter;
 
@@ -2413,7 +1705,7 @@ void Player::setPan(SoLoud::handle handle, float pan)
 }
 
 void Player::setPanAbsolute(SoLoud::handle handle, float panLeft, float panRight)
-{ 
+{
     panLeft = std::clamp(panLeft, -1.0f, 1.0f);
     panRight = std::clamp(panRight, -1.0f, 1.0f);
     soloud.setPanAbsolute(handle, panLeft, panRight);
@@ -2503,27 +1795,12 @@ ActiveSound *Player::findByHash(unsigned int soundHash)
 {
     std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
     auto const &s = std::find_if(sounds.begin(), sounds.end(),
-                                 [&](std::unique_ptr<ActiveSound> const &f) 
+                                 [&](std::unique_ptr<ActiveSound> const &f)
                                  { return f->soundHash == soundHash; });
     if (s == sounds.end())
         return nullptr;
 
     return s->get();
-}
-
-void Player::debug()
-{
-    std::lock_guard<std::recursive_mutex> lock(sounds_mutex);
-    int n = 0;
-    for (auto &sound : sounds)
-    {
-        printf("%d: \thandle: ", n);
-        for (auto &handle : sound.get()->handle)
-            printf("%d ", handle.handle);
-        printf("  %s\n", sound.get()->completeFileName.c_str());
-
-        n++;
-    }
 }
 
 /////////////////////////////////////////
@@ -2669,7 +1946,8 @@ PlayerErrors Player::play3d(
     handle = 0;
     SoLoud::handle newHandle = 0;
     const bool startPaused = paused || looping;
-    if (busId == 0) {
+    if (busId == 0)
+    {
         newHandle = soloud.play3d(
             *sound->sound.get(),
             posX, posY, posZ,
@@ -2677,7 +1955,9 @@ PlayerErrors Player::play3d(
             volume,
             startPaused,
             0);
-    } else {
+    }
+    else
+    {
         auto it = busMap.find(busId);
         if (it != busMap.end())
             newHandle = it->second.bus.play3d(
@@ -2685,14 +1965,14 @@ PlayerErrors Player::play3d(
                 posX, posY, posZ,
                 velX, velY, velZ,
                 volume,
-                startPaused
-            );
+                startPaused);
         else
             return PlayerErrors::busIdNotFound;
     }
 
-    if (newHandle != 0) {
-        sound->handle.push_back({newHandle, MAX_DOUBLE});
+    if (newHandle != 0)
+    {
+        sound->handle.push_back({newHandle, MAX_DOUBLE, false});
         if (looping)
         {
             setLoopPoint(newHandle, loopingStartAt);
@@ -2701,6 +1981,89 @@ PlayerErrors Player::play3d(
             seek(newHandle, loopingStartAt);
             setPause(newHandle, paused);
         }
+        // Check if this buffer has enough data to be played
+        if (sound->soundType == SoundType::TYPE_BUFFER_STREAM)
+        {
+            static_cast<SoLoud::BufferStream *>(sound->sound.get())->checkBuffering(0);
+        }
+    }
+    handle = newHandle;
+    return PlayerErrors::noError;
+}
+
+PlayerErrors Player::play3dClocked(
+    unsigned int soundHash,
+    unsigned int &handle,
+    double soundTime,
+    float posX,
+    float posY,
+    float posZ,
+    float velX,
+    float velY,
+    float velZ,
+    float volume,
+    unsigned int busId)
+{
+    ActiveSound *sound = findByHash(soundHash);
+    if (sound == 0)
+        return soundHashNotFound;
+
+    // A BufferStream using `release` buffer type can only have one instance.
+    if (sound->soundType == SoundType::TYPE_BUFFER_STREAM &&
+        static_cast<SoLoud::BufferStream *>(sound->sound.get())->getBufferingType() == BufferingType::RELEASED &&
+        sound->handle.size() > 0)
+    {
+        return bufferStreamCanBePlayedOnlyOnce;
+    }
+
+    // Check if by playing this sound will exceed the maximum number of voice count. If true, then
+    // check if [soudHash] has other instances playing. If true remove the first and play the new one.
+    // If there are no other instances playing, this sound cannot be played and return an error.
+    // Issue https://github.com/alnitak/flutter_soloud/issues/204
+    if (getActiveVoiceCount_internal() >= getMaxActiveVoiceCount())
+    {
+        if (sound->handle.size() > 0)
+        {
+            stop(sound->handle[0].handle);
+        }
+        else
+        {
+            return PlayerErrors::maxActiveVoiceCountReached;
+        }
+    }
+
+    // Ensure miniaudio device is started if it's stopped, ie by an interruption.
+    soloud.resume();
+
+    handle = 0;
+    SoLoud::handle newHandle = 0;
+    if (busId == 0)
+    {
+        newHandle = soloud.play3dClocked(
+            soundTime,
+            *sound->sound.get(),
+            posX, posY, posZ,
+            velX, velY, velZ,
+            volume,
+            0);
+    }
+    else
+    {
+        auto it = busMap.find(busId);
+        if (it != busMap.end())
+            newHandle = it->second.bus.play3dClocked(
+                soundTime,
+                *sound->sound.get(),
+                posX, posY, posZ,
+                velX, velY, velZ,
+                volume);
+        else
+            return PlayerErrors::busIdNotFound;
+    }
+
+    if (newHandle != 0)
+    {
+        sound->handle.push_back({newHandle, MAX_DOUBLE, false});
         // Check if this buffer has enough data to be played
         if (sound->soundType == SoundType::TYPE_BUFFER_STREAM)
         {
@@ -2817,18 +2180,21 @@ void Player::set3dSourceDopplerFactor(
 /// Mixing Bus
 /////////////////////////////////////////
 
-unsigned int Player::createBus() {
+unsigned int Player::createBus()
+{
     unsigned int id = ++busIdCounter;
     busMap.try_emplace(id, id, &soloud);
     return id;
 }
 
-void Player::destroyBus(unsigned int busId) {
+void Player::destroyBus(unsigned int busId)
+{
     busMap.erase(busId);
 }
 
 unsigned int Player::busPlayOnEngine(unsigned int busId, float volume,
-                                     bool paused) {
+                                     bool paused)
+{
     if (!mInited)
         return 0;
     auto it = busMap.find(busId);
@@ -2843,28 +2209,32 @@ unsigned int Player::busPlayOnEngine(unsigned int busId, float volume,
     return handle;
 }
 
-int Player::busSetChannels(unsigned int busId, unsigned int channels) {
+int Player::busSetChannels(unsigned int busId, unsigned int channels)
+{
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return -1; // bus not found
     return static_cast<int>(it->second.bus.setChannels(channels));
 }
 
-void Player::busSetVisualizationEnable(unsigned int busId, bool enable) {
+void Player::busSetVisualizationEnable(unsigned int busId, bool enable)
+{
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return;
     it->second.bus.setVisualizationEnable(enable);
 }
 
-float *Player::busCalcFFT(unsigned int busId) {
+float *Player::busCalcFFT(unsigned int busId)
+{
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return nullptr;
     return it->second.bus.calcFFT();
 }
 
-float *Player::busGetWave(unsigned int busId) {
+float *Player::busGetWave(unsigned int busId)
+{
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return nullptr;
@@ -2872,21 +2242,24 @@ float *Player::busGetWave(unsigned int busId) {
 }
 
 float Player::busGetApproximateVolume(unsigned int busId,
-                                      unsigned int channel) {
+                                      unsigned int channel)
+{
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return 0.0f;
     return it->second.bus.getApproximateVolume(channel);
 }
 
-void Player::busAnnexSound(unsigned int busId, unsigned int voiceHandle) {
+void Player::busAnnexSound(unsigned int busId, unsigned int voiceHandle)
+{
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return;
     it->second.bus.annexSound(voiceHandle);
 }
 
-unsigned int Player::busGetActiveVoiceCount(unsigned int busId) {
+unsigned int Player::busGetActiveVoiceCount(unsigned int busId)
+{
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return 0;
@@ -2894,7 +2267,8 @@ unsigned int Player::busGetActiveVoiceCount(unsigned int busId) {
     return ret;
 }
 
-BusData *Player::findBusData(unsigned int busId) {
+BusData *Player::findBusData(unsigned int busId)
+{
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return nullptr;

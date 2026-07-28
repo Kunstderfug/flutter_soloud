@@ -30,6 +30,7 @@ jobs:
 
     - name: Run native correctness tests
       run: |
+        ./test/run_capture_writer_test.sh
         ./test/run_limiter_test.sh
         ./test/run_mixing_bus_sample_rate_test.sh
 

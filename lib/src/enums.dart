@@ -267,9 +267,7 @@ enum VoiceGroupStartResult {
     6 => invalidMember,
     7 => memberNotPaused,
     8 => deadlineReached,
-    _ => throw ArgumentError(
-      'Unknown value for VoiceGroupStartResult: $value',
-    ),
+    _ => throw ArgumentError('Unknown value for VoiceGroupStartResult: $value'),
   };
 }
 

@@ -26,12 +26,7 @@ int _scheduleVoiceGroupStartAt(
 
 final ffi.Pointer<
   ffi.NativeFunction<
-    ffi.Int32 Function(
-      ffi.UnsignedInt,
-      ffi.UnsignedInt,
-      ffi.Int32,
-      ffi.Double,
-    )
+    ffi.Int32 Function(ffi.UnsignedInt, ffi.UnsignedInt, ffi.Int32, ffi.Double)
   >
 >
 _scheduleVoiceGroupStartAtPointer = ffi.Pointer.fromFunction(

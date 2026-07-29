@@ -456,6 +456,14 @@ external void wasmDestroyVoiceGroup(int handle);
 @JS('Module_soloud._addVoiceToGroup')
 external void wasmAddVoiceToGroup(int voiceGroupHandle, int voiceHandle);
 
+@JS('Module_soloud._scheduleVoiceGroupStartAt')
+external int wasmScheduleVoiceGroupStartAt(
+  int voiceGroupHandle,
+  int requiredMainHandle,
+  int expectedMemberCount,
+  double engineDeadline,
+);
+
 @JS('Module_soloud._isVoiceGroup')
 external int wasmIsVoiceGroup(int handle);
 

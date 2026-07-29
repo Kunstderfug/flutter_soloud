@@ -220,6 +220,59 @@ enum PlayerErrors {
   String toString() => 'PlayerErrors.$name ($_asSentence)';
 }
 
+/// Result of atomically scheduling a prepared voice group.
+///
+/// WARNING: Keep these values in sync with `src/enums.h`.
+enum VoiceGroupStartResult {
+  /// Every group member was assigned the same sample delay and unpaused.
+  success(0),
+
+  /// The audio backend has not been initialized.
+  backendNotInitialized(1),
+
+  /// A deadline or expected-member-count input is invalid.
+  invalidInput(2),
+
+  /// The handle is not a valid, nonempty voice group.
+  invalidGroup(3),
+
+  /// The raw group does not contain exactly the expected number of members.
+  memberCountMismatch(4),
+
+  /// The required main voice is invalid or absent from the group.
+  invalidMain(5),
+
+  /// At least one group member no longer resolves to a live voice.
+  invalidMember(6),
+
+  /// At least one group member was not paused when the commit was attempted.
+  memberNotPaused(7),
+
+  /// The absolute engine deadline was already reached.
+  deadlineReached(8);
+
+  const VoiceGroupStartResult(this.value);
+
+  /// The integer returned by the native API.
+  final int value;
+
+  /// Maps a native integer result to its public Dart value.
+  static VoiceGroupStartResult fromValue(int value) => switch (value) {
+    0 => success,
+    1 => backendNotInitialized,
+    2 => invalidInput,
+    3 => invalidGroup,
+    4 => memberCountMismatch,
+    5 => invalidMain,
+    6 => invalidMember,
+    7 => memberNotPaused,
+    8 => deadlineReached,
+    _ => throw ArgumentError(
+      'Unknown value for VoiceGroupStartResult: $value',
+    ),
+  };
+}
+
 /// Possible read samples errors.
 enum ReadSamplesErrors {
   /// No error

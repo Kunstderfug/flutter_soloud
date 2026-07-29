@@ -910,6 +910,19 @@ abstract class FlutterSoLoud {
     List<SoundHandle> voiceHandles,
   );
 
+  /// Atomically schedule every prepared member of [voiceGroupHandle] at one
+  /// absolute [engineDeadline].
+  ///
+  /// The group must contain exactly [expectedMemberCount] live paused voices,
+  /// including [requiredMain]. Any failure leaves all voice and group state
+  /// unchanged.
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  );
+
   /// Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.
   ///

@@ -1974,6 +1974,21 @@ extern "C"
     player.get()->addVoiceToGroup(voiceGroupHandle, voiceHandle);
   }
 
+  /// Atomically schedule all prepared members of a voice group at one
+  /// absolute engine deadline.
+  ///
+  /// Any failure leaves every member and the group unchanged.
+  FFI_PLUGIN_EXPORT enum VoiceGroupStartResult scheduleVoiceGroupStartAt(
+      unsigned int voiceGroupHandle, unsigned int requiredMainHandle,
+      int expectedMemberCount, double engineDeadline)
+  {
+    if (player.get() == nullptr || !player.get()->isInited())
+      return voiceGroupStartBackendNotInitialized;
+    return player.get()->scheduleVoiceGroupStartAt(
+        voiceGroupHandle, requiredMainHandle, expectedMemberCount,
+        engineDeadline);
+  }
+
   /// Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.
   ///

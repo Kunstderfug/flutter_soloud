@@ -107,6 +107,9 @@ namespace SoLoud
 #endif
 		mResampler = SOLOUD_DEFAULT_RESAMPLER;
 		mInsideAudioThreadMutex = false;
+#ifdef SOLOUD_TEST
+		mBeforeMixMutexLockCallback = NULL;
+#endif
 		mScratchSize = 0;
 		mSamplerate = 0;
 		mBufferSize = 0;
@@ -2151,18 +2154,21 @@ namespace SoLoud
 		}
 #endif
 
+#ifdef SOLOUD_TEST
+		if (mBeforeMixMutexLockCallback)
+			mBeforeMixMutexLockCallback();
+#endif
+		lockAudioMutex_internal();
+
 		float buffertime = aSamples / (float)mSamplerate;
 		float globalVolume[2];
 		mStreamTime += buffertime;
-
 		globalVolume[0] = mGlobalVolume;
 		if (mGlobalVolumeFader.mActive)
 		{
 			mGlobalVolume = mGlobalVolumeFader.get(mStreamTime);
 		}
 		globalVolume[1] = mGlobalVolume;
-
-		lockAudioMutex_internal();
 
 		// Process faders. May change scratch size.
 		int i;

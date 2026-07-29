@@ -3170,6 +3170,34 @@ interface class SoLoud {
     );
   }
 
+  /// Atomically schedules every prepared member of [voiceGroupHandle] at one
+  /// absolute [engineDeadline].
+  ///
+  /// Before calling this method, create every intended voice with
+  /// `paused: true`, configure it, and add it to the group. The raw group must
+  /// contain exactly [expectedMemberCount] live paused voices, including
+  /// [requiredMain].
+  ///
+  /// On [VoiceGroupStartResult.success], native code assigns one rounded sample
+  /// delay to every member and unpauses all of them while holding the audio
+  /// mutex. Every other result leaves all voice and group state unchanged.
+  ///
+  /// Unlike most playback methods, an uninitialized backend and a reached
+  /// deadline are returned as explicit control-flow results rather than thrown.
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  ) {
+    return _controller.soLoudFFI.scheduleVoiceGroupStartAt(
+      voiceGroupHandle,
+      requiredMain,
+      expectedMemberCount,
+      engineDeadline,
+    );
+  }
+
   /// Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.
   ///

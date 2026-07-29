@@ -671,6 +671,21 @@ public:
   void addVoiceToGroup(SoLoud::handle voiceGroupHandle,
                        SoLoud::handle voiceHandle);
 
+  /// @brief Atomically schedule every prepared member of a voice group at one
+  /// absolute engine deadline.
+  ///
+  /// All validation and the successful delay/unpause commit happen under one
+  /// audio mutex. Any failure leaves the voices and group unchanged.
+  /// @param voiceGroupHandle the prepared voice group.
+  /// @param requiredMainHandle the main voice, which must be live and present.
+  /// @param expectedMemberCount the exact intended member count.
+  /// @param engineDeadline the absolute engine time at which all members start.
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+      SoLoud::handle voiceGroupHandle,
+      SoLoud::handle requiredMainHandle,
+      int expectedMemberCount,
+      double engineDeadline);
+
   /// @brief Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.
   /// @param handle the group handle to check.

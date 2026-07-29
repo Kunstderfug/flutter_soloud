@@ -2138,6 +2138,36 @@ class FlutterSoLoudFfi extends FlutterSoLoud with _FlutterSoLoudFfiCapture {
       .asFunction<void Function(int, int)>();
 
   @override
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  ) {
+    final result = _scheduleVoiceGroupStartAt(
+      voiceGroupHandle.id,
+      requiredMain.id,
+      expectedMemberCount,
+      engineDeadline.toDouble(),
+    );
+    return VoiceGroupStartResult.fromValue(result);
+  }
+
+  late final _scheduleVoiceGroupStartAtPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.UnsignedInt,
+            ffi.UnsignedInt,
+            ffi.Int32,
+            ffi.Double,
+          )
+        >
+      >('scheduleVoiceGroupStartAt');
+  late final _scheduleVoiceGroupStartAt = _scheduleVoiceGroupStartAtPtr
+      .asFunction<int Function(int, int, int, double)>();
+
+  @override
   bool isVoiceGroup(SoundHandle handle) {
     return _isVoiceGroup(handle.id) == 1;
   }

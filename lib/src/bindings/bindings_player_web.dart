@@ -1179,6 +1179,22 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  ) {
+    final result = wasmScheduleVoiceGroupStartAt(
+      voiceGroupHandle.id,
+      requiredMain.id,
+      expectedMemberCount,
+      engineDeadline.toDouble(),
+    );
+    return VoiceGroupStartResult.fromValue(result);
+  }
+
+  @override
   bool isVoiceGroup(SoundHandle handle) {
     return wasmIsVoiceGroup(handle.id) == 1;
   }

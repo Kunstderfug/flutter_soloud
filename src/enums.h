@@ -81,6 +81,21 @@ typedef enum PlayerErrors {
   invalidPullBufferState = 33,
 } PlayerErrors_t;
 
+/// Result of atomically scheduling a prepared voice group.
+///
+/// WARNING: Keep these in sync with `lib/src/enums.dart`.
+typedef enum VoiceGroupStartResult {
+  voiceGroupStartSuccess = 0,
+  voiceGroupStartBackendNotInitialized = 1,
+  voiceGroupStartInvalidInput = 2,
+  voiceGroupStartInvalidGroup = 3,
+  voiceGroupStartMemberCountMismatch = 4,
+  voiceGroupStartInvalidMain = 5,
+  voiceGroupStartInvalidMember = 6,
+  voiceGroupStartMemberNotPaused = 7,
+  voiceGroupStartDeadlineReached = 8,
+} VoiceGroupStartResult_t;
+
 /// Possible read sample errors
 typedef enum ReadSamplesErrors {
   /// No error

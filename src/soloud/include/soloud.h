@@ -109,6 +109,20 @@ namespace SoLoud
 	typedef result (*soloudResultFunction)(Soloud *aSoloud);
 	typedef unsigned int handle;
 	typedef double time;
+
+	// Result of atomically scheduling a prepared voice group.
+	enum VoiceGroupStartResult
+	{
+		VOICE_GROUP_START_SUCCESS = 0,
+		VOICE_GROUP_START_BACKEND_NOT_INITIALIZED = 1,
+		VOICE_GROUP_START_INVALID_INPUT = 2,
+		VOICE_GROUP_START_INVALID_GROUP = 3,
+		VOICE_GROUP_START_MEMBER_COUNT_MISMATCH = 4,
+		VOICE_GROUP_START_INVALID_MAIN = 5,
+		VOICE_GROUP_START_INVALID_MEMBER = 6,
+		VOICE_GROUP_START_MEMBER_NOT_PAUSED = 7,
+		VOICE_GROUP_START_DEADLINE_REACHED = 8
+	};
 };
 
 namespace SoLoud
@@ -163,6 +177,11 @@ namespace SoLoud
 		void * mAudioThreadMutex;
 		// Flag for when we're inside the mutex, used for debugging.
 		bool mInsideAudioThreadMutex;
+#ifdef SOLOUD_TEST
+		// Test-only synchronization point immediately before mix_internal
+		// acquires the audio mutex.
+		void (*mBeforeMixMutexLockCallback)();
+#endif
 		// Called by SoLoud to shut down the back-end. If NULL, not called. Should be set by back-end.
 		soloudCallFunction mBackendCleanupFunc;
 
@@ -450,6 +469,10 @@ namespace SoLoud
 		result destroyVoiceGroup(handle aVoiceGroupHandle);
 		// Add a voice handle to a voice group
 		result addVoiceToGroup(handle aVoiceGroupHandle, handle aVoiceHandle);
+		// Atomically assign one absolute engine deadline and unpause every
+		// prepared member of a voice group. Failures leave all voices and the
+		// group unchanged.
+		VoiceGroupStartResult scheduleVoiceGroupStartAt(handle aVoiceGroupHandle, handle aRequiredMainHandle, int aExpectedMemberCount, time aEngineDeadline);
 		// Is this handle a valid voice group?
 		bool isVoiceGroup(handle aVoiceGroupHandle);
 		// Is this voice group empty?

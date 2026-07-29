@@ -23,6 +23,12 @@
 
 //--------------------- copy here the new functions to generate
 
+/// Atomically schedule all prepared members of a voice group at one absolute
+/// engine deadline. Any failure leaves every member and the group unchanged.
+FFI_PLUGIN_EXPORT enum VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    unsigned int voiceGroupHandle, unsigned int requiredMainHandle,
+    int expectedMemberCount, double engineDeadline);
+
  /// Create a new mixing bus.
 /// Returns a unique bus ID (>0) to reference this bus in other calls.
 FFI_PLUGIN_EXPORT unsigned int createBus();

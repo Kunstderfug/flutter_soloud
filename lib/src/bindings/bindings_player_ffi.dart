@@ -241,8 +241,11 @@ class FlutterSoLoudFfi extends FlutterSoLoud with _FlutterSoLoudFfiCapture {
 
   @override
   void disposeNativeCallables() {
-    _disposeAllBufferStreamCallbacks();
+    // Null the native callback pointers BEFORE closing the trampolines:
+    // in-flight native calls (e.g. addData hitting an ICY metadata block)
+    // otherwise branch into freed trampoline code (EXC_BAD_ACCESS, PC=0).
     clearDartCallbackRegistrations();
+    _disposeAllBufferStreamCallbacks();
     nativeVoiceEndedCallable?.close();
     nativeVoiceEndedCallable = null;
     nativeFileLoadedCallable?.close();

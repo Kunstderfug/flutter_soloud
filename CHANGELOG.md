@@ -1,3 +1,20 @@
+##### 4.1.6 (3 Aug 2026)
+- fix: iOS/macOS SPM build fails with error: unknown argument: '-Wl,-undefined,dynamic_lookup' #530
+- web: dropped `-pthread`/`SharedArrayBuffer` from the WASM build. The requirement for COOP/COEP headers (cross-origin isolation) is gone and the plugin now works on hosts that cannot set them (e.g. game portals like CrazyGames/Poki). Moving the use of threads for a future release #523
+
+##### 4.1.5 (3 Aug 2026)
+- fix web: crash with `--optimization-level=0` due to HEAPU8.buffer declared as JSArrayBuffer #526
+- fix: missing guard for NO_XIPH_LIBS that prevents building when using it #528
+- fix: playback errors are no longer silently ignored. `play` (and its variants), `pauseSwitch`, `setPause` and `stop` now report failures instead of returning success with an unusable handle. Note: these methods can now throw where they previously failed silently. Thanks to @Colton127 #527
+  - added `PlayerErrors.audioDeviceFailedToStart` and `PlayerErrors.failedToStartPlayback` (with matching exceptions), so you can catch device/playback startup failures specifically.
+- fix: wrong exceptions for `loadFile`/`loadMem`/`seek`. Out-of-memory and not-implemented errors were mapped to unrelated exceptions (e.g. "DLL not found" for low memory); they now throw the correct ones. Thanks to @Colton127 #527
+- fix: a failed load no longer also raises an uncatchable async error — the future you `await` is the only error channel now. Thanks to @Colton127 #527
+
+##### 4.1.4 (31 Jul 2026)
+- fix: the voice-ended callback is no longer invoked while SoLoud's audio mutex is held. The symptom was a wedged engine: handles and sources still looked valid, no audio was produced, and `deinit()` never completed. Ended voices are now queued and dispatched once the mutex is released. Thanks to @Colton127 #518
+- fix: on macOS/iOS, the first CocoaPods build after a clean no longer fails with "Build input file cannot be found: libflutter_soloud_plugin.a"
+- fix: deactivate a sound filter couldn't be activate again #525
+
 ##### 4.1.3 (29 Jul 2026)
 - another SPM fix: add wav_stream_decoder.cpp to SPM unity build (crash on Apple platforms)
 

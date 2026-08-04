@@ -27,6 +27,7 @@ freely, subject to the following restrictions:
 
 #include <stdlib.h> // rand
 #include <math.h> // sin
+#include <atomic> // std::atomic
 
 #ifdef SOLOUD_NO_ASSERTS
 #define SOLOUD_ASSERT(x)
@@ -189,11 +190,31 @@ namespace SoLoud
 		soloudResultFunction mBackendPauseFunc;
 		soloudResultFunction mBackendResumeFunc;
 
-		// Set the callback to call when a voice is ended/stopped
-		void (*_voiceEndedCallback)(unsigned int*) = nullptr;
+		// Set the callback to call when a voice is ended/stopped.
+		//
+		// stopVoice_internal() runs with the audio mutex held, so it must not
+		// call out to the embedder directly: the callback reaches back into the
+		// embedder's own bookkeeping (and its locks), which inverts the lock
+		// order against callers that hold those locks across a SoLoud call and
+		// deadlocks the engine. Ended voices are queued instead and dispatched
+		// by unlockAudioMutex_internal() once the mutex is released.
+		std::atomic<void (*)(unsigned int*)> _voiceEndedCallback{nullptr};
 		void setVoiceEndedCallback(void (*voiceEndedCallback)(unsigned int*)) {
-			_voiceEndedCallback = voiceEndedCallback;
+			_voiceEndedCallback.store(voiceEndedCallback,
+				std::memory_order_release);
 		}
+
+		// Handles of voices that ended while the audio mutex was held, pending
+		// dispatch. All three members are only touched with the audio mutex held.
+		unsigned int mEndedVoiceQueue[VOICE_COUNT];
+		unsigned int mEndedVoiceCount = 0;
+		// True while a thread is draining mEndedVoiceQueue. A callback that
+		// stops another voice re-enters SoLoud and would otherwise start a
+		// nested dispatch from inside the current one, delivering the newer
+		// handle ahead of the rest of the batch and stacking another
+		// VOICE_COUNT-sized snapshot per level. With the guard set, the nested
+		// unlock just leaves its handle queued for the running drain loop.
+		bool mDispatchingEndedVoices = false;
 
 		// Set the callback to call when the device receive a state changed
 		void (*_stateChangedCallback)(unsigned int) = nullptr;
@@ -332,6 +353,16 @@ namespace SoLoud
 		void fadeFilterParameter(handle aVoiceHandle, unsigned int aFilterId, unsigned int aAttributeId, float aTo, time aTime);
 		// Oscillate a live filter parameter. Use 0 for the global filters.
 		void oscillateFilterParameter(handle aVoiceHandle, unsigned int aFilterId, unsigned int aAttributeId, float aFrom, float aTo, time aTime);
+		// Delete the live filter instance at aFilterId from a voice and shift the
+		// remaining instances down by one slot, keeping the voice filter slots in
+		// sync with the sound source filter list. Must be called for every active
+		// voice of a sound before deleting a Filter object, since voice filter
+		// instances keep a reference to their parent filter.
+		void removeVoiceFilter(handle aVoiceHandle, unsigned int aFilterId);
+		// Create a live instance of aFilter at aFilterId for a voice. Voices
+		// snapshot the source filters only at play time, so this is needed to
+		// make a filter added to a sound affect its already playing voices.
+		void addVoiceFilter(handle aVoiceHandle, unsigned int aFilterId, Filter *aFilter);
 
 		// Get current play time, in seconds.
 		time getStreamTime(handle aVoiceHandle);
@@ -444,6 +475,10 @@ namespace SoLoud
 
 		// Set global filters. Set to NULL to clear the filter.
 		void setGlobalFilter(unsigned int aFilterId, Filter *aFilter);
+		// Move the global filter and its live instance from aFromSlot to aToSlot,
+		// leaving aFromSlot empty. Unlike setGlobalFilter, the live instance is
+		// moved as-is, preserving its current parameter values.
+		void moveGlobalFilter(unsigned int aFromSlot, unsigned int aToSlot);
 
 		// Enable or disable visualization data gathering
 		void setVisualizationEnable(bool aEnable);
@@ -563,6 +598,10 @@ namespace SoLoud
 		void lockAudioMutex_internal();
 		// Unlock audio thread mutex.
 		void unlockAudioMutex_internal();
+		// Slow path of unlockAudioMutex_internal(): drains mEndedVoiceQueue.
+		// Kept out of line so the common (empty queue) path does not carry the
+		// snapshot buffer in its stack frame.
+		void unlockAudioMutexAndDispatchEndedVoices_internal();
 
 		// Max. number of active voices. Busses and tickable inaudibles also count against this.
 		unsigned int mMaxActiveVoices;

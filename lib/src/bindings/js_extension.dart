@@ -12,9 +12,6 @@ external void jsEval(String code);
 @JS('window.miniaudio.devices[0].webaudio.state')
 external String? get miniaudioAudioContextState;
 
-@JS('globalThis.crossOriginIsolated')
-external bool? get isCrossOriginIsolated;
-
 /// Construct a JavaScript `BigInt` from a string value.
 ///
 /// Emscripten represents 64-bit integers (e.g. `uint64_t`) as JavaScript
@@ -39,11 +36,19 @@ external double wasmGetF64Value(int ptrAddress, String type);
 @JS('Module_soloud.getValue')
 external double wasmGetF32Value(int ptrAddress, String type);
 
-@JS('Module_soloud.HEAPU8.buffer')
-external JSArrayBuffer get wasmHeapU8Buffer;
+/// The WASM heap as a [JSUint8Array].
+///
+/// NOTE: the underlying buffer (`Module_soloud.HEAPU8.buffer`) must not be
+/// declared as a `JSArrayBuffer`: the module could in principle be compiled
+/// with `-pthread`/`SHARED_MEMORY=1`, making the buffer a `SharedArrayBuffer`,
+/// and the implicit downcast would throw on the JS build (dart2js) whenever
+/// runtime type checks are enabled (e.g. with `--optimization-level=0`).
+/// Using the typed-array views instead works for both buffer kinds.
+@JS('Module_soloud.HEAPU8')
+external JSUint8Array get wasmHeapU8;
 
 @JS('Module_soloud.HEAPF32')
-external JSFloat32Array get wasmHeapF32Buffer;
+external JSFloat32Array get wasmHeapF32;
 
 @JS('Module_soloud.UTF8ToString')
 external String wasmUtf8ToString(int ptrAddress);
@@ -258,10 +263,10 @@ external void wasmSetWaveform(int soundHash, int newWaveform);
 external int wasmSpeechText(int textToSpeechPtr, int handlePtr);
 
 @JS('Module_soloud._pauseSwitch')
-external void wasmPauseSwitch(int handle);
+external int wasmPauseSwitch(int handle);
 
 @JS('Module_soloud._setPause')
-external void wasmSetPause(int handle, int pause);
+external int wasmSetPause(int handle, int pause);
 
 @JS('Module_soloud._getPause')
 external int wasmGetPause(int handle);
@@ -335,7 +340,7 @@ external void wasmFadeScheduled(
 );
 
 @JS('Module_soloud._stop')
-external void wasmStop(int handle);
+external int wasmStop(int handle);
 
 @JS('Module_soloud._disposeSound')
 external void wasmDisposeSound(int soundHash);
@@ -712,7 +717,12 @@ external int wasmCreateBus();
 external void wasmDestroyBus(int busId);
 
 @JS('Module_soloud._busPlayOnEngine')
-external int wasmBusPlayOnEngine(int busId, double volume, int paused);
+external int wasmBusPlayOnEngine(
+  int busId,
+  double volume,
+  int paused,
+  int handlePtr,
+);
 
 @JS('Module_soloud._busSetChannels')
 external void wasmBusSetChannels(int busId, int channels);

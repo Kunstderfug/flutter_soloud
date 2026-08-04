@@ -100,10 +100,7 @@ var targets: [Target] = [
         linkerSettings: [
             .linkedFramework("AudioToolbox"),
             .linkedFramework("AVFAudio"),
-            .unsafeFlags([
-                "-Xlinker", "-undefined",
-                "-Xlinker", "dynamic_lookup",
-            ]),
+            .unsafeFlags(["-Xlinker", "-undefined", "-Xlinker", "dynamic_lookup"]),
         ]
     )
 ]

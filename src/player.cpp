@@ -2232,6 +2232,10 @@ unsigned int Player::createBus()
 void Player::destroyBus(unsigned int busId)
 {
     busMap.erase(busId);
+    // A mixing bus is itself a voice on the main engine. Its AudioSource
+    // destructor stops that voice directly, bypassing Player::stop(), so the
+    // usual idle-device pause is not requested when the final bus is removed.
+    pauseEngine();
 }
 
 unsigned int Player::busPlayOnEngine(unsigned int busId, float volume,

@@ -12,6 +12,7 @@ import 'equalizer_filter.dart' as equalizer_filter;
 import 'global_filters.dart' as global_filters;
 import 'handles.dart' as handles;
 import 'hot_restart_lifecycle.dart' as hot_restart_lifecycle;
+import 'idle_engine.dart' as idle_engine;
 import 'input_capture.dart' as input_capture;
 import 'limiter_filter.dart' as limiter_filter;
 import 'load_mem.dart' as load_mem;
@@ -132,6 +133,10 @@ final List<TestEntry> allTests = [
   const TestEntry(
     name: 'HotRestartLifecycle',
     run: hot_restart_lifecycle.testHotRestartLifecycle,
+  ),
+  const TestEntry(
+    name: 'IdleEngineAfterMixingBusDispose',
+    run: idle_engine.testIdleEngineAfterMixingBusDispose,
   ),
   const TestEntry(
     name: 'InputCapture',

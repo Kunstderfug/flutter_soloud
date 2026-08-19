@@ -22,12 +22,15 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
 struct PlaybackDevice
 {
-  char *name;
+  // Owns its name: the `ma_device_info` array it is built from belongs to the
+  // miniaudio context and dies with it.
+  std::string name;
   unsigned int isDefault;
   unsigned int id;
   ma_device_id deviceId; // Store the actual device ID, not just the index
@@ -58,7 +61,15 @@ public:
   /// @param deviceID the device ID. -1 for default OS output device.
   PlayerErrors changeDevice(int deviceID);
 
-  std::vector<PlaybackDevice> listPlaybackDevices();
+  /// @brief Enumerate the OS playback devices.
+  ///
+  /// Static because it reads no player state: it spins up its own local
+  /// `ma_context` and tears it down before returning. Callers must be able to
+  /// enumerate devices while the engine is being created or destroyed on
+  /// another thread, so this must not depend on the lifetime of the global
+  /// `player` instance nor take the lifecycle lock (which an in-flight
+  /// `init()` can hold for the whole audio-device startup).
+  static std::vector<PlaybackDevice> listPlaybackDevices();
 
   std::vector<CaptureDevice> listCaptureDevices();
 
@@ -901,7 +912,7 @@ public:
   std::vector<std::unique_ptr<ActiveSound>> sounds;
 
   /// true when the backend is initialized
-  bool mInited;
+  std::atomic<bool> mInited;
 
   /// main SoLoud engine
   SoLoud::Soloud soloud;
@@ -917,7 +928,6 @@ public:
   unsigned int mChannels;
 
 private:
-  ma_device_info *pPlaybackInfos;
   std::mutex remove_handle_mutex;
   mutable std::recursive_mutex sounds_mutex; // Protects the sounds vector (recursive to avoid deadlock in destructors)
   unsigned int mBufferSize;

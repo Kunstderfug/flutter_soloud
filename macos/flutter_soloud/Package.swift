@@ -85,7 +85,19 @@ var targets: [Target] = [
         name: "flutter_soloud",
         dependencies: targetDependencies,
         exclude: [
-            "src"
+            // C++ implementation is pulled in via flutter_soloud.mm, not as
+            // standalone SPM sources.
+            "src",
+            // Vendor codec headers live in include/ for compile-time search
+            // paths. They must not be SPM public headers: Clang module-scans
+            // that directory as C when Swift does `import flutter_soloud`, and
+            // FLAC++ includes <string>.
+            "include/FLAC",
+            "include/FLAC++",
+            "include/ogg",
+            "include/opus",
+            "include/share",
+            "include/vorbis",
         ],
         resources: [
             // TODO: If your plugin requires a privacy manifest

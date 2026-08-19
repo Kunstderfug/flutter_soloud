@@ -1,0 +1,4 @@
+module flutter_soloud {
+  header "FlutterSoloudPlugin.h"
+  export *
+}

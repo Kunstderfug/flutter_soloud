@@ -1,5 +1,6 @@
 #include "soloud_common.h"
 #include "player.h"
+#include "capture/capture_session.h"
 #include "device_lifecycle_test_hooks.h"
 #include "audiobuffer/circular_float_buffer.h"
 #include "audiobuffer/pull_buffer_stream.h"
@@ -187,6 +188,7 @@ static PlayerErrors fromSoLoudError(SoLoud::result result)
 }
 
 Player::Player() : mFilters(&soloud, nullptr, nullptr),
+                   mCaptureSession(std::make_unique<CaptureSession>(*this)),
                    mPauseThreadRunning(false),
                    mIdleTimeoutMs(
                        gAudioDeviceIdleTimeoutMs.load(
@@ -226,6 +228,10 @@ Player::~Player()
 
 void Player::dispose()
 {
+    // Capture owns an independent miniaudio device. Stop it even when the
+    // playback engine was never initialized or is already torn down.
+    cancelCapture();
+
     if (!mInited.load(std::memory_order_acquire))
         return;
 
@@ -3059,6 +3065,48 @@ void Player::addVoiceToGroup(SoLoud::handle voiceGroupHandle, SoLoud::handle voi
     soloud.addVoiceToGroup(voiceGroupHandle, voiceHandle);
 }
 
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_SUCCESS) ==
+    voiceGroupStartSuccess);
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_BACKEND_NOT_INITIALIZED) ==
+    voiceGroupStartBackendNotInitialized);
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_INVALID_INPUT) ==
+    voiceGroupStartInvalidInput);
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_INVALID_GROUP) ==
+    voiceGroupStartInvalidGroup);
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_MEMBER_COUNT_MISMATCH) ==
+    voiceGroupStartMemberCountMismatch);
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_INVALID_MAIN) ==
+    voiceGroupStartInvalidMain);
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_INVALID_MEMBER) ==
+    voiceGroupStartInvalidMember);
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_MEMBER_NOT_PAUSED) ==
+    voiceGroupStartMemberNotPaused);
+static_assert(
+    static_cast<int>(SoLoud::VOICE_GROUP_START_DEADLINE_REACHED) ==
+    voiceGroupStartDeadlineReached);
+
+VoiceGroupStartResult Player::scheduleVoiceGroupStartAt(
+    SoLoud::handle voiceGroupHandle,
+    SoLoud::handle requiredMainHandle,
+    int expectedMemberCount,
+    double engineDeadline)
+{
+    return static_cast<VoiceGroupStartResult>(
+        soloud.scheduleVoiceGroupStartAt(
+            voiceGroupHandle,
+            requiredMainHandle,
+            expectedMemberCount,
+            engineDeadline));
+}
+
 bool Player::isVoiceGroup(SoLoud::handle handle)
 {
     return soloud.isVoiceGroup(handle);
@@ -3636,6 +3684,8 @@ PlayerErrors Player::busPlayOnEngine(unsigned int busId, float volume,
     auto it = busMap.find(busId);
     if (it == busMap.end())
         return busIdNotFound;
+
+    it->second.syncSampleRate(&soloud);
 
     // Create paused so the bus handle and initial pan are committed before the
     // bus can render or request device startup.

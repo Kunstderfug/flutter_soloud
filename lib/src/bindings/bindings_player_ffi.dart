@@ -18,14 +18,18 @@ import 'package:flutter_soloud/src/bindings/darwin_engine_lifecycle.dart';
 import 'package:flutter_soloud/src/bindings/flutter_soloud_ffigen.dart'
     as native;
 import 'package:flutter_soloud/src/bindings/native_metadata_ffi.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:flutter_soloud/src/sound_hash.dart';
 import 'package:logging/logging.dart';
 import 'package:meta/meta.dart';
+
+part 'bindings_capture_ffi.dart';
 
 typedef OnMetadataCallbackTFunction = void Function(NativeAudioMetadata);
 
@@ -67,7 +71,9 @@ final class _IsolateLifecycleToken implements ffi.Finalizable {}
 
 /// FFI bindings to SoLoud
 @internal
-class FlutterSoLoudFfi extends FlutterSoLoud {
+// The required capture overrides are provided by _FlutterSoLoudFfiCapture.
+// ignore: missing_override_of_must_be_overridden
+class FlutterSoLoudFfi extends FlutterSoLoud with _FlutterSoLoudFfiCapture {
   static final Logger _log = Logger('flutter_soloud.FlutterSoLoudFfi');
 
   /// Sentinel used where no FlutterEngine lifecycle is available. Must match
@@ -265,6 +271,7 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
       _isolateFinalizer.detach(_lifecycleToken!);
       _lifecycleToken = null;
     }
+    _disposeCaptureLevelPointers();
     _disposeAllBufferStreamCallbacks();
     nativeVoiceEndedCallable?.close();
     nativeVoiceEndedCallable = null;
@@ -1460,6 +1467,22 @@ class FlutterSoLoudFfi extends FlutterSoLoud {
     for (final handle in voiceHandles) {
       native.addVoiceToGroup(voiceGroupHandle.id, handle.id);
     }
+  }
+
+  @override
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  ) {
+    final result = native.scheduleVoiceGroupStartAt(
+      voiceGroupHandle.id,
+      requiredMain.id,
+      expectedMemberCount,
+      engineDeadline.toDouble(),
+    );
+    return VoiceGroupStartResult.fromValue(result.value);
   }
 
   @override

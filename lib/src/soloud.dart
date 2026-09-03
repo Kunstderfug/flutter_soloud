@@ -10,9 +10,11 @@ import 'package:flutter_soloud/src/bindings/bindings_player.dart';
 import 'package:flutter_soloud/src/bindings/native_metadata_ffi.dart'
     if (dart.library.js_interop) 'package:flutter_soloud/src/bindings/native_metadata_web.dart';
 import 'package:flutter_soloud/src/bindings/soloud_controller.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart';
 import 'package:flutter_soloud/src/helpers/looping_region.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/metadata.dart';
@@ -338,6 +340,10 @@ interface class SoLoud {
 
   /// The channels the engine was initialized with.
   Channels _channels = Channels.stereo;
+
+  /// Path of the active native miniaudio capture, if any.
+  String? _capturePath;
+  String? _captureMirrorPath;
 
   /// Initializes the audio engine.
   ///
@@ -762,6 +768,190 @@ interface class SoLoud {
     return _controller.soLoudFFI.listPlaybackDevices();
   }
 
+  /// Lists all OS available capture devices.
+  /// Could be called safely even if the engine has not been initialized yet.
+  List<CaptureDevice> listCaptureDevices() {
+    return _controller.soLoudFFI.listCaptureDevices();
+  }
+
+  /// Whether the native miniaudio capture device is currently recording.
+  bool get isCaptureRecording => _controller.soLoudFFI.isCaptureRecording();
+
+  /// Start recording from the native miniaudio capture device into [path].
+  ///
+  /// The file is written as IEEE float WAV. The capture clock snapshots
+  /// returned by this API use the same native monotonic clock for the whole
+  /// capture session, so callers can compare start, first-buffer, stop, and
+  /// explicit transport marks.
+  SoLoudCaptureStartResult startCapture(
+    String path, {
+    int sampleRate = 48000,
+    Channels channels = Channels.stereo,
+    int bufferSizeFrames = 256,
+    double inputGainDb = 0,
+    CaptureDevice? device,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final ret = _controller.soLoudFFI.startCapture(
+      path,
+      sampleRate,
+      channels.count,
+      bufferSizeFrames,
+      inputGainDb,
+      device,
+      mirrorPath,
+      mirrorFormat,
+      mirrorBitsPerSample,
+    );
+    _logPlayerError(ret.error, from: 'startCapture() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+    _capturePath = path;
+    final result = ret.result!;
+    _captureMirrorPath = result.mirrorActive ? mirrorPath : null;
+    return result;
+  }
+
+  /// Start recording and play [sound] from one native command path.
+  ///
+  /// This creates the SoLoud voice paused, applies the optional [startAt] seek
+  /// and loop settings, then unpauses it after native capture is active. The
+  /// returned timestamps are on the same native monotonic clock as capture.
+  SoLoudCapturePlaybackStartResult startCaptureAndPlay(
+    String path,
+    AudioSource sound, {
+    int busId = 0,
+    int sampleRate = 48000,
+    Channels channels = Channels.stereo,
+    int bufferSizeFrames = 256,
+    double volume = 1,
+    double pan = 0,
+    Duration startAt = Duration.zero,
+    bool looping = false,
+    Duration loopingStartAt = Duration.zero,
+    double inputGainDb = 0,
+    CaptureDevice? device,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
+  }) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final ret = _controller.soLoudFFI.startCaptureAndPlay(
+      path,
+      sound.soundHash,
+      busId: busId,
+      sampleRate: sampleRate,
+      channels: channels.count,
+      bufferSizeFrames: bufferSizeFrames,
+      volume: volume,
+      pan: pan,
+      startAt: startAt,
+      looping: looping,
+      loopingStartAt: loopingStartAt,
+      inputGainDb: inputGainDb,
+      device: device,
+      mirrorPath: mirrorPath,
+      mirrorFormat: mirrorFormat,
+      mirrorBitsPerSample: mirrorBitsPerSample,
+    );
+    _logPlayerError(ret.error, from: 'startCaptureAndPlay() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+
+    final filtered = _activeSounds
+        .where((s) => s.soundHash == sound.soundHash)
+        .toSet();
+    if (filtered.isEmpty) {
+      _log.severe(
+        () => 'startCaptureAndPlay(): soundHash ${sound.soundHash} not found',
+      );
+      throw SoLoudSoundHashNotFoundDartException(sound.soundHash);
+    }
+
+    assert(filtered.length == 1, 'Duplicate sounds found');
+    final result = ret.result!;
+    for (final activeSound in filtered) {
+      activeSound.handlesInternal.add(SoundHandle(result.handle));
+    }
+
+    _capturePath = path;
+    _captureMirrorPath = result.mirrorActive ? mirrorPath : null;
+    return result;
+  }
+
+  /// Stop the active native miniaudio capture device.
+  SoLoudCaptureStopResult stopCapture() {
+    final ret = _controller.soLoudFFI.stopCapture();
+    _logPlayerError(ret.error, from: 'stopCapture() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+    final result = ret.result!;
+    final path = _capturePath ?? result.path;
+    final mirrorPath = _captureMirrorPath ?? result.mirrorPath;
+    _capturePath = null;
+    _captureMirrorPath = null;
+    return SoLoudCaptureStopResult(
+      path: path,
+      sampleRate: result.sampleRate,
+      channels: result.channels,
+      frameCount: result.frameCount,
+      duration: result.duration,
+      sessionStartHostTimeNanos: result.sessionStartHostTimeNanos,
+      captureStartHostTimeNanos: result.captureStartHostTimeNanos,
+      firstInputBufferHostTimeNanos: result.firstInputBufferHostTimeNanos,
+      firstInputBufferFrameIndex: result.firstInputBufferFrameIndex,
+      captureStopHostTimeNanos: result.captureStopHostTimeNanos,
+      mirrorPath: mirrorPath,
+      mirrorFormat: result.mirrorFormat,
+      mirrorSucceeded: result.mirrorSucceeded,
+      mirrorFrameCount: result.mirrorFrameCount,
+      writerOverflowFrames: result.writerOverflowFrames,
+      writerSilenceFrames: result.writerSilenceFrames,
+      writerFailed: result.writerFailed,
+    );
+  }
+
+  /// Cancel the active native miniaudio capture device.
+  void cancelCapture() {
+    final ret = _controller.soLoudFFI.cancelCapture();
+    _logPlayerError(ret, from: 'cancelCapture() result');
+    if (ret != PlayerErrors.noError) {
+      throw SoLoudCppException.fromPlayerError(ret);
+    }
+    _capturePath = null;
+    _captureMirrorPath = null;
+  }
+
+  /// Return a clock snapshot from the active miniaudio capture session.
+  SoLoudCaptureClockSnapshot captureClockSnapshot() {
+    final ret = _controller.soLoudFFI.getCaptureClockSnapshot();
+    _logPlayerError(ret.error, from: 'captureClockSnapshot() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+    return ret.result!;
+  }
+
+  /// Return the current live input level from the active capture session.
+  SoLoudCaptureLevelSnapshot captureLevelSnapshot() {
+    final ret = _controller.soLoudFFI.getCaptureLevelSnapshot();
+    _logPlayerError(ret.error, from: 'captureLevelSnapshot() result');
+    if (ret.error != PlayerErrors.noError || ret.result == null) {
+      throw SoLoudCppException.fromPlayerError(ret.error);
+    }
+    return ret.result!;
+  }
+
   /// Stops the engine and disposes of all resources, including sounds.
   ///
   /// This method is meant to be called when exiting the app. For example
@@ -819,6 +1009,11 @@ interface class SoLoud {
       _controller.soLoudFFI.setVisualizationEnabled(false);
       _isVisualizationEnabled = false;
     }
+    if (_controller.soLoudFFI.isCaptureRecording()) {
+      _controller.soLoudFFI.cancelCapture();
+    }
+    _capturePath = null;
+    _captureMirrorPath = null;
   }
 
   Future<void> _deinitNativeAsync() async {
@@ -3773,6 +3968,34 @@ interface class SoLoud {
     return _controller.soLoudFFI.addVoicesToGroup(
       voiceGroupHandle,
       voiceHandles,
+    );
+  }
+
+  /// Atomically schedules every prepared member of [voiceGroupHandle] at one
+  /// absolute [engineDeadline].
+  ///
+  /// Before calling this method, create every intended voice with
+  /// `paused: true`, configure it, and add it to the group. The raw group must
+  /// contain exactly [expectedMemberCount] live paused voices, including
+  /// [requiredMain].
+  ///
+  /// On [VoiceGroupStartResult.success], native code assigns one rounded sample
+  /// delay to every member and unpauses all of them while holding the audio
+  /// mutex. Every other result leaves all voice and group state unchanged.
+  ///
+  /// Unlike most playback methods, an uninitialized backend and a reached
+  /// deadline are returned as explicit control-flow results rather than thrown.
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  ) {
+    return _controller.soLoudFFI.scheduleVoiceGroupStartAt(
+      voiceGroupHandle,
+      requiredMain,
+      expectedMemberCount,
+      engineDeadline,
     );
   }
 

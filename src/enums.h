@@ -85,6 +85,19 @@ typedef enum PlayerErrors {
   failedToStartPlayback = 35,
 } PlayerErrors_t;
 
+/// Result of atomically scheduling a prepared voice group.
+typedef enum VoiceGroupStartResult {
+  voiceGroupStartSuccess = 0,
+  voiceGroupStartBackendNotInitialized = 1,
+  voiceGroupStartInvalidInput = 2,
+  voiceGroupStartInvalidGroup = 3,
+  voiceGroupStartMemberCountMismatch = 4,
+  voiceGroupStartInvalidMain = 5,
+  voiceGroupStartInvalidMember = 6,
+  voiceGroupStartMemberNotPaused = 7,
+  voiceGroupStartDeadlineReached = 8,
+} VoiceGroupStartResult_t;
+
 /// Possible read sample errors
 typedef enum ReadSamplesErrors {
   /// No error

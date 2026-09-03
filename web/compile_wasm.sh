@@ -153,6 +153,11 @@ SOURCES=(
     ../src/soloud_common.cpp
     ../src/bindings.cpp
     ../src/player.cpp
+    ../src/capture/capture_mirror.cpp
+    ../src/capture/capture_processing.cpp
+    ../src/capture/capture_session.cpp
+    ../src/capture/capture_writer.cpp
+    ../src/capture/wavpack_capture_encoder.cpp
     ../src/pffft/*.c*
     ../src/analyzer.cpp
     ../src/synth/*.cpp
@@ -197,7 +202,9 @@ fi
 # thread, so the audio mutex (recursive, see Thread::createMutex) can be
 # re-entered by the same thread. SoLoud's internal asserts assume the mutex
 # is never re-entered (mInsideAudioThreadMutex) and would fire spuriously.
-COMPILER_DEFINES="-D WITH_MINIAUDIO -D SIGNALSMITH_USE_PFFFT -D SOLOUD_NO_ASSERTS"
+# Input-device capture is not exposed on web, and this build does not compile
+# the native WavPack C sources.
+COMPILER_DEFINES="-D WITH_MINIAUDIO -D SIGNALSMITH_USE_PFFFT -D SOLOUD_NO_ASSERTS -D NO_WAVPACK_LIBS"
 if [ "${SKIP_OPUS_OGG}" = "1" ]; then
     COMPILER_DEFINES="$COMPILER_DEFINES -D NO_XIPH_LIBS"
 fi

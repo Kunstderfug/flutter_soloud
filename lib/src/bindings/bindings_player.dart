@@ -4,8 +4,10 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter_soloud/src/audio_visualization_data.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:flutter_soloud/src/sound_hash.dart';
@@ -252,6 +254,9 @@ abstract class FlutterSoLoud {
 
   /// List available playback devices.
   List<PlaybackDevice> listPlaybackDevices();
+
+  /// List available capture/input devices.
+  List<CaptureDevice> listCaptureDevices();
 
   /// Must be called when the player is no more needed or when closing the app.
   @mustBeOverridden
@@ -1048,6 +1053,15 @@ abstract class FlutterSoLoud {
     List<SoundHandle> voiceHandles,
   );
 
+  /// Atomically schedule every prepared member of [voiceGroupHandle] at one
+  /// absolute [engineDeadline].
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  );
+
   /// Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.
   ///
@@ -1491,6 +1505,68 @@ abstract class FlutterSoLoud {
     double endTime = -1,
     bool average = false,
   });
+
+  /////////////////////////////////////////
+  /// Native miniaudio capture
+  /////////////////////////////////////////
+
+  /// Start native miniaudio input capture to a WAV file.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCaptureStartResult? result}) startCapture(
+    String path,
+    int sampleRate,
+    int channels,
+    int bufferSizeFrames,
+    double inputGainDb,
+    CaptureDevice? device,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat,
+    int mirrorBitsPerSample,
+  );
+
+  /// Start native capture and a SoLoud voice from one command.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCapturePlaybackStartResult? result})
+  startCaptureAndPlay(
+    String path,
+    SoundHash soundHash, {
+    int busId = 0,
+    int sampleRate = 48000,
+    int channels = 2,
+    int bufferSizeFrames = 256,
+    double volume = 1,
+    double pan = 0,
+    Duration startAt = Duration.zero,
+    bool looping = false,
+    Duration loopingStartAt = Duration.zero,
+    double inputGainDb = 0,
+    CaptureDevice? device,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
+  });
+
+  /// Stop the active native miniaudio capture session.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCaptureStopResult? result}) stopCapture();
+
+  /// Cancel capture and delete the partial WAV file.
+  @mustBeOverridden
+  PlayerErrors cancelCapture();
+
+  /// Whether native miniaudio capture is currently recording.
+  @mustBeOverridden
+  bool isCaptureRecording();
+
+  /// Same-clock snapshot from the active capture session.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCaptureClockSnapshot? result})
+  getCaptureClockSnapshot();
+
+  /// Live input-level snapshot from the active capture session.
+  @mustBeOverridden
+  ({PlayerErrors error, SoLoudCaptureLevelSnapshot? result})
+  getCaptureLevelSnapshot();
 
   /////////////////////////////////////////
   /// Mixing Bus

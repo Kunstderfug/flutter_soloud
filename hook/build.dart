@@ -101,6 +101,8 @@ void main(List<String> args) async {
       'src/soloud/include',
       'src/soloud/src',
       'src/pffft',
+      'src/wavpack/include',
+      'src/wavpack/src',
       ...xiph.includeDirs,
     ];
 
@@ -132,6 +134,24 @@ void main(List<String> args) async {
       await objcBuilder.run(input: input, output: output);
     }
 
+    // WavPack is C, not C++. CBuilder with `language: .cpp` force-feeds
+    // `-x c++` for every source, which breaks malloc/void* assignments in
+    // the vendored encoder. Build it as a C static library and link it in.
+    final wavPackSources = collectWavPackSources(input.packageRoot);
+    if (wavPackSources.isNotEmpty) {
+      final wavPackBuilder = CBuilder.library(
+        name: 'flutter_soloud_wavpack',
+        language: Language.c,
+        std: 'c11',
+        linkModePreference: LinkModePreference.static,
+        sources: wavPackSources,
+        includes: includes,
+        defines: defines,
+        flags: flags.where((flag) => flag != '-Wno-vla').toList(),
+      );
+      await wavPackBuilder.run(input: input, output: output);
+    }
+
     final builder = CBuilder.library(
       name: _libName,
       assetName: _assetName,
@@ -151,13 +171,17 @@ void main(List<String> args) async {
           : const [],
       libraries: [
         ...xiph.libraries,
+        if (wavPackSources.isNotEmpty) 'flutter_soloud_wavpack',
         if (isApple) 'flutter_soloud_miniaudio_objc',
         if (os == OS.android) ...['log', 'android'],
         if (os == OS.linux) 'asound',
       ],
-      // '.' is the hook output directory, where the miniaudio ObjC++ static
-      // library was just built.
-      libraryDirectories: [if (isApple) '.', ...xiph.libraryDirectories],
+      // '.' is the hook output directory, where the miniaudio ObjC++ and
+      // WavPack static libraries were just built.
+      libraryDirectories: [
+        if (isApple || wavPackSources.isNotEmpty) '.',
+        ...xiph.libraryDirectories,
+      ],
     );
     await builder.run(input: input, output: output);
 
@@ -211,6 +235,9 @@ List<String> collectSources(Uri packageRoot, OS targetOS) {
   addDir('mixeroutput/');
   addDir('synth/');
   addDir('waveform/');
+  // Miniaudio input capture. WavPack C sources are built separately:
+  // CBuilder language.cpp force-feeds `-x c++`.
+  addDir('capture/');
   // pffft.c is C99; the toolchain compiles it as C based on its extension.
   addDir('pffft/', extensions: const ['.c']);
 
@@ -239,6 +266,24 @@ List<String> collectSources(Uri packageRoot, OS targetOS) {
     addDir('soloud/src/backend/coreaudio/');
   }
 
+  return sources..sort();
+}
+
+/// Vendored WavPack C encoder/decoder sources, compiled as C.
+List<String> collectWavPackSources(Uri packageRoot) {
+  final rootPath = packageRoot.toFilePath().replaceAll(r'\', '/');
+  final dir = Directory.fromUri(packageRoot.resolve('src/wavpack/src'));
+  if (!dir.existsSync()) return const [];
+  final sources = <String>[];
+  for (final entity in dir.listSync()) {
+    if (entity is! File) continue;
+    final path = entity.path.replaceAll(r'\', '/');
+    if (!path.endsWith('.c')) continue;
+    final relPath = path.startsWith(rootPath)
+        ? path.substring(rootPath.length)
+        : path;
+    sources.add(relPath.startsWith('/') ? relPath.substring(1) : relPath);
+  }
   return sources..sort();
 }
 

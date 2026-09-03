@@ -35,6 +35,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory.h>
 #include <memory>
@@ -1372,6 +1373,236 @@ extern "C"
       free(isDefault[i]);
       free(devicesName[i]);
     }
+  }
+
+  FFI_PLUGIN_EXPORT void listCaptureDevices(char **devicesName, int **deviceId,
+                                            int **isDefault, int *n_devices)
+  {
+    std::vector<CaptureDevice> d = Player::listCaptureDevices();
+
+    int numDevices = 0;
+    for (int i = 0; i < (int)d.size(); i++)
+    {
+      bool hasSpecialChar = false;
+      const size_t nameLength = strlen(d[i].name);
+      for (int n = 0; n < 5 && n < (int)nameLength; n++)
+      {
+        if (d[i].name[n] < 0x20 && d[i].name[n] >= 0)
+          hasSpecialChar = true;
+      }
+      if (nameLength == 0 || hasSpecialChar)
+      {
+        free(d[i].name);
+        continue;
+      }
+
+      devicesName[numDevices] = strdup(d[i].name);
+      isDefault[numDevices] = (int *)malloc(sizeof(int));
+      *isDefault[numDevices] = d[i].isDefault;
+      deviceId[numDevices] = (int *)malloc(sizeof(int));
+      *deviceId[numDevices] = d[i].id;
+      free(d[i].name);
+      numDevices++;
+    }
+    *n_devices = numDevices;
+  }
+
+  FFI_PLUGIN_EXPORT void freeListCaptureDevices(
+      char **devicesName, int **deviceId, int **isDefault, int n_devices)
+  {
+    for (int i = 0; i < n_devices; i++)
+    {
+      free(deviceId[i]);
+      free(isDefault[i]);
+      free(devicesName[i]);
+    }
+  }
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors
+  startCapture(char *path, unsigned int sampleRate, unsigned int channels,
+               unsigned int bufferSizeFrames, float inputGainDb,
+               int captureDeviceID, char *mirrorPath,
+               unsigned int mirrorFormat, unsigned int mirrorBitsPerSample,
+               unsigned int *actualSampleRate, unsigned int *actualChannels,
+               uint64_t *sessionStartHostTimeNanos,
+               uint64_t *captureStartHostTimeNanos,
+               unsigned int *actualMirrorFormat, unsigned int *mirrorActive)
+  {
+    if (player.get() == nullptr)
+      return backendNotInited;
+    if (path == nullptr || actualSampleRate == nullptr ||
+        actualChannels == nullptr || sessionStartHostTimeNanos == nullptr ||
+        captureStartHostTimeNanos == nullptr || actualMirrorFormat == nullptr ||
+        mirrorActive == nullptr)
+      return nullPointer;
+
+    CaptureStartInfo info;
+    PlayerErrors result = player.get()->startCapture(
+        std::string(path), sampleRate, channels, bufferSizeFrames, inputGainDb,
+        captureDeviceID,
+        mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
+        mirrorFormat, mirrorBitsPerSample, &info);
+    if (result == noError)
+    {
+      *actualSampleRate = info.sampleRate;
+      *actualChannels = info.channels;
+      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
+      *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
+      *actualMirrorFormat = info.mirrorFormat;
+      *mirrorActive = info.mirrorActive ? 1 : 0;
+    }
+    return result;
+  }
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors startCaptureAndPlay(
+      char *path, unsigned int soundHash, unsigned int busId,
+      unsigned int sampleRate, unsigned int channels,
+      unsigned int bufferSizeFrames, float volume, float pan,
+      double startAtSeconds, bool looping, double loopingStartAt,
+      float inputGainDb, int captureDeviceID, char *mirrorPath,
+      unsigned int mirrorFormat, unsigned int mirrorBitsPerSample,
+      unsigned int *handle, unsigned int *actualSampleRate,
+      unsigned int *actualChannels, uint64_t *sessionStartHostTimeNanos,
+      uint64_t *captureStartHostTimeNanos,
+      uint64_t *playbackStartHostTimeNanos, unsigned int *actualMirrorFormat,
+      unsigned int *mirrorActive)
+  {
+    if (player.get() == nullptr)
+      return backendNotInited;
+    if (path == nullptr || handle == nullptr || actualSampleRate == nullptr ||
+        actualChannels == nullptr || sessionStartHostTimeNanos == nullptr ||
+        captureStartHostTimeNanos == nullptr ||
+        playbackStartHostTimeNanos == nullptr ||
+        actualMirrorFormat == nullptr || mirrorActive == nullptr)
+      return nullPointer;
+
+    CapturePlaybackStartInfo info;
+    PlayerErrors result = player.get()->startCaptureAndPlay(
+        std::string(path), soundHash, busId, sampleRate, channels,
+        bufferSizeFrames, volume, pan, startAtSeconds, looping, loopingStartAt,
+        inputGainDb, captureDeviceID,
+        mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
+        mirrorFormat, mirrorBitsPerSample, &info);
+    if (result == noError)
+    {
+      *handle = info.handle;
+      *actualSampleRate = info.sampleRate;
+      *actualChannels = info.channels;
+      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
+      *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
+      *playbackStartHostTimeNanos = info.playbackStartHostTimeNanos;
+      *actualMirrorFormat = info.mirrorFormat;
+      *mirrorActive = info.mirrorActive ? 1 : 0;
+    }
+    return result;
+  }
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors
+  stopCapture(unsigned int *sampleRate, unsigned int *channels,
+              uint64_t *frameCount, uint64_t *sessionStartHostTimeNanos,
+              uint64_t *captureStartHostTimeNanos,
+              uint64_t *firstInputBufferHostTimeNanos,
+              uint64_t *firstInputBufferFrameIndex,
+              uint64_t *captureStopHostTimeNanos, unsigned int *mirrorFormat,
+              unsigned int *mirrorSucceeded, uint64_t *mirrorFrameCount,
+              uint64_t *writerOverflowFrames, uint64_t *writerSilenceFrames,
+              unsigned int *writerFailed)
+  {
+    if (player.get() == nullptr)
+      return backendNotInited;
+    if (sampleRate == nullptr || channels == nullptr || frameCount == nullptr ||
+        sessionStartHostTimeNanos == nullptr ||
+        captureStartHostTimeNanos == nullptr ||
+        firstInputBufferHostTimeNanos == nullptr ||
+        firstInputBufferFrameIndex == nullptr ||
+        captureStopHostTimeNanos == nullptr || mirrorFormat == nullptr ||
+        mirrorSucceeded == nullptr || mirrorFrameCount == nullptr ||
+        writerOverflowFrames == nullptr || writerSilenceFrames == nullptr ||
+        writerFailed == nullptr)
+      return nullPointer;
+
+    CaptureStopInfo info;
+    PlayerErrors result = player.get()->stopCapture(&info);
+    if (result == noError)
+    {
+      *sampleRate = info.sampleRate;
+      *channels = info.channels;
+      *frameCount = info.frameCount;
+      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
+      *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
+      *firstInputBufferHostTimeNanos = info.firstInputBufferHostTimeNanos;
+      *firstInputBufferFrameIndex = info.firstInputBufferFrameIndex;
+      *captureStopHostTimeNanos = info.captureStopHostTimeNanos;
+      *mirrorFormat = info.mirrorFormat;
+      *mirrorSucceeded = info.mirrorSucceeded ? 1 : 0;
+      *mirrorFrameCount = info.mirrorFrameCount;
+      *writerOverflowFrames = info.writerOverflowFrames;
+      *writerSilenceFrames = info.writerSilenceFrames;
+      *writerFailed = info.writerFailed ? 1 : 0;
+    }
+    return result;
+  }
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors cancelCapture()
+  {
+    if (player.get() == nullptr)
+      return backendNotInited;
+    return player.get()->cancelCapture();
+  }
+
+  FFI_PLUGIN_EXPORT int isCaptureRecording()
+  {
+    if (player.get() == nullptr)
+      return 0;
+    return player.get()->isCaptureRecording() ? 1 : 0;
+  }
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors
+  getCaptureClockSnapshot(uint64_t *hostTimeNanos,
+                          uint64_t *sessionStartHostTimeNanos,
+                          unsigned int *sampleRate,
+                          uint64_t *inputDeviceFrame)
+  {
+    if (player.get() == nullptr)
+      return backendNotInited;
+    if (hostTimeNanos == nullptr || sessionStartHostTimeNanos == nullptr ||
+        sampleRate == nullptr || inputDeviceFrame == nullptr)
+      return nullPointer;
+
+    CaptureClockInfo info;
+    PlayerErrors result = player.get()->getCaptureClockSnapshot(&info);
+    if (result == noError)
+    {
+      *hostTimeNanos = info.hostTimeNanos;
+      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
+      *sampleRate = info.sampleRate;
+      *inputDeviceFrame = info.inputDeviceFrame;
+    }
+    return result;
+  }
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors getCaptureLevelSnapshot(
+      float *currentPeak, float *currentRms, float *peakSinceLastRead,
+      float *heldPeak, uint64_t *frameCount)
+  {
+    if (player.get() == nullptr)
+      return backendNotInited;
+    if (currentPeak == nullptr || currentRms == nullptr ||
+        peakSinceLastRead == nullptr || heldPeak == nullptr ||
+        frameCount == nullptr)
+      return nullPointer;
+
+    CaptureLevelInfo info;
+    PlayerErrors result = player.get()->getCaptureLevelSnapshot(&info);
+    if (result == noError)
+    {
+      *currentPeak = info.currentPeak;
+      *currentRms = info.currentRms;
+      *peakSinceLastRead = info.peakSinceLastRead;
+      *heldPeak = info.heldPeak;
+      *frameCount = info.frameCount;
+    }
+    return result;
   }
 
   /// Teardown body. The caller must hold init_deinit_mutex and loadMutex.
@@ -3022,6 +3253,17 @@ extern "C"
     if (player.get() == nullptr || !player.get()->isInited())
       return;
     player.get()->addVoiceToGroup(voiceGroupHandle, voiceHandle);
+  }
+
+  FFI_PLUGIN_EXPORT enum VoiceGroupStartResult scheduleVoiceGroupStartAt(
+      unsigned int voiceGroupHandle, unsigned int requiredMainHandle,
+      int expectedMemberCount, double engineDeadline)
+  {
+    if (player.get() == nullptr || !player.get()->isInited())
+      return voiceGroupStartBackendNotInitialized;
+    return player.get()->scheduleVoiceGroupStartAt(
+        voiceGroupHandle, requiredMainHandle, expectedMemberCount,
+        engineDeadline);
   }
 
   /// Checks if the handle is a valid voice group. Does not care if the

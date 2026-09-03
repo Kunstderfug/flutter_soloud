@@ -33,6 +33,12 @@ include_directories(${SRC_DIR}/soloud/include)
 include_directories(${SRC_DIR}/soloud/src)
 include_directories(${SRC_DIR}/pffft)
 include_directories(${SRC_DIR})
+if(NOT DEFINED NO_WAVPACK_LIBS AND NOT DEFINED ENV{NO_WAVPACK_LIBS})
+  include_directories(${SRC_DIR}/wavpack/include)
+  include_directories(${SRC_DIR}/wavpack/src)
+else()
+  add_definitions(-DNO_WAVPACK_LIBS)
+endif()
 include (${SRC_DIR}/src.cmake)
 message("**************** SOLOUD SRC.CMAKE END  ${TARGET_NAME}")
 
@@ -46,6 +52,11 @@ list(APPEND PLUGIN_SOURCES
   "${SRC_DIR}/soloud_common.cpp"
   "${SRC_DIR}/bindings.cpp"
   "${SRC_DIR}/player.cpp"
+  "${SRC_DIR}/capture/capture_mirror.cpp"
+  "${SRC_DIR}/capture/capture_processing.cpp"
+  "${SRC_DIR}/capture/capture_session.cpp"
+  "${SRC_DIR}/capture/capture_writer.cpp"
+  "${SRC_DIR}/capture/wavpack_capture_encoder.cpp"
   # Empty translation unit unless SOLOUD_LIFECYCLE_TEST_HOOKS is defined, which
   # no shipping build does. Listed so the test hooks link if it ever is.
   "${SRC_DIR}/device_lifecycle_test_hooks.cpp"
@@ -79,6 +90,11 @@ list(APPEND PLUGIN_SOURCES
   "${SRC_DIR}/mixeroutput/wav_output_encoder.cpp"
   ${TARGET_SOURCES}
 )
+
+if(NOT DEFINED NO_WAVPACK_LIBS AND NOT DEFINED ENV{NO_WAVPACK_LIBS})
+  file(GLOB WAVPACK_SOURCES CONFIGURE_DEPENDS "${SRC_DIR}/wavpack/src/*.c")
+  list(APPEND PLUGIN_SOURCES ${WAVPACK_SOURCES})
+endif()
 
 # pffft.c is C99 — force C language so Clang doesn't apply C++ VLA restrictions
 set_source_files_properties("${SRC_DIR}/pffft/pffft.c" PROPERTIES LANGUAGE C)

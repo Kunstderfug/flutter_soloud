@@ -110,6 +110,9 @@ namespace SoLoud
 #endif
 		mResampler = SOLOUD_DEFAULT_RESAMPLER;
 		mInsideAudioThreadMutex = false;
+#ifdef SOLOUD_TEST
+		mBeforeMixMutexLockCallback = NULL;
+#endif
 		mScratchSize = 0;
 		mSamplerate = 0;
 		mBufferSize = 0;
@@ -2394,6 +2397,12 @@ namespace SoLoud
 		}
 #endif
 
+#ifdef SOLOUD_TEST
+		if (mBeforeMixMutexLockCallback)
+			mBeforeMixMutexLockCallback();
+#endif
+		lockAudioMutex_internal();
+
 		float buffertime = aSamples / (float)mSamplerate;
 		float globalVolume[2];
 		mStreamTime += buffertime;
@@ -2404,8 +2413,6 @@ namespace SoLoud
 			mGlobalVolume = mGlobalVolumeFader.get(mStreamTime);
 		}
 		globalVolume[1] = mGlobalVolume;
-
-		lockAudioMutex_internal();
 
 		mixVoicesLocked_internal(aSamples, aStride);
 

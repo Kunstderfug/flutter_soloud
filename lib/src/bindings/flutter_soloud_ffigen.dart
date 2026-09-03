@@ -314,6 +314,358 @@ external void freeListPlaybackDevices(
   int n_devices,
 );
 
+/// List capture/input devices.
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Pointer<ffi.Char>>,
+    ffi.Pointer<ffi.Pointer<ffi.Int>>,
+    ffi.Pointer<ffi.Pointer<ffi.Int>>,
+    ffi.Pointer<ffi.Int>,
+  )
+>()
+external void listCaptureDevices(
+  ffi.Pointer<ffi.Pointer<ffi.Char>> devicesName,
+  ffi.Pointer<ffi.Pointer<ffi.Int>> deviceId,
+  ffi.Pointer<ffi.Pointer<ffi.Int>> isDefault,
+  ffi.Pointer<ffi.Int> n_devices,
+);
+
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.Pointer<ffi.Char>>,
+    ffi.Pointer<ffi.Pointer<ffi.Int>>,
+    ffi.Pointer<ffi.Pointer<ffi.Int>>,
+    ffi.Int,
+  )
+>()
+external void freeListCaptureDevices(
+  ffi.Pointer<ffi.Pointer<ffi.Char>> devicesName,
+  ffi.Pointer<ffi.Pointer<ffi.Int>> deviceId,
+  ffi.Pointer<ffi.Pointer<ffi.Int>> isDefault,
+  int n_devices,
+);
+
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.Float,
+    ffi.Int,
+    ffi.Pointer<ffi.Char>,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+  )
+>(symbol: 'startCapture')
+external int _startCapture(
+  ffi.Pointer<ffi.Char> path,
+  int sampleRate,
+  int channels,
+  int bufferSizeFrames,
+  double inputGainDb,
+  int captureDeviceID,
+  ffi.Pointer<ffi.Char> mirrorPath,
+  int mirrorFormat,
+  int mirrorBitsPerSample,
+  ffi.Pointer<ffi.UnsignedInt> actualSampleRate,
+  ffi.Pointer<ffi.UnsignedInt> actualChannels,
+  ffi.Pointer<ffi.Uint64> sessionStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> captureStartHostTimeNanos,
+  ffi.Pointer<ffi.UnsignedInt> actualMirrorFormat,
+  ffi.Pointer<ffi.UnsignedInt> mirrorActive,
+);
+
+PlayerErrors startCapture(
+  ffi.Pointer<ffi.Char> path,
+  int sampleRate,
+  int channels,
+  int bufferSizeFrames,
+  double inputGainDb,
+  int captureDeviceID,
+  ffi.Pointer<ffi.Char> mirrorPath,
+  int mirrorFormat,
+  int mirrorBitsPerSample,
+  ffi.Pointer<ffi.UnsignedInt> actualSampleRate,
+  ffi.Pointer<ffi.UnsignedInt> actualChannels,
+  ffi.Pointer<ffi.Uint64> sessionStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> captureStartHostTimeNanos,
+  ffi.Pointer<ffi.UnsignedInt> actualMirrorFormat,
+  ffi.Pointer<ffi.UnsignedInt> mirrorActive,
+) => PlayerErrors.fromValue(
+  _startCapture(
+    path,
+    sampleRate,
+    channels,
+    bufferSizeFrames,
+    inputGainDb,
+    captureDeviceID,
+    mirrorPath,
+    mirrorFormat,
+    mirrorBitsPerSample,
+    actualSampleRate,
+    actualChannels,
+    sessionStartHostTimeNanos,
+    captureStartHostTimeNanos,
+    actualMirrorFormat,
+    mirrorActive,
+  ),
+);
+
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.Float,
+    ffi.Float,
+    ffi.Double,
+    ffi.Bool,
+    ffi.Double,
+    ffi.Float,
+    ffi.Int,
+    ffi.Pointer<ffi.Char>,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+  )
+>(symbol: 'startCaptureAndPlay')
+external int _startCaptureAndPlay(
+  ffi.Pointer<ffi.Char> path,
+  int soundHash,
+  int busId,
+  int sampleRate,
+  int channels,
+  int bufferSizeFrames,
+  double volume,
+  double pan,
+  double startAtSeconds,
+  bool looping,
+  double loopingStartAt,
+  double inputGainDb,
+  int captureDeviceID,
+  ffi.Pointer<ffi.Char> mirrorPath,
+  int mirrorFormat,
+  int mirrorBitsPerSample,
+  ffi.Pointer<ffi.UnsignedInt> handle,
+  ffi.Pointer<ffi.UnsignedInt> actualSampleRate,
+  ffi.Pointer<ffi.UnsignedInt> actualChannels,
+  ffi.Pointer<ffi.Uint64> sessionStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> captureStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> playbackStartHostTimeNanos,
+  ffi.Pointer<ffi.UnsignedInt> actualMirrorFormat,
+  ffi.Pointer<ffi.UnsignedInt> mirrorActive,
+);
+
+PlayerErrors startCaptureAndPlay(
+  ffi.Pointer<ffi.Char> path,
+  int soundHash,
+  int busId,
+  int sampleRate,
+  int channels,
+  int bufferSizeFrames,
+  double volume,
+  double pan,
+  double startAtSeconds,
+  bool looping,
+  double loopingStartAt,
+  double inputGainDb,
+  int captureDeviceID,
+  ffi.Pointer<ffi.Char> mirrorPath,
+  int mirrorFormat,
+  int mirrorBitsPerSample,
+  ffi.Pointer<ffi.UnsignedInt> handle,
+  ffi.Pointer<ffi.UnsignedInt> actualSampleRate,
+  ffi.Pointer<ffi.UnsignedInt> actualChannels,
+  ffi.Pointer<ffi.Uint64> sessionStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> captureStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> playbackStartHostTimeNanos,
+  ffi.Pointer<ffi.UnsignedInt> actualMirrorFormat,
+  ffi.Pointer<ffi.UnsignedInt> mirrorActive,
+) => PlayerErrors.fromValue(
+  _startCaptureAndPlay(
+    path,
+    soundHash,
+    busId,
+    sampleRate,
+    channels,
+    bufferSizeFrames,
+    volume,
+    pan,
+    startAtSeconds,
+    looping,
+    loopingStartAt,
+    inputGainDb,
+    captureDeviceID,
+    mirrorPath,
+    mirrorFormat,
+    mirrorBitsPerSample,
+    handle,
+    actualSampleRate,
+    actualChannels,
+    sessionStartHostTimeNanos,
+    captureStartHostTimeNanos,
+    playbackStartHostTimeNanos,
+    actualMirrorFormat,
+    mirrorActive,
+  ),
+);
+
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.UnsignedInt>,
+  )
+>(symbol: 'stopCapture')
+external int _stopCapture(
+  ffi.Pointer<ffi.UnsignedInt> sampleRate,
+  ffi.Pointer<ffi.UnsignedInt> channels,
+  ffi.Pointer<ffi.Uint64> frameCount,
+  ffi.Pointer<ffi.Uint64> sessionStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> captureStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> firstInputBufferHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> firstInputBufferFrameIndex,
+  ffi.Pointer<ffi.Uint64> captureStopHostTimeNanos,
+  ffi.Pointer<ffi.UnsignedInt> mirrorFormat,
+  ffi.Pointer<ffi.UnsignedInt> mirrorSucceeded,
+  ffi.Pointer<ffi.Uint64> mirrorFrameCount,
+  ffi.Pointer<ffi.Uint64> writerOverflowFrames,
+  ffi.Pointer<ffi.Uint64> writerSilenceFrames,
+  ffi.Pointer<ffi.UnsignedInt> writerFailed,
+);
+
+PlayerErrors stopCapture(
+  ffi.Pointer<ffi.UnsignedInt> sampleRate,
+  ffi.Pointer<ffi.UnsignedInt> channels,
+  ffi.Pointer<ffi.Uint64> frameCount,
+  ffi.Pointer<ffi.Uint64> sessionStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> captureStartHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> firstInputBufferHostTimeNanos,
+  ffi.Pointer<ffi.Uint64> firstInputBufferFrameIndex,
+  ffi.Pointer<ffi.Uint64> captureStopHostTimeNanos,
+  ffi.Pointer<ffi.UnsignedInt> mirrorFormat,
+  ffi.Pointer<ffi.UnsignedInt> mirrorSucceeded,
+  ffi.Pointer<ffi.Uint64> mirrorFrameCount,
+  ffi.Pointer<ffi.Uint64> writerOverflowFrames,
+  ffi.Pointer<ffi.Uint64> writerSilenceFrames,
+  ffi.Pointer<ffi.UnsignedInt> writerFailed,
+) => PlayerErrors.fromValue(
+  _stopCapture(
+    sampleRate,
+    channels,
+    frameCount,
+    sessionStartHostTimeNanos,
+    captureStartHostTimeNanos,
+    firstInputBufferHostTimeNanos,
+    firstInputBufferFrameIndex,
+    captureStopHostTimeNanos,
+    mirrorFormat,
+    mirrorSucceeded,
+    mirrorFrameCount,
+    writerOverflowFrames,
+    writerSilenceFrames,
+    writerFailed,
+  ),
+);
+
+@ffi.Native<ffi.UnsignedInt Function()>(symbol: 'cancelCapture')
+external int _cancelCapture();
+
+PlayerErrors cancelCapture() => PlayerErrors.fromValue(_cancelCapture());
+
+@ffi.Native<ffi.Int Function()>()
+external int isCaptureRecording();
+
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.Uint64>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.Uint64>,
+  )
+>(symbol: 'getCaptureClockSnapshot')
+external int _getCaptureClockSnapshot(
+  ffi.Pointer<ffi.Uint64> hostTimeNanos,
+  ffi.Pointer<ffi.Uint64> sessionStartHostTimeNanos,
+  ffi.Pointer<ffi.UnsignedInt> sampleRate,
+  ffi.Pointer<ffi.Uint64> inputDeviceFrame,
+);
+
+PlayerErrors getCaptureClockSnapshot(
+  ffi.Pointer<ffi.Uint64> hostTimeNanos,
+  ffi.Pointer<ffi.Uint64> sessionStartHostTimeNanos,
+  ffi.Pointer<ffi.UnsignedInt> sampleRate,
+  ffi.Pointer<ffi.Uint64> inputDeviceFrame,
+) => PlayerErrors.fromValue(
+  _getCaptureClockSnapshot(
+    hostTimeNanos,
+    sessionStartHostTimeNanos,
+    sampleRate,
+    inputDeviceFrame,
+  ),
+);
+
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Float>,
+    ffi.Pointer<ffi.Uint64>,
+  )
+>(symbol: 'getCaptureLevelSnapshot')
+external int _getCaptureLevelSnapshot(
+  ffi.Pointer<ffi.Float> currentPeak,
+  ffi.Pointer<ffi.Float> currentRms,
+  ffi.Pointer<ffi.Float> peakSinceLastRead,
+  ffi.Pointer<ffi.Float> heldPeak,
+  ffi.Pointer<ffi.Uint64> frameCount,
+);
+
+PlayerErrors getCaptureLevelSnapshot(
+  ffi.Pointer<ffi.Float> currentPeak,
+  ffi.Pointer<ffi.Float> currentRms,
+  ffi.Pointer<ffi.Float> peakSinceLastRead,
+  ffi.Pointer<ffi.Float> heldPeak,
+  ffi.Pointer<ffi.Uint64> frameCount,
+) => PlayerErrors.fromValue(
+  _getCaptureLevelSnapshot(
+    currentPeak,
+    currentRms,
+    peakSinceLastRead,
+    heldPeak,
+    frameCount,
+  ),
+);
+
 /// Must be called when there is no more need of the player or when closing
 /// the app.
 @ffi.Native<ffi.Void Function()>()
@@ -1554,6 +1906,37 @@ external void destroyVoiceGroup(int handle);
 /// [voiceHandle] voice handle to add to the [voiceGroupHandle].
 @ffi.Native<ffi.Void Function(ffi.UnsignedInt, ffi.UnsignedInt)>()
 external void addVoiceToGroup(int voiceGroupHandle, int voiceHandle);
+
+/// Atomically schedule all prepared members of a voice group at one
+/// absolute engine deadline. Any failure leaves every member unchanged.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.Int,
+    ffi.Double,
+  )
+>(symbol: 'scheduleVoiceGroupStartAt')
+external int _scheduleVoiceGroupStartAt(
+  int voiceGroupHandle,
+  int requiredMainHandle,
+  int expectedMemberCount,
+  double engineDeadline,
+);
+
+VoiceGroupStartResult scheduleVoiceGroupStartAt(
+  int voiceGroupHandle,
+  int requiredMainHandle,
+  int expectedMemberCount,
+  double engineDeadline,
+) => VoiceGroupStartResult.fromValue(
+  _scheduleVoiceGroupStartAt(
+    voiceGroupHandle,
+    requiredMainHandle,
+    expectedMemberCount,
+    engineDeadline,
+  ),
+);
 
 /// Checks if the handle is a valid voice group. Does not care if the
 /// voice group is empty.
@@ -3148,6 +3531,35 @@ typedef DartdartOnAudioDurationCallback_tFunction =
 /// callback to tell dart the total audio duration of a pull-buffer stream
 typedef dartOnAudioDurationCallback_t =
     ffi.Pointer<ffi.NativeFunction<dartOnAudioDurationCallback_tFunction>>;
+
+/// Result of atomically scheduling a prepared voice group.
+enum VoiceGroupStartResult {
+  voiceGroupStartSuccess(0),
+  voiceGroupStartBackendNotInitialized(1),
+  voiceGroupStartInvalidInput(2),
+  voiceGroupStartInvalidGroup(3),
+  voiceGroupStartMemberCountMismatch(4),
+  voiceGroupStartInvalidMain(5),
+  voiceGroupStartInvalidMember(6),
+  voiceGroupStartMemberNotPaused(7),
+  voiceGroupStartDeadlineReached(8);
+
+  final int value;
+  const VoiceGroupStartResult(this.value);
+
+  static VoiceGroupStartResult fromValue(int value) => switch (value) {
+    0 => voiceGroupStartSuccess,
+    1 => voiceGroupStartBackendNotInitialized,
+    2 => voiceGroupStartInvalidInput,
+    3 => voiceGroupStartInvalidGroup,
+    4 => voiceGroupStartMemberCountMismatch,
+    5 => voiceGroupStartInvalidMain,
+    6 => voiceGroupStartInvalidMember,
+    7 => voiceGroupStartMemberNotPaused,
+    8 => voiceGroupStartDeadlineReached,
+    _ => throw ArgumentError('Unknown value for VoiceGroupStartResult: $value'),
+  };
+}
 
 enum FilterType {
   BiquadResonantFilter(0),

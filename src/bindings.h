@@ -250,6 +250,63 @@ extern "C"
                                                  int **isDefault,
                                                  int n_devices);
 
+  /// List capture/input devices.
+  FFI_PLUGIN_EXPORT void listCaptureDevices(char **devicesName, int **deviceId,
+                                            int **isDefault, int *n_devices);
+
+  FFI_PLUGIN_EXPORT void freeListCaptureDevices(char **devicesName,
+                                                int **deviceId, int **isDefault,
+                                                int n_devices);
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors
+  startCapture(char *path, unsigned int sampleRate, unsigned int channels,
+               unsigned int bufferSizeFrames, float inputGainDb,
+               int captureDeviceID, char *mirrorPath,
+               unsigned int mirrorFormat, unsigned int mirrorBitsPerSample,
+               unsigned int *actualSampleRate, unsigned int *actualChannels,
+               uint64_t *sessionStartHostTimeNanos,
+               uint64_t *captureStartHostTimeNanos,
+               unsigned int *actualMirrorFormat, unsigned int *mirrorActive);
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors startCaptureAndPlay(
+      char *path, unsigned int soundHash, unsigned int busId,
+      unsigned int sampleRate, unsigned int channels,
+      unsigned int bufferSizeFrames, float volume, float pan,
+      double startAtSeconds, bool looping, double loopingStartAt,
+      float inputGainDb, int captureDeviceID, char *mirrorPath,
+      unsigned int mirrorFormat, unsigned int mirrorBitsPerSample,
+      unsigned int *handle, unsigned int *actualSampleRate,
+      unsigned int *actualChannels, uint64_t *sessionStartHostTimeNanos,
+      uint64_t *captureStartHostTimeNanos,
+      uint64_t *playbackStartHostTimeNanos, unsigned int *actualMirrorFormat,
+      unsigned int *mirrorActive);
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors
+  stopCapture(unsigned int *sampleRate, unsigned int *channels,
+              uint64_t *frameCount, uint64_t *sessionStartHostTimeNanos,
+              uint64_t *captureStartHostTimeNanos,
+              uint64_t *firstInputBufferHostTimeNanos,
+              uint64_t *firstInputBufferFrameIndex,
+              uint64_t *captureStopHostTimeNanos, unsigned int *mirrorFormat,
+              unsigned int *mirrorSucceeded, uint64_t *mirrorFrameCount,
+              uint64_t *writerOverflowFrames, uint64_t *writerSilenceFrames,
+              unsigned int *writerFailed);
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors cancelCapture();
+
+  FFI_PLUGIN_EXPORT int isCaptureRecording();
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors
+  getCaptureClockSnapshot(uint64_t *hostTimeNanos,
+                          uint64_t *sessionStartHostTimeNanos,
+                          unsigned int *sampleRate,
+                          uint64_t *inputDeviceFrame);
+
+  FFI_PLUGIN_EXPORT enum PlayerErrors
+  getCaptureLevelSnapshot(float *currentPeak, float *currentRms,
+                          float *peakSinceLastRead, float *heldPeak,
+                          uint64_t *frameCount);
+
   /// Must be called when there is no more need of the player or when closing
   /// the app.
   FFI_PLUGIN_EXPORT void dispose();
@@ -1015,6 +1072,12 @@ extern "C"
   /// [voiceHandle] voice handle to add to the [voiceGroupHandle].
   FFI_PLUGIN_EXPORT void addVoiceToGroup(unsigned int voiceGroupHandle,
                                          unsigned int voiceHandle);
+
+  /// Atomically schedule all prepared members of a voice group at one
+  /// absolute engine deadline. Any failure leaves every member unchanged.
+  FFI_PLUGIN_EXPORT enum VoiceGroupStartResult scheduleVoiceGroupStartAt(
+      unsigned int voiceGroupHandle, unsigned int requiredMainHandle,
+      int expectedMemberCount, double engineDeadline);
 
   /// Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.

@@ -27,6 +27,7 @@
 
 ##### 5.0.0-pre.3 (30 Aug 2026)
 - fix: removed unused `FLAC++` headers from macOS and iOS include directories that caused compile-time errors in Xcode. Fixes #545.
+- fork: keep miniaudio **input** capture (`startCapture` / `startCaptureAndPlay` / WavPack+FLAC mirrors), atomic `scheduleVoiceGroupStartAt`, and mixing-bus sample-rate sync on top of the 5.0 hooks/`@Native` engine. Capture and WavPack sources are compiled by `hook/build.dart`.
 
 ##### 5.0.0-pre.2 (30 Aug 2026)
 - **breaking change: build system migration to Dart build hooks** (https://dart.dev/tools/hooks):

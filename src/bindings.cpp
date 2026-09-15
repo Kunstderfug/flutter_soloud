@@ -1090,6 +1090,22 @@ extern "C"
     SoLoud::miniaudio_setAndroidAAudioAttributes(managed != 0);
   }
 
+  FFI_PLUGIN_EXPORT enum PlayerErrors setLinuxAudioBackend(unsigned int backend)
+  {
+#if defined(__linux__) || defined(__LINUX__)
+    std::lock_guard<std::mutex> guard(init_deinit_mutex);
+    if (player.get() == nullptr)
+    {
+      SoLoud::miniaudio_setLinuxAudioBackend(static_cast<int>(backend));
+      return noError;
+    }
+    return player.get()->setLinuxAudioBackend(static_cast<LinuxAudioBackend>(backend));
+#else
+    (void)backend;
+    return noError;
+#endif
+  }
+
   /// Set how long the audio output device keeps running while the engine is
   /// idle (no active voices) before it is automatically stopped, on every
   /// platform. [timeoutMs] < 0 keeps the device running indefinitely while idle
@@ -2976,6 +2992,11 @@ extern "C"
   FFI_PLUGIN_EXPORT void setFftSmoothing(float smooth)
   {
     Analyzer::instance().setSmoothing(smooth);
+  }
+
+  FFI_PLUGIN_EXPORT void setFftDecibelRange(float minDecibels, float maxDecibels)
+  {
+    Analyzer::instance().setMinMaxDecibels(minDecibels, maxDecibels);
   }
 
   /// Get the sound length in seconds

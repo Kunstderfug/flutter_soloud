@@ -1,12 +1,12 @@
 ---
 name: flutter-soloud-setup
-version: 1
-description: Teaches how to add flutter_soloud to a Flutter app, configure each platform (web script tag and COOP/COEP headers, Linux ALSA, Android/iOS/macOS minimum versions), initialize and deinitialize the engine, shrink binaries by excluding the Xiph libs, set up logging, and enumerate/switch output devices. Use when a user asks to install flutter_soloud, initialize SoLoud, set up web/background-audio prerequisites, reduce binary size, or switch the audio output device.
+version: 3
+description: Teaches how to add flutter_soloud to a Flutter app, configure each platform (web script tag and COOP/COEP headers, Linux audio backends ALSA/PulseAudio/JACK, Android/iOS/macOS minimum versions), initialize and deinitialize the engine, shrink binaries by excluding the Xiph libs, set up logging, and enumerate/switch output devices or Linux audio backends. Use when a user asks to install flutter_soloud, initialize SoLoud, set up web/background-audio prerequisites, configure Linux audio backends, reduce binary size, or switch the audio output device.
 ---
 
 # flutter_soloud setup
 
-flutter_soloud is an FFI plugin around the SoLoud C++ engine: the native code is compiled automatically by Dart build hooks when you depend on the package, so setup is mostly pubspec + a few platform bits (one `<script>` tag on web, ALSA dev package on Linux, minimum SDK versions). Unlike audioplayers/just_audio there is no per-player instance — everything goes through the singleton `SoLoud.instance`, which must be `init()`ed before use and `deinit()`ed on shutdown.
+flutter_soloud is an FFI plugin around the SoLoud C++ engine: the native code is compiled automatically by Dart build hooks when you depend on the package, so setup is mostly pubspec + a few platform bits (one `<script>` tag on web, minimum SDK versions). Unlike audioplayers/just_audio there is no per-player instance — everything goes through the singleton `SoLoud.instance`, which must be `init()`ed before use and `deinit()`ed on shutdown.
 
 ## Minimal example
 
@@ -19,6 +19,7 @@ Future<void> main() async {
 
   await SoLoud.instance.init(
     // device: devices.firstWhere((d) => d.isDefault),
+    // linuxAudioBackend: LinuxAudioBackend.auto, // auto, alsa, pulseAudio, jack
     sampleRate: 44100,
     bufferSize: 2048,
     channels: Channels.stereo,
@@ -49,7 +50,7 @@ Native C/C++ sources are compiled by [Dart build hooks](https://dart.dev/tools/h
   <script src="assets/packages/flutter_soloud/web/init_soloud.js" defer></script>
   ```
   The script auto-picks between the multi-threaded (AudioWorklet) and single-threaded (ScriptProcessorNode) WASM builds based on whether the page is cross-origin isolated. Details in [references/web.md](references/web.md).
-- **Linux** — requires ALSA headers: `sudo apt-get install libasound2-dev` (Debian/Ubuntu), `pacman -S alsa-lib` (Arch), `zypper install alsa-devel` (openSUSE).
+- **Linux** — audio playback uses `miniaudio` with dynamic runtime loading for ALSA (`libasound.so.2`), PulseAudio (`libpulse.so`), and JACK (`libjack.so`). No extra C/C++ development packages or compile-time headers are required to build. Ensure runtime libraries are present on the host system (e.g. `libasound2`, `libpulse0`).
 - **Android** — `minSdk = 21` (the plugin sets this in its own `build.gradle`; your app-level `minSdkVersion` must be >= 21).
 - **iOS** — deployment target iOS 13.0+; **macOS** — 10.15+. Native assets are compiled and bundled for both CocoaPods and SPM projects.
 
@@ -57,11 +58,12 @@ Native C/C++ sources are compiled by [Dart build hooks](https://dart.dev/tools/h
 
 All of these live on the singleton `SoLoud.instance` (`import 'package:flutter_soloud/flutter_soloud.dart'`).
 
-- `Future<void> init({PlaybackDevice? device, bool automaticCleanup = false, int sampleRate = 44100, int bufferSize = 2048, Channels channels = Channels.stereo, bool lowLatency = true, AndroidAAudioAttributes androidAAudioAttributes = AndroidAAudioAttributes.mediaMusic, int? devicePeriodFrames, int? renderAheadFrames})` — initializes the engine. **Throws on failure** (e.g. `SoLoudCppException`, `SoLoudNoPlaybackDevicesFoundCppException`); it does not return a `PlayerErrors` status, so `await` it in try/catch.
+- `Future<void> init({PlaybackDevice? device, bool automaticCleanup = false, int sampleRate = 44100, int bufferSize = 2048, Channels channels = Channels.stereo, bool lowLatency = true, AndroidAAudioAttributes androidAAudioAttributes = AndroidAAudioAttributes.mediaMusic, int? devicePeriodFrames, int? renderAheadFrames, LinuxAudioBackend linuxAudioBackend = LinuxAudioBackend.auto})` — initializes the engine. **Throws on failure** (e.g. `SoLoudCppException`, `SoLoudNoPlaybackDevicesFoundCppException`); it does not return a `PlayerErrors` status, so `await` it in try/catch.
 - `void deinit()` / `Future<void> deinitAsync()` — stops the engine and disposes all resources including sounds. `deinit` blocks the calling thread; prefer `deinitAsync` where you can await it.
 - `bool get isInitialized` — synchronous readiness check.
 - `List<PlaybackDevice> listPlaybackDevices()` — **safe to call before `init()`**. Returns `PlaybackDevice(id, isDefault, name)`.
 - `Future<void> changeDevice({PlaybackDevice? newDevice})` — switches output while running; omit `newDevice` to select the system default. Await it — the swap runs off the UI isolate.
+- `Future<void> setLinuxAudioBackend(LinuxAudioBackend backend)` — Linux only: selects or dynamically switches the audio backend (`LinuxAudioBackend.auto` [ALSA -> PulseAudio -> JACK], `.alsa`, `.pulseAudio`, `.jack`). Safe to call before `init()` or while the engine is running.
 - `Future<void> stopAudioDevice({bool force = false})` / `Future<void> startAudioDevice()` — stop/start only the output device; loaded sounds, voices, and filter state are preserved and playback resumes where it left off.
 - `AudioDeviceState getAudioDeviceState()` — cheap sync read: `uninitialized | stopped | started | starting | stopping`. Safe before `init()`.
 - `void setAudioDeviceIdleTimeout(Duration? timeout)` — when no unpaused voices remain: `Duration.zero` stops the device ASAP, a positive duration keeps it alive that long (default 500 ms), `null` keeps it running indefinitely (Android wakelock). No effect on web.
@@ -101,22 +103,66 @@ await SoLoud.instance.init(
 - **Web: don't pass `--web-header` COOP/COEP flags together with `flutter run --wasm`** — the dev server already sends COOP/COEP for WasmGC and the conflicting duplicated headers block the plugin's worker threads (`ERR_BLOCKED_BY_RESPONSE`). See [references/web.md](references/web.md).
 - **`changeDevice` is desktop-mostly**: Android, iOS, and Web support only the default output device; `listPlaybackDevices()` there returns just the default.
 - A device stopped via `stopAudioDevice()` or the idle timeout **stays stopped across `changeDevice()`** — the replacement device only starts if the old one was running.
-- **Linux build fails with `alsa/asoundlib.h: No such file`** — install `libasound2-dev`; the error is from the native build hook, not Dart.
+- **Linux audio server missing at runtime** — if ALSA or PulseAudio is not running on the system, `init()` or device enumeration may find no devices. Ensure `libasound2` or `libpulse0` is installed and the sound daemon is active. You can switch backends via `setLinuxAudioBackend()` or pass `linuxAudioBackend` at `init()` if one backend behaves better on the target desktop.
 - On web, `loadUrl()` hits CORS (`Access-Control-Allow-Origin` missing) unless the server allows it, and local files can't be read — use `loadMem()` instead.
 - Per-sound filters are not supported on web (global filters are).
+- **Windows on ARM (`arm64`) and Linux on ARM (Raspberry Pi) require system libs or source build**: Bundled prebuilt binaries for Windows and Linux are `x86_64` only. For ARM desktop targets, set `<platform>_use_system_libs: true` (e.g. `vcpkg install ...:arm64-windows` or `sudo apt install ...`) or `<platform>_force_build_libs: true` in `pubspec.yaml`.
+- **Don't distribute desktop apps with `<platform>_use_system_libs: true`**: System libraries are not bundled into the app package; if missing on the end user's machine, the app will crash at startup. Use the default bundled prebuilts for app distribution.
+- **`<platform>_force_build_libs: true` significantly increases build time**: It clones 4 Git repos and compiles them via CMake across all target architectures (4 for Android, 2 for Apple). Artifacts are cached in `flutter_soloud`'s `.dart_tool/` (persisting across `flutter clean` in your app), but clean CI jobs will compile from scratch. Leave at default `false` unless you need custom compilation.
 
-## Shrinking binaries: excluding Xiph libs
+## Xiph audio libraries (Ogg, Vorbis, Opus, FLAC)
 
-The Opus/Ogg/Vorbis/FLAC decoders are bundled by default (600–3000 KB per binary). If you only need MP3/WAV/synthesis, exclude them in the **app's** `pubspec.yaml`:
+The Xiph audio decoders provide compressed audio playback, streaming, and master output capture (600–3000 KB per binary). To keep the pub package lightweight, tested precompiled static and shared libraries are hosted in the companion repository [flutter_soloud_prebuilds](https://github.com/alnitak/flutter_soloud_prebuilds).
 
-```yaml
-hooks:
-  user_defines:
-    flutter_soloud:
-      no_xiph_libs: true
-```
+By default, Dart Native Assets build hooks automatically download the matching prebuilt archive on first build and cache it under `.dart_tool/flutter_soloud/xiph/prebuild/`:
+- **Android**: 4 ABIs (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`)
+- **iOS**: Universal `arm64` device + `arm64`/`x86_64` simulator static libraries
+- **macOS**: Universal Apple Silicon (`arm64`) + Intel (`x86_64`) static libraries
+- **Windows**: `x64` and `arm64` DLLs and import libraries
+- **Linux**: `x86_64` and `aarch64` shared `.so` libraries
 
-`setBufferStream()`/`readSamplesFrom*()` with Opus/Vorbis/FLAC then throw; everything else works. On web, edit `web/compile_wasm.sh` in the package (`NO_XIPH_LIBS="1"`) and rebuild the WASM yourself (requires Emscripten, Linux/macOS). Old shell-env/Podfile/Gradle config no longer applies under build hooks.
+This ensures that packaged apps (Android AAB/APK, iOS IPA, macOS APP, Windows EXE) work out of the box with zero external build dependencies.
+
+You can customize this in the **app's** `pubspec.yaml` under `hooks.user_defines.flutter_soloud`:
+
+- **Pin a specific prebuild release version (default is `latest`):**
+  ```yaml
+  hooks:
+    user_defines:
+      flutter_soloud:
+        prebuild_tag: 'v1.0.1' # Optional: pin to a specific release tag
+  ```
+
+- **Link against system-installed packages (desktop only):**
+  ```yaml
+  hooks:
+    user_defines:
+      flutter_soloud:
+        linux_use_system_libs: true
+        macos_use_system_libs: true
+        windows_use_system_libs: true
+  ```
+
+- **Force building from source via CMake into `.dart_tool/`:**
+  ```yaml
+  hooks:
+    user_defines:
+      flutter_soloud:
+        linux_force_build_libs: true
+        macos_force_build_libs: true
+        windows_force_build_libs: true
+        android_force_build_libs: true
+        ios_force_build_libs: true
+  ```
+
+- **Exclude Xiph libraries entirely (shrinking binary size):**
+  ```yaml
+  hooks:
+    user_defines:
+      flutter_soloud:
+        no_xiph_libs: true
+  ```
+  When excluded, `setBufferStream()`/`readSamplesFrom*()` with Opus/Vorbis/FLAC throw `SoLoudXiphLibsNotAvailableException`; WAV, MP3, and synthesis work normally. On web, edit `web/compile_wasm.sh` in the package (`NO_XIPH_LIBS="1"`) and rebuild the WASM yourself (requires Emscripten, Linux/macOS).
 
 ## Logging
 

@@ -12,6 +12,15 @@ cd "$REPO_ROOT"
 
 OUT="${TMPDIR:-/tmp}/change_device_test"
 
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+# pffft.c is C99: compile it as C, matching the production CMake build.
+cc -std=gnu99 -O2 -c \
+    -I src/pffft \
+    -o "$WORK_DIR/pffft.o" \
+    src/pffft/pffft.c
+
 c++ -std=c++17 -O2 -Wall -Wextra -pthread \
     -DWITH_MINIAUDIO \
     -DNO_XIPH_LIBS \
@@ -19,7 +28,9 @@ c++ -std=c++17 -O2 -Wall -Wextra -pthread \
     -I src \
     -o "$OUT" \
     test/change_device_test.cpp \
+    "$WORK_DIR/pffft.o" \
     src/soloud_common.cpp \
+    src/analyzer.cpp \
     src/soloud/src/core/*.cpp \
     src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp \
     src/mixeroutput/*.cpp \

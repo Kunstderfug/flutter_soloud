@@ -38,7 +38,16 @@ A high-performance audio plugin designed primarily for games and immersive appli
 
 If you are looking for a package to visualize audio using shaders or CustomPainter, please check out [audio_flux](https://pub.dev/packages/audio_flux). It uses this plugin for output and [flutter_recorder](https://pub.dev/packages/flutter_recorder) for input.
 
-The native code is built with [Dart build hooks](https://dart.dev/tools/hooks): no CMake, CocoaPods script phases, or SPM configuration is needed — it works the same whether your app uses CocoaPods or Swift Package Manager. To build without the bundled Opus/Ogg/Vorbis/FLAC libraries, set `hooks.user_defines.flutter_soloud.no_xiph_libs: true` in your app's `pubspec.yaml`.
+If you are working with MIDI or SoundFont files (SF2/SF3/SFZ), check out [soundfont_kit](https://pub.dev/packages/soundfont_kit)—a companion package that is very helpful for musicians and game developers looking to synthesize instrument audio using SoundFonts with `flutter_soloud`.
+
+The native code is built with [Dart build hooks](https://dart.dev/tools/hooks): no CMake, CocoaPods script phases, or SPM configuration is needed — it works the same whether your app uses CocoaPods or Swift Package Manager.
+
+By default, Xiph audio codecs (Ogg, Vorbis, Opus, FLAC) are linked and bundled from tested prebuilt libraries (`xiph/prebuild/<platform>/`), ensuring that packaged apps (Android AAB/APK, iOS IPA, macOS APP, Windows EXE) work out of the box with zero external build dependencies. You can also configure:
+- **System libraries**: Set `<platform>_use_system_libs: true` (e.g. `linux_use_system_libs: true`) to link system packages.
+- **Force source build**: Set `<platform>_force_build_libs: true` to clone and compile from source via CMake.
+- **Without Xiph mode**: Set `no_xiph_libs: true` to exclude Xiph codecs and shrink binary size.
+
+For complete setup instructions and Windows download links, see the [Xiph Libraries & Codecs Guide](https://docs.page/alnitak/flutter_soloud_docs/get_started/xiph_libs).
 
 ## Documentation
 

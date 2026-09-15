@@ -462,6 +462,12 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
+  FutureOr<PlayerErrors> setLinuxAudioBackend(LinuxAudioBackend backend) {
+    // No-op on web: Linux audio backend selection is Linux-only.
+    return PlayerErrors.noError;
+  }
+
+  @override
   void setAudioDeviceIdleTimeout(Duration? timeout) {
     // No-op on web: the device is always kept running there (the idle-pause
     // is disabled on web to avoid stale-buffer glitches), so the idle timeout
@@ -1432,6 +1438,11 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   @override
   void setFftSmoothing(double smooth) {
     wasmSetFftSmoothing(smooth);
+  }
+
+  @override
+  void setFftDecibelRange(double minDecibels, double maxDecibels) {
+    wasmSetFftDecibelRange(minDecibels, maxDecibels);
   }
 
   @override

@@ -434,6 +434,7 @@ interface class SoLoud {
     bool lowLatency = true,
     AndroidAAudioAttributes androidAAudioAttributes =
         AndroidAAudioAttributes.mediaMusic,
+    LinuxAudioBackend linuxAudioBackend = LinuxAudioBackend.auto,
     int? devicePeriodFrames,
     int? renderAheadFrames,
   }) {
@@ -449,6 +450,7 @@ interface class SoLoud {
       channels: channels,
       lowLatency: lowLatency,
       androidAAudioAttributes: androidAAudioAttributes,
+      linuxAudioBackend: linuxAudioBackend,
       devicePeriodFrames: devicePeriodFrames,
       renderAheadFrames: renderAheadFrames,
     );
@@ -470,6 +472,7 @@ interface class SoLoud {
     required Channels channels,
     required bool lowLatency,
     required AndroidAAudioAttributes androidAAudioAttributes,
+    required LinuxAudioBackend linuxAudioBackend,
     required int? devicePeriodFrames,
     required int? renderAheadFrames,
   }) async {
@@ -493,6 +496,7 @@ interface class SoLoud {
       channels: channels,
       lowLatency: lowLatency,
       androidAAudioAttributes: androidAAudioAttributes,
+      linuxAudioBackend: linuxAudioBackend,
       devicePeriodFrames: devicePeriodFrames,
       renderAheadFrames: renderAheadFrames,
     );
@@ -508,6 +512,7 @@ interface class SoLoud {
     bool lowLatency = true,
     AndroidAAudioAttributes androidAAudioAttributes =
         AndroidAAudioAttributes.mediaMusic,
+    LinuxAudioBackend linuxAudioBackend = LinuxAudioBackend.auto,
     int? devicePeriodFrames,
     int? renderAheadFrames,
   }) async {
@@ -525,7 +530,13 @@ interface class SoLoud {
     // Do not expose a previous callback registration as ready while this
     // initialization is replacing the native engine and callbacks.
     _nativeCallbacksInitialized = false;
-    final nativeIsInitialized = _controller.soLoudFFI.isInited();
+    final bool nativeIsInitialized;
+    try {
+      nativeIsInitialized = _controller.soLoudFFI.isInited();
+    } catch (e) {
+      _checkAndLogMissingSystemLibsError(e);
+      rethrow;
+    }
 
     // Removing these asserts because they could not be true after a
     // hot restart or after calling deinit(). Discussed in #452.
@@ -586,6 +597,8 @@ interface class SoLoud {
     _controller.soLoudFFI.setAndroidAAudioAttributes(
       androidAAudioAttributes == AndroidAAudioAttributes.mediaMusic,
     );
+    _log.info('Setting Linux audio backend to $linuxAudioBackend');
+    await _controller.soLoudFFI.setLinuxAudioBackend(linuxAudioBackend);
 
     // The blocking native engine/device initialization runs off the UI thread
     // (via a worker isolate inside the binding) so it no longer freezes the app
@@ -684,6 +697,22 @@ interface class SoLoud {
     }
   }
 
+  /// Sets the Linux audio backend ([LinuxAudioBackend.auto],
+  /// [LinuxAudioBackend.alsa], [LinuxAudioBackend.pulseAudio], or
+  /// [LinuxAudioBackend.jack]).
+  ///
+  /// When called before [init], sets the backend that will be used when
+  /// initialized. When called while the engine is running, dynamically
+  /// switches the output device. Has no effect on non-Linux platforms.
+  Future<void> setLinuxAudioBackend(LinuxAudioBackend backend) async {
+    _log.info('Setting Linux audio backend to $backend');
+    final error = await _controller.soLoudFFI.setLinuxAudioBackend(backend);
+    _logPlayerError(error, from: 'setLinuxAudioBackend() result');
+    if (error != PlayerErrors.noError) {
+      throw SoLoudCppException.fromPlayerError(error);
+    }
+  }
+
   /// Stops the audio output device without deinitializing the engine.
   ///
   /// Only the underlying audio device is stopped. Loaded [AudioSource]s, active
@@ -746,6 +775,87 @@ interface class SoLoud {
     }
   }
 
+  void _checkAndLogMissingSystemLibsError(Object e) {
+    if (kIsWeb) return;
+    final msg = e.toString().toLowerCase();
+    final isLibMissing =
+        msg.contains('failed to load dynamic library') ||
+        msg.contains('cannot open shared object') ||
+        msg.contains('image not found') ||
+        msg.contains('specified module could not be found') ||
+        msg.contains('libogg') ||
+        msg.contains('libvorbis') ||
+        msg.contains('libopus') ||
+        msg.contains('libflac') ||
+        msg.contains('ogg.dll') ||
+        msg.contains('vorbis.dll') ||
+        msg.contains('opus.dll') ||
+        msg.contains('flac.dll');
+
+    if (!isLibMissing) return;
+
+    final platformName = switch (defaultTargetPlatform) {
+      TargetPlatform.android => 'Android',
+      TargetPlatform.iOS => 'iOS',
+      TargetPlatform.linux => 'Linux',
+      TargetPlatform.macOS => 'macOS',
+      TargetPlatform.windows => 'Windows',
+      TargetPlatform.fuchsia => 'Fuchsia',
+    };
+
+    final buffer = StringBuffer()
+      ..writeln(
+        '\n[flutter_soloud] ERROR: Failed to load flutter_soloud native '
+        'library while running on $platformName.\n'
+        'This typically occurs when `<platform>_use_system_libs: true` is '
+        'configured in `pubspec.yaml`\n'
+        'but the required system Xiph audio libraries (Ogg, Vorbis, Opus, '
+        'FLAC) are not installed on this system.\n',
+      );
+
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.linux:
+        buffer.writeln(
+          'To install the required libraries on Linux:\n'
+          '  - Debian / Ubuntu / Raspberry Pi OS:\n'
+          '      sudo apt update && sudo apt install libogg0 libvorbis0a '
+          'libvorbisfile3 libvorbisenc2 libopus0 libflac12\n'
+          '  - Arch Linux / Manjaro:\n'
+          '      sudo pacman -S libogg libvorbis opus flac\n'
+          '  - Fedora / RHEL:\n'
+          '      sudo dnf install libogg libvorbis opus flac\n',
+        );
+      case TargetPlatform.macOS:
+        buffer.writeln(
+          'To install the required libraries on macOS (Homebrew):\n'
+          '  brew install libogg libvorbis opus flac\n',
+        );
+      case TargetPlatform.windows:
+        buffer.writeln(
+          'To install the required libraries on Windows:\n'
+          '  - via vcpkg (use :x64-windows or :arm64-windows):\n'
+          '      vcpkg install libogg:x64-windows libvorbis:x64-windows '
+          'opus:x64-windows flac:x64-windows\n'
+          '  - or download prebuilt binaries and place them in PATH:\n'
+          '      https://docs.page/alnitak/flutter_soloud_docs/get_started/xiph_libs\n',
+        );
+      case TargetPlatform.android:
+      case TargetPlatform.fuchsia:
+      case TargetPlatform.iOS:
+        break;
+    }
+
+    buffer.writeln(
+      'Alternatively, remove `<platform>_use_system_libs: true` from your '
+      '`pubspec.yaml`\n'
+      'to automatically bundle the prebuilt Xiph libraries without any system '
+      'dependencies.\n',
+    );
+
+    debugPrint(buffer.toString());
+    _log.severe(buffer.toString());
+  }
+
   /// Gets the current state of the audio output device.
   ///
   /// This reports miniaudio's actual current device state, not a pending
@@ -765,7 +875,12 @@ interface class SoLoud {
   /// Lists all OS available playback devices.
   /// Could be called safely even if the engin has not been initialized yet.
   List<PlaybackDevice> listPlaybackDevices() {
-    return _controller.soLoudFFI.listPlaybackDevices();
+    try {
+      return _controller.soLoudFFI.listPlaybackDevices();
+    } catch (e) {
+      _checkAndLogMissingSystemLibsError(e);
+      rethrow;
+    }
   }
 
   /// Lists all OS available capture devices.
@@ -3934,6 +4049,42 @@ interface class SoLoud {
       throw const SoLoudNotInitializedException();
     }
     _controller.soLoudFFI.setFftSmoothing(smooth);
+  }
+
+  double _minDecibels = -100;
+  double _maxDecibels = -30;
+
+  /// Minimum power value in decibels for FFT analysis data.
+  /// Conforms to W3C Web Audio API (default is -100.0 dB).
+  double get minDecibels => _minDecibels;
+
+  /// Maximum power value in decibels for FFT analysis data.
+  /// Conforms to W3C Web Audio API (default is -30.0 dB).
+  double get maxDecibels => _maxDecibels;
+
+  /// Sets the decibel range for FFT magnitude normalization.
+  ///
+  /// Conforms to the W3C Web Audio API AnalyserNode specification:
+  /// - https://www.w3.org/TR/webaudio/#dom-analysernode-mindecibels
+  /// - https://www.w3.org/TR/webaudio/#dom-analysernode-maxdecibels
+  ///
+  /// [minDecibels] default is -100.0 dB.
+  /// [maxDecibels] default is -30.0 dB.
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  /// Throws [ArgumentError] if [minDecibels] >= [maxDecibels].
+  void setFftDecibelRange(double minDecibels, double maxDecibels) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    if (minDecibels >= maxDecibels) {
+      throw ArgumentError(
+        'minDecibels ($minDecibels) must be less than '
+        'maxDecibels ($maxDecibels)',
+      );
+    }
+    _minDecibels = minDecibels;
+    _maxDecibels = maxDecibels;
+    _controller.soLoudFFI.setFftDecibelRange(minDecibels, maxDecibels);
   }
 
   // ///////////////////////////////////////

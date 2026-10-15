@@ -1,3 +1,39 @@
+##### 5.2.1 (13 Oct 2026)
+- fix android: harden native AAC/M4A MediaCodec decoding against buffer overruns, descriptor leaks, and stalls, and fail pending loads on deinit. Thanks to @Colton127 #584
+- perf & fix: direct file decoding for M4A/MP4 across desktop/mobile platforms, guarantee Android sandbox TMPDIR, and improve Windows/Linux error checks #585
+- fix: support parsing multiple consecutive ID3 tags in audio stream decoders
+- update dr_libs (dr_wav, dr_flac, dr_mp3)
+
+##### 5.2.0 (10 Oct 2026)
+- **Extended audio formats**: Added cross-platform support for decoding **M4A**, **MP4 (audio tracks)**, **AAC** (ADTS), **AC-3** (Dolby Digital), and **E-AC-3** (Dolby Digital Plus):
+  - **Whole-file & memory loading**: `loadFile`, `loadAsset`, `loadMem`, and `loadUrl` support M4A, MP4, AAC, AC-3, and E-AC-3 via platform-native decoders (AudioToolbox on iOS/macOS, MediaCodec on Android, MediaFoundation on Windows, Web Audio API on Web, and FFmpeg on Linux).
+  - **Push & pull buffer streaming**: `setBufferStream` and `setPullBufferStream` support real-time streaming of AAC (ADTS), AC-3, and E-AC-3 elementary streams with automatic format detection (`BufferType.auto`). *(Note: MP4/M4A containers require random access and are not streamable via chunk buffers; AC-3/E-AC-3 streaming is not supported on Web in any browser due to browser engine limitations).*
+  - **Audio metadata parsing**: Added metadata extraction (title, artist, album, date, genre, etc.) for M4A, AAC, and AC-3/E-AC-3 streams.
+  - **Linux runtime support**: Extended OS formats on Linux dynamically load system FFmpeg shared libraries (`libavcodec` and `libavformat`) at runtime when available. Core formats (MP3, WAV, Ogg Vorbis/Opus, FLAC) continue to work out of the box with bundled decoders.
+  - **Android decoding optimizations**: Implemented pipelined MediaCodec buffer bursts and single-pass elementary stream decoding to reduce audio loading latency.
+- **Parametric equalizer upgrade**: Converted equalizer filter from triangular response to true Gaussian bell curves on a logarithmic frequency scale with independent per-band center frequency (`bandFreq(i)`) and Q factor (`bandQ(i)`) controls across up to 64 bands, with default distribution from 30 Hz to 12 kHz. Added interactive `EqGraph` visualization widget to the example app #579.
+- fix: crash (use-after-free on the audio thread) when disposing a playing `MixingBus` that has filters attached. Thanks to @Colton127 #581
+- feat: filtes used on a single audio source now works also on the Web
+- feat Apple: add privacy manifest for iOS and macOS #577
+- fix: correct Ogg Opus decoder streaming loop for very short sounds #576
+
+##### 5.1.5 (30 Sep 2026)
+- fix: Android device enumeration crash and AAudio route-change race conditions. Thanks to @Colton127 #572
+- fix: prevent `setLinuxAudioBackend()` from running on non Linux platforms. Thanks to @Colton127 #572
+- fix iOS: resume playback after returning from background suspension #573
+
+##### 5.1.4 (28 Sep 2026)
+- fix: Android libflutter_soloud_plugin.so has no GNU build ID since the build-hook migration #570
+
+##### 5.1.3 (28 Sep 2026)
+- added `AmplitudeModulatorFilter`: a sine ring modulator (bipolar amplitude modulation, `output = input * sin(2π·frequency·t)` at full wet) with `wet` and `frequency` (0.1–20000 Hz) parameters, available globally, per sound and per bus via `filters.amplitudeModulatorFilter`. Thanks to @Colton127 #566
+- silence clang warnings on Android. Thanks to @eugrro #561
+- fix: advance the mix clock under the audio mutex (playScheduled could start a voice one buffer early). Thanks to @AndrzejKaczynski #562
+- fix: prevent unconditional buffer appending for ICY streams in mp3 decoder #564. Thanks to @john-Mcan #563
+
+##### 5.1.2 (19 Sep 2026)
+- fix: resolve Linux `.so` library bundling using runtime SONAME #560
+
 ##### 5.1.1 (15 Sep 2026)
 - harden asset and URL loader against engine deinit races #558
 - trashed old `.xcframework`s from the plugin, which are no longer used since build Hooks was introduced #558

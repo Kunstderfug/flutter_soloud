@@ -1,5 +1,6 @@
 import 'advanced_pan.dart' as advanced_pan;
 import 'all_instances_finished.dart' as all_instances_finished;
+import 'amplitude_modulator_filter.dart' as amplitude_modulator_filter;
 import 'async_multi_load.dart' as async_multi_load;
 import 'asynchronous_deinit.dart' as asynchronous_deinit;
 import 'audio_device_idle_timeout.dart' as audio_device_idle_timeout;
@@ -24,6 +25,7 @@ import 'looping.dart' as looping;
 import 'max_voices.dart' as max_voices;
 import 'mixer_output_capture.dart' as mixer_output_capture;
 import 'mixing_bus.dart' as mixing_bus;
+import 'native_m4a_decoding.dart' as native_m4a_decoding;
 import 'pan.dart' as pan;
 import 'pitch_shifter_filter.dart' as pitch_shifter_filter;
 import 'play_clocked.dart' as play_clocked;
@@ -193,6 +195,10 @@ final List<TestEntry> allTests = [
     run: mixing_bus.testMixingBus,
   ),
   const TestEntry(
+    name: 'NativeM4aDecoding',
+    run: native_m4a_decoding.testNativeM4aDecoding,
+  ),
+  const TestEntry(
     name: 'Pan',
     run: pan.testPan,
   ),
@@ -287,5 +293,13 @@ final List<TestEntry> allTests = [
   const TestEntry(
     name: 'WaveformControls',
     run: waveform_controls.testWaveformControls,
+  ),
+  const TestEntry(
+    name: 'AmplitudeModulatorFilterGlobal',
+    run: amplitude_modulator_filter.testAmplitudeModulatorFilterGlobal,
+  ),
+  const TestEntry(
+    name: 'AmplitudeModulatorFilterSingle',
+    run: amplitude_modulator_filter.testAmplitudeModulatorFilterSingle,
   ),
 ];

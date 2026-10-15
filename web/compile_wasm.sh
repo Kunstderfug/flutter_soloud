@@ -164,6 +164,7 @@ SOURCES=(
     ../src/filters/*.cpp
     ../src/waveform/*.cpp
     ../src/audiobuffer/*.cpp
+    ../src/native_decoder/os_decoder_web.cpp
 )
 
 # Prepare include directories and libraries based on configuration
@@ -174,6 +175,7 @@ INCLUDE_DIRS=(
     -I ../src/filters
     -I ../src/synth
     -I ../src/pffft
+    -I ../src/native_decoder
 )
 
 if [ "${SKIP_OPUS_OGG}" != "1" ]; then

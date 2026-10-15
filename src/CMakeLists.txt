@@ -32,6 +32,7 @@ endif ()
 include_directories(${SRC_DIR}/soloud/include)
 include_directories(${SRC_DIR}/soloud/src)
 include_directories(${SRC_DIR}/pffft)
+include_directories(${SRC_DIR}/native_decoder)
 include_directories(${SRC_DIR})
 if(NOT DEFINED NO_WAVPACK_LIBS AND NOT DEFINED ENV{NO_WAVPACK_LIBS})
   include_directories(${SRC_DIR}/wavpack/include)
@@ -75,11 +76,14 @@ list(APPEND PLUGIN_SOURCES
   "${SRC_DIR}/audiobuffer/flac_stream_decoder.cpp"
   "${SRC_DIR}/audiobuffer/wav_stream_decoder.cpp"
   "${SRC_DIR}/audiobuffer/ogg_flac_stream_decoder.cpp"
+  "${SRC_DIR}/audiobuffer/aac_stream_decoder.cpp"
+  "${SRC_DIR}/audiobuffer/m4a_metadata.cpp"
   "${SRC_DIR}/filters/filters.cpp"
   "${SRC_DIR}/filters/pitch_shift_filter.cpp"
   "${SRC_DIR}/filters/limiter.cpp"
   "${SRC_DIR}/filters/compressor.cpp"
   "${SRC_DIR}/filters/parametric_eq_filter.cpp"
+  "${SRC_DIR}/filters/amplitude_modulator_filter.cpp"
   "${SRC_DIR}/mixeroutput/mixer_output.cpp"
   "${SRC_DIR}/mixeroutput/mixer_output_encoder.cpp"
   "${SRC_DIR}/mixeroutput/pcm_converter.cpp"
@@ -94,6 +98,33 @@ list(APPEND PLUGIN_SOURCES
 if(NOT DEFINED NO_WAVPACK_LIBS AND NOT DEFINED ENV{NO_WAVPACK_LIBS})
   file(GLOB WAVPACK_SOURCES CONFIGURE_DEPENDS "${SRC_DIR}/wavpack/src/*.c")
   list(APPEND PLUGIN_SOURCES ${WAVPACK_SOURCES})
+endif()
+
+if (APPLE)
+  list(APPEND PLUGIN_SOURCES
+    "${SRC_DIR}/native_decoder/os_decoder_apple.mm"
+    "${SRC_DIR}/audiobuffer/aac_stream_decoder_apple.mm"
+  )
+elseif (ANDROID)
+  list(APPEND PLUGIN_SOURCES
+    "${SRC_DIR}/native_decoder/os_decoder_android.cpp"
+    "${SRC_DIR}/audiobuffer/aac_stream_decoder_android.cpp"
+  )
+  list(APPEND LINK_LIBRARIES mediandk)
+elseif (WIN32)
+  list(APPEND PLUGIN_SOURCES
+    "${SRC_DIR}/native_decoder/os_decoder_windows.cpp"
+    "${SRC_DIR}/audiobuffer/aac_stream_decoder_windows.cpp"
+  )
+  list(APPEND LINK_LIBRARIES mfplat mfreadwrite mfuuid shlwapi ole32)
+elseif (EMSCRIPTEN)
+  list(APPEND PLUGIN_SOURCES "${SRC_DIR}/native_decoder/os_decoder_web.cpp")
+elseif (UNIX)
+  list(APPEND PLUGIN_SOURCES
+    "${SRC_DIR}/native_decoder/os_decoder_linux.cpp"
+    "${SRC_DIR}/audiobuffer/aac_stream_decoder_linux.cpp"
+  )
+  list(APPEND LINK_LIBRARIES dl)
 endif()
 
 # pffft.c is C99 — force C language so Clang doesn't apply C++ VLA restrictions

@@ -17,6 +17,7 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
+source test/native_decoder_build_flags.sh
 
 SANITIZER=()
 OUT="${TMPDIR:-/tmp}/device_coordinator_test"
@@ -43,6 +44,8 @@ c++ -std=c++17 -O2 -Wall -Wextra -pthread "${SANITIZER[@]}" \
     -I src/soloud/src \
     -I src/pffft \
     -I src \
+    "${NATIVE_DECODER_FLAGS[@]}" \
+    "${NATIVE_DECODER_PLATFORM_SOURCES[@]}" \
     -o "$OUT" \
     test/device_coordinator_test.cpp \
     "$WORK_DIR/pffft.o" \

@@ -34,6 +34,7 @@ freely, subject to the following restrictions:
 #include "dr_flac.h"
 #include "dr_mp3.h"
 #include "dr_wav.h"
+#include "native_audio_decoder.h"
 
 namespace SoLoud {
 WavInstance::WavInstance(Wav *aParent) {
@@ -327,6 +328,44 @@ result Wav::loadflac(MemoryFile *aReader) {
   return SO_NO_ERROR;
 }
 
+// Takes ownership of a native decoder result. Rejects results SoLoud cannot
+// represent (sample counts are unsigned int, at most MAX_CHANNELS channels).
+static result adoptNativeDecoded(Wav *aWav, DecodedAudioData aDecoded) {
+  if (!aDecoded.success || aDecoded.samples == nullptr || aDecoded.sampleCount == 0 ||
+      aDecoded.sampleCount > 0xFFFFFFFFu || aDecoded.channels == 0 ||
+      aDecoded.channels > MAX_CHANNELS || !(aDecoded.sampleRate > 0.0f)) {
+    if (!aDecoded.errorMessage.empty())
+      printf("[Wav::loadnative] %s\n", aDecoded.errorMessage.c_str());
+    aDecoded.freeSamples();
+    return FILE_LOAD_FAILED;
+  }
+
+  delete[] aWav->mData;
+  aWav->mData = aDecoded.samples;
+  aWav->mSampleCount = (unsigned int)aDecoded.sampleCount;
+  aWav->mActualSampleCount = (unsigned int)aDecoded.sampleCount;
+  aWav->mChannels = aDecoded.channels;
+  aWav->mBaseSamplerate = aDecoded.sampleRate;
+  return SO_NO_ERROR;
+}
+
+result Wav::loadnative(MemoryFile *aReader) {
+  if (aReader == nullptr || aReader->length() == 0) {
+    return INVALID_PARAMETER;
+  }
+
+  return adoptNativeDecoded(this, NativeAudioDecoder::decodeMemory(aReader->getMemPtr(), aReader->length()));
+}
+
+result Wav::loadnativefile(const char *aFilename) {
+  delete[] mData;
+  mData = 0;
+  mSampleCount = 0;
+  mActualSampleCount = 0;
+  mChannels = 1;
+  return adoptNativeDecoded(this, NativeAudioDecoder::decodeFile(aFilename));
+}
+
 result Wav::testAndLoadFile(MemoryFile *aReader) {
   delete[] mData;
   mData = 0;
@@ -344,6 +383,12 @@ result Wav::testAndLoadFile(MemoryFile *aReader) {
     return SO_NO_ERROR;
   }
 
+  // Fallback to native OS decoder for M4A, MP4, AAC, AC3/EAC3, ALAC, etc.
+  aReader->seek(0);
+  if (loadnative(aReader) == SO_NO_ERROR) {
+    return SO_NO_ERROR;
+  }
+
   printf("[Wav::testAndLoadFile] -> FILE_LOAD_FAILED\n");
   return FILE_LOAD_FAILED;
 }
@@ -354,9 +399,19 @@ result Wav::load(const char *aFilename) {
   stop();
   DiskFile dr;
   int res = dr.open(aFilename);
-  if (res == SO_NO_ERROR)
-    return loadFile(&dr);
-  return res;
+  if (res != SO_NO_ERROR)
+    return res;
+#if !defined(__EMSCRIPTEN__)
+  // MP4/M4A containers go straight to the platform decoder by path, avoiding
+  // an unnecessary file -> memory round trip (and on Linux/Android, a temp file).
+  unsigned char header[8];
+  if (dr.read(header, sizeof(header)) == sizeof(header) &&
+      NativeAudioDecoder::isM4aOrMp4(header, sizeof(header))) {
+    return loadnativefile(aFilename);
+  }
+  dr.seek(0);
+#endif
+  return loadFile(&dr);
 }
 
 result Wav::loadMem(const unsigned char *aMem, unsigned int aLength, bool aCopy,

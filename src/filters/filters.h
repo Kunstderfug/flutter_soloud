@@ -96,6 +96,14 @@ struct BusData {
       }
     }
   }
+
+  // Members are destroyed in reverse declaration order, so [filters] (which
+  // owns the Filter objects) would be freed before ~Bus stops the bus voice.
+  // Meanwhile the audio thread keeps running the bus voice's filter
+  // instances, which dereference their freed parent filter (mParent).
+  // Stop the bus first so its voice and filter instances are gone before
+  // the filters are deleted.
+  ~BusData() { bus.stop(); }
 };
 
 #endif // PLAYER_H

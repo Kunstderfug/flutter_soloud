@@ -6,6 +6,7 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
+source test/native_decoder_build_flags.sh
 
 OUT="${TMPDIR:-/tmp}/render_ring_device_test"
 
@@ -23,6 +24,8 @@ c++ -std=c++17 -O2 -Wall -Wextra -pthread \
     -DNO_XIPH_LIBS \
     -I src/soloud/include \
     -I src \
+    "${NATIVE_DECODER_FLAGS[@]}" \
+    "${NATIVE_DECODER_PLATFORM_SOURCES[@]}" \
     -o "$OUT" \
     test/render_ring_device_test.cpp \
     "$WORK_DIR/pffft.o" \
@@ -31,6 +34,8 @@ c++ -std=c++17 -O2 -Wall -Wextra -pthread \
     src/soloud/src/core/*.cpp \
     src/soloud/src/audiosource/wav/*.cpp \
     src/audiobuffer/mp3_stream_decoder.cpp \
+    src/audiobuffer/aac_stream_decoder.cpp \
+    src/audiobuffer/m4a_metadata.cpp \
     src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp \
     src/mixeroutput/*.cpp \
     -ldl -lm

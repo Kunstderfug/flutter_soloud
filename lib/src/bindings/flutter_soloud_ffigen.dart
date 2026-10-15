@@ -3355,7 +3355,11 @@ enum DetectedTypeFFI {
   OGG_FLAC(3),
   MP3_WITH_ID3(4),
   MP3_STREAM(5),
-  WAV(6);
+  WAV(6),
+  M4A(7),
+  AAC(8),
+  AC3(9),
+  EAC3(10);
 
   final int value;
   const DetectedTypeFFI(this.value);
@@ -3368,6 +3372,10 @@ enum DetectedTypeFFI {
     4 => MP3_WITH_ID3,
     5 => MP3_STREAM,
     6 => WAV,
+    7 => M4A,
+    8 => AAC,
+    9 => AC3,
+    10 => EAC3,
     _ => throw ArgumentError('Unknown value for DetectedTypeFFI: $value'),
   };
 }
@@ -3579,6 +3587,9 @@ enum VoiceGroupStartResult {
   };
 }
 
+/// WARNING: Keep these in sync with `FilterType` in
+/// `lib/src/filters/filters.dart`. Append new filters at the end only: the
+/// values are passed over the ABI as plain integers.
 enum FilterType {
   BiquadResonantFilter(0),
   EchoFilter(1),
@@ -3591,7 +3602,8 @@ enum FilterType {
   PitchShiftFilter(8),
   LimiterFilter(9),
   CompressorFilter(10),
-  ParametricEQFilter(11);
+  ParametricEQFilter(11),
+  AmplitudeModulatorFilter(12);
 
   final int value;
   const FilterType(this.value);
@@ -3609,6 +3621,7 @@ enum FilterType {
     9 => LimiterFilter,
     10 => CompressorFilter,
     11 => ParametricEQFilter,
+    12 => AmplitudeModulatorFilter,
     _ => throw ArgumentError('Unknown value for FilterType: $value'),
   };
 }

@@ -1,32 +1,65 @@
 #include "stream_decoder.h"
 #include "mp3_stream_decoder.h"
 #include "wav_stream_decoder.h"
+#include "aac_stream_decoder.h"
 #if !defined(NO_XIPH_LIBS)
 #   include "opus_stream_decoder.h"
 #   include "vorbis_stream_decoder.h"
 #   include "flac_stream_decoder.h"
 #   include "ogg_flac_stream_decoder.h"
 #endif
+#include "../native_decoder/native_audio_decoder.h"
+#include "icy_metadata.h"
 #include <cstring>
 
 void StreamDecoder::setBufferIcyMetaInt(int icyMetaInt) {
     mIcyMetaInt = icyMetaInt;
-}
-
-// Helper to get the size of an ID3v2 tag. Returns 0 if not an ID3v2 tag.
-static size_t getID3TagSize(const std::vector<unsigned char>& buffer) {
-    if (buffer.size() >= 10 && memcmp(buffer.data(), "ID3", 3) == 0) {
-        // It's an ID3v2 tag. The size is a 28-bit integer, stored as 4x7-bit bytes (synchsafe).
-        uint32_t size = ((buffer[6] & 0x7f) << 21) |
-                       ((buffer[7] & 0x7f) << 14) |
-                       ((buffer[8] & 0x7f) << 7) |
-                       (buffer[9] & 0x7f);
-        return size + 10; // +10 for the header.
+    if (mWrapper) {
+        if (mWrapper->detectedType == DetectedType::BUFFER_MP3_STREAM || mWrapper->detectedType == DetectedType::BUFFER_MP3_WITH_ID3) {
+            static_cast<MP3DecoderWrapper*>(mWrapper.get())->setIcyMetaInt(mIcyMetaInt);
+        } else if (mWrapper->detectedType == DetectedType::BUFFER_AAC) {
+            static_cast<AACDecoderWrapper*>(mWrapper.get())->setIcyMetaInt(mIcyMetaInt);
+        }
+#if !defined(NO_XIPH_LIBS)
+        else if (mWrapper->detectedType == DetectedType::BUFFER_FLAC) {
+            static_cast<FlacDecoderWrapper*>(mWrapper.get())->setIcyMetaInt(mIcyMetaInt);
+        } else if (mWrapper->detectedType == DetectedType::BUFFER_OGG_FLAC) {
+            static_cast<OggFlacDecoderWrapper*>(mWrapper.get())->setIcyMetaInt(mIcyMetaInt);
+        }
+#endif
     }
-    return 0;
 }
 
-DetectedType StreamDecoder::detectAudioFormat(const std::vector<unsigned char>& buffer) {
+// Helper to get the total size of all consecutive ID3v2 tags. Returns 0 if none.
+static size_t getID3TagSize(const std::vector<unsigned char>& buffer) {
+    size_t offset = 0;
+    while (offset + 10 <= buffer.size() && memcmp(buffer.data() + offset, "ID3", 3) == 0) {
+        uint32_t size = ((buffer[offset + 6] & 0x7f) << 21) |
+                       ((buffer[offset + 7] & 0x7f) << 14) |
+                       ((buffer[offset + 8] & 0x7f) << 7) |
+                       (buffer[offset + 9] & 0x7f);
+        size_t total = 10 + size;
+        if ((buffer[offset + 5] & 0x10) != 0) {
+            total += 10;
+        }
+        if (offset + total > buffer.size()) break;
+        offset += total;
+    }
+    return offset;
+}
+
+DetectedType StreamDecoder::detectAudioFormat(const std::vector<unsigned char>& inBuffer) {
+    std::vector<unsigned char> cleanBuffer;
+    const std::vector<unsigned char>* pBuffer = &inBuffer;
+    if (mIcyMetaInt > 0 && inBuffer.size() > static_cast<size_t>(mIcyMetaInt)) {
+        IcyStripState tempIcy{};
+        stripIcyMetadataEx(inBuffer, mIcyMetaInt, tempIcy, cleanBuffer,
+                           [](const std::string&, const std::string&) {});
+        if (!cleanBuffer.empty()) {
+            pBuffer = &cleanBuffer;
+        }
+    }
+    const std::vector<unsigned char>& buffer = *pBuffer;
     size_t size = buffer.size();
     if (size < 4) return DetectedType::BUFFER_NO_ENOUGH_DATA;
     
@@ -108,12 +141,63 @@ DetectedType StreamDecoder::detectAudioFormat(const std::vector<unsigned char>& 
         return DetectedType::BUFFER_WAV;
     }
 
-    // --- Detect MP3 ---
+    // --- Detect ID3 (MP3 or AAC) ---
     else if (size >= 3 && getID3TagSize(buffer) != 0) {
-        return DetectedType::BUFFER_MP3_WITH_ID3; // ID3 tag found
+        size_t id3Size = getID3TagSize(buffer);
+        if (size < id3Size + 4) {
+            return DetectedType::BUFFER_NO_ENOUGH_DATA;
+        }
+        const unsigned char *payload = buffer.data() + id3Size;
+        size_t payloadSize = size - id3Size;
+        std::vector<unsigned char> payloadVec(payload, payload + payloadSize);
+
+        // An ID3 tag can precede an AAC stream (e.g. HLS or radio) or an MP3 stream.
+        // Check if AAC ADTS frames start right after the ID3 tag.
+        if (AACDecoderWrapper::checkForValidFrames(payloadVec)) {
+            return DetectedType::BUFFER_AAC;
+        }
+
+        // Check for valid MP3 frames
+        if (MP3DecoderWrapper::checkForValidFrames(buffer) ||
+            MP3DecoderWrapper::checkForValidFrames(payloadVec)) {
+            return DetectedType::BUFFER_MP3_WITH_ID3;
+        }
+
+        // If we don't have enough payload data to confirm yet, wait for more data
+        if (payloadSize < 512) {
+            return DetectedType::BUFFER_NO_ENOUGH_DATA;
+        }
+
+        return DetectedType::BUFFER_MP3_WITH_ID3; // Default for ID3
     } 
     else if (MP3DecoderWrapper::checkForValidFrames(buffer)) {
         return DetectedType::BUFFER_MP3_STREAM;
+    }
+
+    // --- Detect M4A / MP4 ---
+    else if (NativeAudioDecoder::isM4aOrMp4(buffer.data(), size)) {
+        return DetectedType::BUFFER_M4A;
+    }
+
+    // --- Detect AAC ADTS ---
+    else if (AACDecoderWrapper::checkForValidFrames(buffer)) {
+        return DetectedType::BUFFER_AAC;
+    }
+
+    // --- Detect AC-3 / E-AC-3 ---
+    else if (NativeAudioDecoder::isAc3OrEac3(buffer.data(), size) ||
+             AACDecoderWrapper::checkForValidAc3Frames(buffer)) {
+        int syncIdx = NativeAudioDecoder::findAc3Syncword(buffer.data(), size);
+        if (syncIdx >= 0) {
+            if (NativeAudioDecoder::isEac3(buffer.data() + syncIdx, size - syncIdx)) {
+                return DetectedType::BUFFER_EAC3;
+            }
+            return DetectedType::BUFFER_AC3;
+        }
+        if (NativeAudioDecoder::isEac3(buffer.data(), size)) {
+            return DetectedType::BUFFER_EAC3;
+        }
+        return DetectedType::BUFFER_AC3;
     }
 
     return DetectedType::BUFFER_UNKNOWN;
@@ -184,7 +268,39 @@ std::pair<std::vector<float>, DecoderError> StreamDecoder::decode(
             if (!isFormatDetected) {
                 return {{}, DecoderError::FailedToCreateDecoder};
             }
+        } else if (detectedType == DetectedType::BUFFER_AAC) {
+            mWrapper = std::make_unique<AACDecoderWrapper>(DetectedType::BUFFER_AAC);
+            isFormatDetected = static_cast<AACDecoderWrapper*>(mWrapper.get())->initializeDecoder(*samplerate, *channels);
+            if (!isFormatDetected) {
+                fprintf(stderr, "[flutter_soloud] Failed to initialize AAC stream decoder (not supported or invalid format).\n");
+                return {{}, DecoderError::FormatNotSupported};
+            }
+            static_cast<AACDecoderWrapper*>(mWrapper.get())->setIcyMetaInt(mIcyMetaInt);
+        } else if (detectedType == DetectedType::BUFFER_AC3 || detectedType == DetectedType::BUFFER_EAC3) {
+            mWrapper = std::make_unique<AACDecoderWrapper>(detectedType);
+            isFormatDetected = static_cast<AACDecoderWrapper*>(mWrapper.get())->initializeDecoder(*samplerate, *channels);
+            if (!isFormatDetected) {
+                fprintf(stderr, "[flutter_soloud] Failed to initialize %s stream decoder (format not supported on this device).\n",
+                        detectedType == DetectedType::BUFFER_AC3 ? "AC-3" : "E-AC-3");
+                return {{}, DecoderError::FormatNotSupported};
+            }
+        } else if (detectedType == DetectedType::BUFFER_M4A) {
+            AudioMetadata meta;
+            meta.type = DetectedType::BUFFER_M4A;
+            if (parseM4aMetadata(buffer.data(), buffer.size(), meta.m4aMetadata)) {
+                if (metadataChangeCallback) {
+                    metadataChangeCallback(meta);
+                }
+            }
+            fprintf(stderr, "[flutter_soloud] MP4/M4A containers require random-access atom parsing and are not supported for chunk streaming. Use loadFile, loadAsset, or loadMem instead.\n");
+            return {{}, DecoderError::FormatNotSupported};
         }
+
+        // Safety guard: ensure wrapper exists and format was initialized
+        if (!mWrapper || !isFormatDetected) {
+            return {{}, DecoderError::FormatNotSupported};
+        }
+
         if (metadataChangeCallback) {
             mWrapper->setTrackChangeCallback(metadataChangeCallback);
         }

@@ -924,6 +924,10 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
+  Future<({int sampleRate, int channels, Float32List samples})?>
+  decodeAudioDataWeb(Uint8List bytes) => jsDecodeAudioDataWeb(bytes);
+
+  @override
   ({PlayerErrors error, double value}) getStreamTimeConsumed(
     SoundHash soundHash,
   ) {

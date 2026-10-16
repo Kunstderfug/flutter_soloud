@@ -255,6 +255,7 @@ build_flavor() {
         -s MODULARIZE=1 \
         -s EXPORT_NAME="'Module_soloud'" \
         -o "../web/${output_name}.js"
+    node check_wasm_exports.cjs "$output_name"
 }
 
 # ST flavor (default, keeps the historical file names).

@@ -264,6 +264,10 @@ external int _stopAudioDevice(int force);
 PlayerErrors stopAudioDevice(int force) =>
     PlayerErrors.fromValue(_stopAudioDevice(force));
 
+/// Queue a one-shot domain-idle output stop, without blocking the calling thread.
+@ffi.Native<ffi.Bool Function()>()
+external bool requestAudioDeviceIdleStop();
+
 /// Restart the audio output device previously stopped by stopAudioDevice(),
 /// so existing voices and loaded sounds keep operating. Idempotent: a no-op
 /// if the device is already started.

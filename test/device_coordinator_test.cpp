@@ -76,6 +76,13 @@ extern "C"
     enum PlayerErrors stopAudioDevice(unsigned int force);
     enum AudioDeviceState getAudioDeviceState();
     void setAudioDeviceIdleTimeout(int64_t timeoutMs);
+    bool requestAudioDeviceIdleStop();
+    int getPause(unsigned int handle);
+    int getIsValidVoiceHandle(unsigned int handle);
+    unsigned int createBus();
+    void destroyBus(unsigned int busId);
+    enum PlayerErrors busPlayOnEngine(unsigned int busId, float volume,
+                                      bool paused, unsigned int *handle);
 
     void setDartEventCallback(void (*voice_ended)(unsigned int *),
                               void (*file_loaded)(enum PlayerErrors *, char *,
@@ -224,6 +231,8 @@ long long millisSince(std::chrono::steady_clock::time_point start)
                std::chrono::steady_clock::now() - start)
         .count();
 }
+
+#include "device_domain_idle_stop_test.inc"
 
 // ---------------------------------------------------------------------------
 
@@ -1272,6 +1281,13 @@ void testDeviceSwapWaitsForNotificationAdmittedToOldDevice()
 
 int main()
 {
+    testDomainIdleStopsEmptyBusAndPreservesPausedVoice();
+    testDomainIdleStopYieldsToNewStart(/*explicitStart*/ false);
+    testDomainIdleStopYieldsToNewStart(/*explicitStart*/ true);
+    testDomainIdleStopYieldsToIndefinitePolicy();
+    testDomainIdleAdmissionDoesNotWaitOnInit();
+    testDomainIdleSupersedesOlderAutomaticStart();
+    testPublishedIndefinitePolicyBlocksDomainStopBeforeApply();
     testChangeDeviceCannotOverlapTeardown();
     testStaleChangeDeviceAfterTeardown();
     testConditionalStopDoesNotSwallowNewPlayback();

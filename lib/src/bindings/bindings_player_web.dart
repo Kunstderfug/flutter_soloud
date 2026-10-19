@@ -483,6 +483,9 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
+  bool requestAudioDeviceIdleStop() => false;
+
+  @override
   Future<PlayerErrors> startAudioDevice() async {
     // Web is single-threaded (no isolates) and the device change is instant,
     // so call the wasm function directly.

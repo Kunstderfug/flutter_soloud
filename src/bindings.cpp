@@ -1257,6 +1257,16 @@ extern "C"
     return player.get()->stopAudioDevice(force != 0);
   }
 
+  FFI_PLUGIN_EXPORT bool requestAudioDeviceIdleStop()
+  {
+    // Never queue a delayed FFI operation: its "idle" observation could be
+    // stale by the time it reaches Player. Admission is synchronous and cheap.
+    std::unique_lock<std::mutex> guard(init_deinit_mutex, std::try_to_lock);
+    if (!guard.owns_lock() || player.get() == nullptr)
+      return false;
+    return player.get()->requestAudioDeviceIdleStop();
+  }
+
   /// Restart the audio output device previously stopped by stopAudioDevice(),
   /// so existing voices and loaded sounds keep operating. Idempotent: a no-op
   /// if the device is already started.

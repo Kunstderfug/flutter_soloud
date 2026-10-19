@@ -425,6 +425,11 @@ public:
   /// @return Returns [PlayerErrors.SO_NO_ERROR] if success.
   PlayerErrors stopAudioDevice(bool force = false);
 
+  /// Queue a one-shot output stop when the application has proved domain idle,
+  /// even if empty buses or paused transport resources remain alive. This does
+  /// not mutate voices or suppress future starts. Requires a finite idle policy.
+  bool requestAudioDeviceIdleStop();
+
   /// @brief Restart the audio output device previously stopped by
   /// stopAudioDevice(), so existing voices and loaded sounds keep operating.
   /// Idempotent: a no-op if the device is already started.
@@ -1130,6 +1135,7 @@ private:
     none,
     start,
     interruptionStop,
+    domainIdleStop,
     idleStop,
   };
   // The pending request and generation are protected by mPauseMutex. Requests

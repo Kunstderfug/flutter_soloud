@@ -39,6 +39,7 @@ cc -std=gnu99 -O2 -c "${SANITIZER[@]}" \
 c++ -std=c++17 -O2 -Wall -Wextra -pthread "${SANITIZER[@]}" \
     -DWITH_MINIAUDIO \
     -DNO_XIPH_LIBS \
+    -DNO_WAVPACK_LIBS \
     -DSOLOUD_LIFECYCLE_TEST_HOOKS \
     -I src/soloud/include \
     -I src/soloud/src \
@@ -53,6 +54,7 @@ c++ -std=c++17 -O2 -Wall -Wextra -pthread "${SANITIZER[@]}" \
     src/device_lifecycle_test_hooks.cpp \
     src/bindings.cpp \
     src/player.cpp \
+    src/capture/*.cpp \
     src/analyzer.cpp \
     src/synth/basic_wave.cpp \
     src/waveform/waveform.cpp \

@@ -237,6 +237,11 @@ abstract class FlutterSoLoud {
   @mustBeOverridden
   Future<PlayerErrors> stopAudioDevice({bool force = false});
 
+  /// Queue a domain-idle stop without waiting for native device operations.
+  /// Returns false if busy, uninitialized, or the idle policy is indefinite.
+  @mustBeOverridden
+  bool requestAudioDeviceIdleStop();
+
   /// Restart the audio output device previously stopped by [stopAudioDevice],
   /// so existing voices and loaded sounds keep operating. Idempotent: a no-op
   /// if the device is already started.

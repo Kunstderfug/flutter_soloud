@@ -549,6 +549,9 @@ class FlutterSoLoudFfi extends FlutterSoLoud with _FlutterSoLoudFfiCapture {
   }
 
   @override
+  bool requestAudioDeviceIdleStop() => native.requestAudioDeviceIdleStop();
+
+  @override
   Future<PlayerErrors> startAudioDevice() async {
     // Run the blocking native ma_device_start() off the UI isolate so the app
     // stays responsive (it can take tens of ms while the OS restarts the

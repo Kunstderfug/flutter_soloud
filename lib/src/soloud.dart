@@ -836,6 +836,27 @@ interface class SoLoud {
     }
   }
 
+  /// Queues a one-shot output-device stop after the app has established that
+  /// no user-intended audio work remains, including scheduled playback and
+  /// capture. Unlike automatic idle shutdown, this ignores empty effects buses
+  /// and other retained voices. Loaded sources and voice state are preserved.
+  ///
+  /// Requires a finite [setAudioDeviceIdleTimeout] policy. Newer playback,
+  /// unpause, explicit startup, or indefinite idle policy supersedes this stop.
+  /// It never suppresses future playback or deactivates AVAudioSession,
+  /// whose ownership may be shared with independent input capture.
+  ///
+  /// Returns true when queued, not when stopped; use [getAudioDeviceState] to
+  /// observe completion. Returns false when the native engine lifecycle is
+  /// busy, uninitialized, or the idle policy is indefinite. The caller may
+  /// retry while still idle. No effect on Web, where it returns false.
+  bool requestAudioDeviceIdleStop() {
+    if (!isInitialized) {
+      return false;
+    }
+    return _controller.soLoudFFI.requestAudioDeviceIdleStop();
+  }
+
   /// Starts or prewarms the audio output device without changing any voice or
   /// loaded [AudioSource]. This uses the same serialized lifecycle path as
   /// automatic startup.

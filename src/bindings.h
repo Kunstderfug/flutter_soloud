@@ -227,6 +227,10 @@ extern "C"
   /// stops the device even during active playback without mutating any voice.
   FFI_PLUGIN_EXPORT enum PlayerErrors stopAudioDevice(unsigned int force);
 
+  /// Nonblocking one-shot domain-idle stop. False means unavailable or busy;
+  /// the caller may retry. True means queued, not that stopping has completed.
+  FFI_PLUGIN_EXPORT bool requestAudioDeviceIdleStop();
+
   /// Restart the audio output device previously stopped by stopAudioDevice(),
   /// so existing voices and loaded sounds keep operating. Idempotent: a no-op
   /// if the device is already started.

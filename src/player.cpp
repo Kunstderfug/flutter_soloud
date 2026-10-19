@@ -1706,10 +1706,13 @@ bool Player::cancelSupersededDeviceRequests(uint64_t token)
                 mPendingDeviceRequest == DeviceLifecycleRequest::start ||
                 mPendingDeviceRequest ==
                     DeviceLifecycleRequest::interruptionStop ||
+                mPendingDeviceRequest == DeviceLifecycleRequest::domainIdleStop ||
                 mImmediateDeviceRequestInFlight ==
                     DeviceLifecycleRequest::start ||
                 mImmediateDeviceRequestInFlight ==
                     DeviceLifecycleRequest::interruptionStop ||
+                mImmediateDeviceRequestInFlight ==
+                    DeviceLifecycleRequest::domainIdleStop ||
                 mStartRequestedAfterInterruptionStop;
             if (newerImmediateIntent)
                 return false;
@@ -1778,6 +1781,16 @@ PlayerErrors Player::stopAudioDevice(bool force)
     }
 
     return performAudioDeviceStop(true);
+}
+
+bool Player::requestAudioDeviceIdleStop()
+{
+    if (!mInited.load(std::memory_order_acquire) ||
+        !mLifecycleRequestsAccepted.load(std::memory_order_acquire) ||
+        mIdleTimeoutMs.load(std::memory_order_acquire) < 0 ||
+        gAudioDeviceIdleTimeoutMs.load(std::memory_order_acquire) < 0)
+        return false;
+    return requestDeviceLifecycle(DeviceLifecycleRequest::domainIdleStop);
 }
 
 PlayerErrors Player::startAudioDevice()
@@ -1875,12 +1888,15 @@ bool Player::requestDeviceLifecycle(DeviceLifecycleRequest request)
         const bool immediatePending =
             mPendingDeviceRequest == DeviceLifecycleRequest::start ||
             mPendingDeviceRequest ==
-                DeviceLifecycleRequest::interruptionStop;
+                DeviceLifecycleRequest::interruptionStop ||
+            mPendingDeviceRequest == DeviceLifecycleRequest::domainIdleStop;
 
         const bool immediateInFlight =
             mImmediateDeviceRequestInFlight == DeviceLifecycleRequest::start ||
             mImmediateDeviceRequestInFlight ==
-                DeviceLifecycleRequest::interruptionStop;
+                DeviceLifecycleRequest::interruptionStop ||
+            mImmediateDeviceRequestInFlight ==
+                DeviceLifecycleRequest::domainIdleStop;
 
         switch (request)
         {
@@ -1896,6 +1912,20 @@ bool Player::requestDeviceLifecycle(DeviceLifecycleRequest request)
 
             // A newer idle request restarts an existing idle deadline.
             mPendingDeviceRequest = DeviceLifecycleRequest::idleStop;
+            ++mDeviceRequestGeneration;
+            shouldNotify = true;
+            break;
+
+        case DeviceLifecycleRequest::domainIdleStop:
+            // Domain idle supersedes earlier playback intent, but must not
+            // displace the system's higher-priority interruption cleanup.
+            if (mPendingDeviceRequest == DeviceLifecycleRequest::interruptionStop ||
+                mImmediateDeviceRequestInFlight ==
+                    DeviceLifecycleRequest::interruptionStop)
+                return false;
+            mStartRequestedAfterInterruptionStop = false;
+            mIdleStopRequestedAfterImmediateOperation = false;
+            mPendingDeviceRequest = DeviceLifecycleRequest::domainIdleStop;
             ++mDeviceRequestGeneration;
             shouldNotify = true;
             break;
@@ -2006,14 +2036,17 @@ void Player::pauseEngineScheduler()
         const uint64_t requestGeneration = mDeviceRequestGeneration;
         mPendingDeviceRequest = DeviceLifecycleRequest::none;
 
-        // Starts and interruption stops are performed immediately. Mark the
-        // operation in flight before releasing mPauseMutex so idle requests
+        // Starts, interruptions, and domain-idle stops run immediately. Mark
+        // the operation in flight before releasing mPauseMutex so idle requests
         // cannot replace or invalidate it while the backend call is running.
         if (request == DeviceLifecycleRequest::start ||
-            request == DeviceLifecycleRequest::interruptionStop)
+            request == DeviceLifecycleRequest::interruptionStop ||
+            request == DeviceLifecycleRequest::domainIdleStop)
         {
             mImmediateDeviceRequestInFlight = request;
             lock.unlock();
+            if (request == DeviceLifecycleRequest::domainIdleStop)
+                SOLOUD_TEST_BARRIER(domainIdleStopDequeued);
 
             std::lock_guard<std::mutex> operationLock(
                 mDeviceLifecycleOperationMutex);
@@ -2030,11 +2063,18 @@ void Player::pauseEngineScheduler()
                     if (performAudioDeviceStart() != noError)
                         reportAutomaticDeviceStartFailure();
                 }
-                else
+                else if (request == DeviceLifecycleRequest::interruptionStop ||
+                         (mIdleTimeoutMs.load(std::memory_order_acquire) >= 0 &&
+                          gAudioDeviceIdleTimeoutMs.load(std::memory_order_acquire) >= 0))
                 {
+                    // Domain idle deliberately ignores active-voice count:
+                    // an empty effects bus never ends. It is a one-shot stop,
+                    // and a newer start always supersedes it.
                     performAudioDeviceStop(true);
                 }
             }
+            if (request == DeviceLifecycleRequest::domainIdleStop)
+                SOLOUD_TEST_BARRIER(domainIdleStopCompleted);
 
             bool shouldNotify = false;
 
@@ -2074,7 +2114,9 @@ void Player::pauseEngineScheduler()
                             mPendingDeviceRequest ==
                                 DeviceLifecycleRequest::start ||
                             mPendingDeviceRequest ==
-                                DeviceLifecycleRequest::interruptionStop;
+                                DeviceLifecycleRequest::interruptionStop ||
+                            mPendingDeviceRequest ==
+                                DeviceLifecycleRequest::domainIdleStop;
 
                         if (!anotherImmediatePending)
                         {

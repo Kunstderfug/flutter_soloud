@@ -45,7 +45,7 @@ c++ -std=c++17 -O2 -w -pthread "${SANITIZER[@]}" \
     -I src/pffft \
     -I src \
     "${NATIVE_DECODER_FLAGS[@]}" \
-    "${NATIVE_DECODER_PLATFORM_SOURCES[@]}" \
+    -DNO_WAVPACK_LIBS \
     -o "$OUT" \
     test/engine_lifecycle_test.cpp \
     "$WORK_DIR/pffft.o" \
@@ -58,6 +58,9 @@ c++ -std=c++17 -O2 -w -pthread "${SANITIZER[@]}" \
     src/waveform/waveform.cpp \
     src/waveform/miniaudio_libvorbis.cpp \
     src/audiobuffer/*.cpp \
+    src/native_decoder/native_audio_decoder.cpp \
+    "${NATIVE_DECODER_PLATFORM_SOURCES[@]}" \
+    src/capture/*.cpp \
     src/filters/*.cpp \
     src/mixeroutput/*.cpp \
     src/soloud/src/core/*.cpp \

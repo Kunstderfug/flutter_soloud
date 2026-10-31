@@ -242,12 +242,26 @@ Float32List _readSamplesFromMem(Map<String, dynamic> args) {
 enum AndroidAAudioAttributes {
   /// Tag the stream as `usage = media` / `contentType = music` (default).
   /// Sensible for a media app and capturable by system screen recorders.
-  mediaMusic,
+  mediaMusic(1),
 
   /// Leave usage/contentType unset so the app can manage `AudioAttributes`
   /// externally (e.g. via the `audio_session` plugin) without SoLoud
   /// overriding them. The screen-record capture policy is still applied.
-  unmanaged,
+  unmanaged(0),
+
+  /// Tag the stream as `usage = voiceCommunication` / `contentType = speech`,
+  /// the attributes of a call's far end. Android's own voice processing (the
+  /// echo canceller of an input opened with the voice-communication preset,
+  /// e.g. flutter_recorder's `AndroidInputPreset.voiceCommunication`) then
+  /// takes what SoLoud plays as the other side of the call and removes it from
+  /// the microphone. For voice chat and voice assistants on a loudspeaker.
+  /// Pair it with the in-communication audio mode, and route to the speaker.
+  voiceCommunication(2);
+
+  const AndroidAAudioAttributes(this.value);
+
+  /// The value the native backend takes.
+  final int value;
 }
 
 /// The main class to call all the audio methods that play sounds.
@@ -367,8 +381,11 @@ interface class SoLoud {
   _audioVisualizationEventsController =
       StreamController<AudioVisualizationData>.broadcast();
 
-  /// Stream of audio visualization data packets (wave and/or FFT) emitted
-  /// when visualization is enabled.
+  /// Stream of audio visualization data packets (wave and/or FFT) of the
+  /// engine output, emitted when visualization is enabled with
+  /// [setVisualizationEnabled].
+  ///
+  /// Each mixing bus has its own, see [Bus.audioVisualizationEvents].
   Stream<AudioVisualizationData> get audioVisualizationEvents =>
       _audioVisualizationEventsController.stream;
 
@@ -495,9 +512,12 @@ interface class SoLoud {
   /// recorders. Pass [AndroidAAudioAttributes.unmanaged] if you set the app's
   /// attributes/focus yourself (e.g. via the `audio_session` plugin): SoLoud
   /// then leaves usage/contentType unset so they don't fight your
-  /// configuration. Either way the choice is preserved across output-device
-  /// changes. (Note these are the *stream's* attributes; `audio_session`
-  /// controls the *focus request* — for correct ducking they should match.)
+  /// configuration. Pass [AndroidAAudioAttributes.voiceCommunication] for
+  /// voice chat: the platform's echo canceller then removes what SoLoud plays
+  /// from a voice-communication microphone. Either way the choice is preserved
+  /// across output-device changes. (Note these are the *stream's* attributes;
+  /// `audio_session` controls the *focus request* — for correct ducking they
+  /// should match.)
   /// Ignored when `lowLatency` is true, on non-Android platforms, and on web.
   ///
   /// [devicePeriodFrames] (native only) the output device period in frames
@@ -683,7 +703,7 @@ interface class SoLoud {
     // Must be set before the engine opens the device so the backend picks it
     // up at stream creation (and re-applies it on device changes).
     _controller.soLoudFFI.setAndroidAAudioAttributes(
-      androidAAudioAttributes == AndroidAAudioAttributes.mediaMusic,
+      androidAAudioAttributes.value,
     );
     _log.info('Setting Linux audio backend to $linuxAudioBackend');
     await _controller.soLoudFFI.setLinuxAudioBackend(linuxAudioBackend);
@@ -783,6 +803,26 @@ interface class SoLoud {
     if (error != PlayerErrors.noError) {
       throw SoLoudCppException.fromPlayerError(error);
     }
+  }
+
+  /// Changes the Android AAudio stream's [AndroidAAudioAttributes] while the
+  /// engine runs: the output device is reopened with them, keeping loaded
+  /// sounds and playing voices, as [changeDevice] does.
+  ///
+  /// For an app that plays as media and, during voice chat, as a call's far
+  /// end ([AndroidAAudioAttributes.voiceCommunication]). Applies only with
+  /// `lowLatency: false` (see [init]); does nothing off Android and on web.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  Future<void> setAndroidAAudioAttributes(
+    AndroidAAudioAttributes attributes,
+  ) async {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    _controller.soLoudFFI.setAndroidAAudioAttributes(attributes.value);
+    await changeDevice();
   }
 
   /// Sets the Linux audio backend ([LinuxAudioBackend.auto],
@@ -1297,8 +1337,11 @@ interface class SoLoud {
     // Initialize callbacks.
     await _controller.soLoudFFI.setDartEventCallbacks();
 
-    _controller.soLoudFFI.setVisualizationCallback((data) {
-      if (_audioVisualizationEventsController.hasListener) {
+    _controller.soLoudFFI.setVisualizationCallback((sourceId, data) {
+      // 0 is the engine output, anything else the id of a mixing bus.
+      if (sourceId != 0) {
+        Buses().dispatchVisualizationData(sourceId, data);
+      } else if (_audioVisualizationEventsController.hasListener) {
         _audioVisualizationEventsController.add(data);
       }
     });
@@ -3363,6 +3406,11 @@ interface class SoLoud {
   /// Gets the approximate volume for output per output
   /// channel (i.e, per speaker).
   ///
+  /// This is the peak (largest absolute sample) of [channel] over the latest
+  /// window analyzed by the visualization, so it needs
+  /// [setVisualizationEnabled] first and reads 0 while that is disabled. It
+  /// holds its last value while the output device is stopped.
+  ///
   /// [channel] the channel.
   /// Return zero for invalid parameters.
   double getApproximateVolume(int channel) {
@@ -3616,10 +3664,13 @@ interface class SoLoud {
     _controller.soLoudFFI.setLoopEndPoint(handle, time);
   }
 
-  /// Enable or disable audio visualization.
+  /// Enable or disable audio visualization of the engine output.
   ///
   /// When enabled, audio data packets (wave and/or FFT) will be emitted on the
   /// [audioVisualizationEvents] stream.
+  ///
+  /// To visualize what plays through a mixing bus instead, see
+  /// [Bus.setVisualizationEnabled].
   ///
   /// [enabled] whether to enable or disable audio visualization.
   ///
@@ -3629,11 +3680,13 @@ interface class SoLoud {
   /// [VisualizationKind.waveAndFft]).
   ///
   /// [channel] channel selection: [VisualizationChannel.merged] (-1, default),
-  /// [VisualizationChannel.all] (-2), or a specific 0-based channel index.
+  /// [VisualizationChannel.all] (-2), or a specific 0-based channel index,
+  /// below the `channels` the engine was initialized with.
   ///
   /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
   ///
-  /// Throws [SoLoudCppException] if native setup fails.
+  /// Throws [SoLoudCppException] if the parameters are invalid or native
+  /// setup fails.
   void setVisualizationEnabled(
     bool enabled, {
     int windowSize = 256,
@@ -4156,6 +4209,8 @@ interface class SoLoud {
   /// the new value is calculated with:
   /// newFreq = smooth * oldFreq + (1 - smooth) * newFreq
   ///
+  /// Applies to the engine output's visualization and to every bus's.
+  ///
   /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
   void setFftSmoothing(double smooth) {
     if (!isInitialized) {
@@ -4183,6 +4238,9 @@ interface class SoLoud {
   ///
   /// [minDecibels] default is -100.0 dB.
   /// [maxDecibels] default is -30.0 dB.
+  ///
+  /// Applies to the engine output's visualization and to every bus's.
+  ///
   /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
   /// Throws [ArgumentError] if [minDecibels] >= [maxDecibels].
   void setFftDecibelRange(double minDecibels, double maxDecibels) {

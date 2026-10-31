@@ -184,6 +184,45 @@ public:
   PlayerErrors loadMem(const std::string &uniqueName, unsigned char *mem,
                        int length, bool loadIntoMem, unsigned int &hash);
 
+  /// @brief A sound decoded by [decodeFile], [decodeMem] or
+  /// [decodeJoinedSources] that is not yet owned by any Player.
+  struct PendingSound
+  {
+    std::unique_ptr<ActiveSound> sound;
+    PlayerErrors error = noError;
+  };
+
+  /// @brief Decode [completeFileName] without touching any Player state, so
+  /// callers can run it without holding the engine lifecycle locks. This is
+  /// the slow part of [loadFile]: formats with no streaming decoder (M4A/MP4,
+  /// AAC, AC-3, E-AC-3) and Ogg Opus/FLAC are decoded in full to PCM even
+  /// when [loadIntoMem] is false. Ogg Opus decodes to [engineSampleRate] and
+  /// [engineChannels].
+  static PendingSound decodeFile(const std::string &completeFileName,
+                                 bool loadIntoMem,
+                                 unsigned int engineSampleRate,
+                                 unsigned int engineChannels);
+
+  /// @brief Same as [decodeFile] for audio bytes in [mem].
+  static PendingSound decodeMem(const std::string &uniqueName,
+                                unsigned char *mem, int length,
+                                bool loadIntoMem,
+                                unsigned int engineSampleRate,
+                                unsigned int engineChannels);
+
+  /// @brief The decoding half of [joinTwoSources], which, like [decodeFile],
+  /// touches no Player state. The result is resampled to [engineSampleRate].
+  static PendingSound decodeJoinedSources(const std::string &uniqueName,
+                                          unsigned char *mem1,
+                                          unsigned char *mem2,
+                                          int length1, int length2,
+                                          unsigned int engineSampleRate);
+
+  /// @brief Give [pending] a unique hash and add it to the loaded sounds.
+  /// @return [fileAlreadyLoaded] when the name's hash was already in use (a
+  /// new unique hash is assigned anyway), or [pending]'s decode error.
+  PlayerErrors registerSound(PendingSound pending, unsigned int &hash);
+
   /// @brief Load two sounds stored into [mem1] and [mem2], convert them to mono
   /// if needed, resample them to the engine's sample rate, and join them into a
   /// single stereo AudioSource (left and right channels).
@@ -467,8 +506,10 @@ public:
   float getRelativePlaySpeed(unsigned int handle);
 
   /// @brief Gets the approximate volume for output per output channel (i.e, per speaker).
+  /// It is the peak of the latest window analyzed by the engine output's
+  /// visualization, so it needs visualization enabled.
   /// @param channel the channel.
-  /// @return zero for invalid parameters.
+  /// @return zero for invalid parameters or while visualization is disabled.
   float getApproximateVolume(unsigned int channel);
 
   /// @brief Play already loaded sound identified by [soundHash].
@@ -1080,9 +1121,24 @@ public:
   PlayerErrors busPlayOnEngine(unsigned int busId, float volume, bool paused,
                                unsigned int &handle);
   int busSetChannels(unsigned int busId, unsigned int channels);
-  void busSetVisualizationEnable(unsigned int busId, bool enable);
-  float *busCalcFFT(unsigned int busId);
-  float *busGetWave(unsigned int busId);
+  /// @brief Enable or disable the visualization of a bus: what is mixed into
+  /// the bus, before its own filters, volume and pan. It belongs to the bus,
+  /// so it survives the bus voice being stopped and played again.
+  /// @param busId the bus ID.
+  /// @param enabled whether visualization is enabled.
+  /// @param windowSize power of two from 128 to 8192.
+  /// @param kind wave only, FFT only, or wave and FFT.
+  /// @param channel VISUALIZATION_CHANNEL_MERGED, VISUALIZATION_CHANNEL_ALL,
+  /// or a channel index.
+  /// @return [noError] if success, [busIdNotFound] if [busId] is unknown,
+  /// [invalidParameter] for invalid settings (nothing changes then),
+  /// [outOfMemory] if the buffers could not be allocated.
+  PlayerErrors busSetVisualizationEnabled(unsigned int busId, bool enabled,
+                                          int windowSize,
+                                          VisualizationKind kind, int channel);
+  bool busIsVisualizationEnabled(unsigned int busId);
+  /// @brief The peak of [channel] over the latest window analyzed by the bus
+  /// visualization, or zero if it is disabled or [busId] is unknown.
   float busGetApproximateVolume(unsigned int busId, unsigned int channel);
   void busAnnexSound(unsigned int busId, unsigned int voiceHandle);
   unsigned int busGetActiveVoiceCount(unsigned int busId);

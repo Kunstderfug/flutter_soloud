@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_soloud/src/bindings/flutter_soloud_ffigen.dart'
     as native;
 import 'package:flutter_soloud/src/filters/amplitude_modulator_filter.dart';
+import 'package:flutter_soloud/src/filters/classical_leveler_filter.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
 import 'package:test/test.dart';
 
@@ -63,10 +64,29 @@ void main() {
       FilterType.compressorFilter: 10,
       FilterType.parametricEq: 11,
       FilterType.amplitudeModulatorFilter: 12,
+      FilterType.classicalLevelerFilter: 13,
     };
     for (final MapEntry(key: type, value: index) in expected.entries) {
       expect(type.index, index, reason: '$type moved');
     }
+  });
+
+  test('classical leveler ranges, defaults and transport match native', () {
+    expect(native.FilterType.fromValue(13), native.FilterType.ClassicalLevelerFilter);
+    expect(FilterType.classicalLevelerFilter.numParameters, 57);
+    expect(ClassicalLeveler.values.length, 9);
+    expect(ClassicalLeveler.values.map((p) => p.def).toList(),
+        [0, 50, -30, -60, 4, 500, 0, -10, 1.3]);
+    const global = ClassicalLevelerGlobal();
+    expect(global.filterType, FilterType.classicalLevelerFilter);
+    expect(global.liftPercent.attributeId, 1);
+    expect(global.thresholdLufs.min, -45);
+    expect(global.floorLufs.max, -50);
+    expect(global.fallTimeMs.max, 2000);
+    expect(() => global.setLookAheadPlan(nowLufs: -40,
+        lufs: [-40], leadSeconds: []), throwsArgumentError);
+    expect(() => global.setLookAheadPlan(nowLufs: double.nan,
+        lufs: [-40], leadSeconds: [0]), throwsArgumentError);
   });
 
   test('amplitude modulator maps to the native AmplitudeModulatorFilter', () {

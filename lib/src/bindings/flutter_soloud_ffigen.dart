@@ -3643,7 +3643,8 @@ enum FilterType {
   LimiterFilter(9),
   CompressorFilter(10),
   ParametricEQFilter(11),
-  AmplitudeModulatorFilter(12);
+  AmplitudeModulatorFilter(12),
+  ClassicalLevelerFilter(13);
 
   final int value;
   const FilterType(this.value);
@@ -3662,6 +3663,7 @@ enum FilterType {
     10 => CompressorFilter,
     11 => ParametricEQFilter,
     12 => AmplitudeModulatorFilter,
+    13 => ClassicalLevelerFilter,
     _ => throw ArgumentError('Unknown value for FilterType: $value'),
   };
 }

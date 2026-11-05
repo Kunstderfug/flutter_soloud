@@ -21,6 +21,7 @@
 #include "limiter.h"
 #include "parametric_eq_filter.h"
 #include "amplitude_modulator_filter.h"
+#include "classical_leveler_filter.h"
 
 Filters::Filters(SoLoud::Soloud *soloud, ActiveSound *sound, BusData *busData)
     : mSoloud(soloud), mSound(sound), mBusData(busData) {}
@@ -120,6 +121,12 @@ std::vector<std::string> Filters::getFilterParamNames(FilterType filterType) {
       ret.push_back(f.getParamName(i));
     }
   } break;
+  case ClassicalLevelerFilter: {
+    ClassicalLeveler f;
+    for (int i = 0; i < f.getParamCount(); ++i) {
+      ret.push_back(f.getParamName(i));
+    }
+  } break;
   case AmplitudeModulatorFilter: {
     AmplitudeModulator f;
     int nParams = f.getParamCount();
@@ -181,6 +188,9 @@ PlayerErrors Filters::addFilter(FilterType filterType) {
     break;
   case ParametricEQFilter:
     newFilter = new ParametricEq(mSoloud);
+    break;
+  case ClassicalLevelerFilter:
+    newFilter = new ClassicalLeveler();
     break;
   case AmplitudeModulatorFilter:
     newFilter = new AmplitudeModulator();

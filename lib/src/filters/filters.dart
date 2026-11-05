@@ -7,6 +7,7 @@ import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/amplitude_modulator_filter.dart';
 import 'package:flutter_soloud/src/filters/bassboost_filter.dart';
 import 'package:flutter_soloud/src/filters/biquad_resonant_filter.dart';
+import 'package:flutter_soloud/src/filters/classical_leveler_filter.dart';
 import 'package:flutter_soloud/src/filters/compressor.dart';
 import 'package:flutter_soloud/src/filters/echo_filter.dart';
 import 'package:flutter_soloud/src/filters/flanger_filter.dart';
@@ -209,6 +210,10 @@ final class FiltersSingle {
   ParametricEqSingle get parametricEqFilter =>
       ParametricEqSingle(soundHash, busId);
 
+  /// Lifts soft passages with optional prepared, latency-free look-ahead.
+  ClassicalLevelerSingle get classicalLevelerFilter =>
+      ClassicalLevelerSingle(soundHash, busId);
+
   /// The `Amplitude Modulator` filter for this sound.
   ///
   /// Bipolar amplitude modulation (ring modulation) with a sine carrier. At
@@ -361,6 +366,10 @@ final class FiltersGlobal {
   /// This filter is not documented in the SoLoud C++ lib, the source code is
   /// [here](https://github.com/alnitak/flutter_soloud/blob/main/src/soloud/src/filter/parametric_eq.cpp)
   ParametricEqGlobal get parametricEqFilter => const ParametricEqGlobal();
+
+  /// Lifts soft passages with optional prepared, latency-free look-ahead.
+  ClassicalLevelerGlobal get classicalLevelerFilter =>
+      const ClassicalLevelerGlobal();
 
   /// The `Amplitude Modulator` filter used globally.
   ///
@@ -549,7 +558,10 @@ enum FilterType {
   parametricEq,
 
   /// A sine ring (bipolar amplitude) modulator filter.
-  amplitudeModulatorFilter;
+  amplitudeModulatorFilter,
+
+  /// A BS.1770 classical passage leveler.
+  classicalLevelerFilter;
 
   @override
   String toString() => switch (this) {
@@ -566,6 +578,7 @@ enum FilterType {
     FilterType.compressorFilter => 'Compressor',
     FilterType.parametricEq => 'Parametric EQ',
     FilterType.amplitudeModulatorFilter => 'Amplitude Modulator',
+    FilterType.classicalLevelerFilter => 'Classical Leveler',
   };
 
   /// The number of parameters this filter owns.
@@ -583,6 +596,7 @@ enum FilterType {
     FilterType.compressorFilter => 7,
     FilterType.parametricEq => 195,
     FilterType.amplitudeModulatorFilter => 2,
+    FilterType.classicalLevelerFilter => 57,
   };
 
   /// Activate this filter. If [soundHash] is null this filter is applied

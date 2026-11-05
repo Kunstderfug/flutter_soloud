@@ -181,7 +181,8 @@ typedef enum FilterType {
   LimiterFilter,
   CompressorFilter,
   ParametricEQFilter,
-  AmplitudeModulatorFilter
+  AmplitudeModulatorFilter,
+  ClassicalLevelerFilter
 } FilterType_t;
 
 /// WARNING: Keep these in sync with `lib/src/enums.dart`.

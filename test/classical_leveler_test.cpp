@@ -93,5 +93,28 @@ int main() {
     rig.filter.setFilterParameter(P::LIFT_PERCENT, NAN);
     assert(rig.filter.getFilterParameter(P::LIFT_PERCENT) == 50);
   }
+  {
+    Rig rig;
+    // Every transport index, including indices past the 32-bit SoLoud
+    // change mask, is safe and telemetry is read-only.
+    rig.filter.setFilterParameter(P::APPLIED_GAIN_DB, 99);
+    rig.filter.setFilterParameter(P::LOOK_AHEAD_ACTIVE, 1);
+    assert(rig.gain() == 0);
+    assert(rig.filter.getFilterParameter(P::LOOK_AHEAD_ACTIVE) == 0);
+    rig.filter.setFilterParameter(P::PLAN_COUNT, 21);
+    for (unsigned int i = 0; i < 21; ++i) {
+      rig.filter.setFilterParameter(P::PLAN_BINS + i, -40);
+      rig.filter.setFilterParameter(P::PLAN_BINS + 21 + i, i * 0.1f);
+    }
+    rig.filter.setFilterParameter(P::PLAN_COMMIT, 1);
+    // Transport is not automatable; it must never use the base class's
+    // 32-bit changed-parameter mask.
+    rig.filter.fadeFilterParameter(55, 1, 1, 0);
+    rig.filter.oscillateFilterParameter(54, 0, 1, 1, 0);
+    rig.render(480);
+    assert(rig.filter.mParamChanged == 0);
+    assert(rig.filter.mParamFader[55].mActive == 0);
+    assert(rig.filter.mParamFader[54].mActive == 0);
+  }
   std::puts("Classical Leveler DSP tests passed");
 }

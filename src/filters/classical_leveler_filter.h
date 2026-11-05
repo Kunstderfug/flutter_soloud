@@ -34,6 +34,10 @@ class ClassicalLevelerInstance : public SoLoud::FilterInstance {
               unsigned int channels, float sampleRate, SoLoud::time time) override;
   void setFilterParameter(unsigned int index, float value) override;
   void updateParams(SoLoud::time time) override;
+  void fadeFilterParameter(unsigned int index, float to, SoLoud::time duration,
+                           SoLoud::time start) override;
+  void oscillateFilterParameter(unsigned int index, float from, float to,
+                                 SoLoud::time duration, SoLoud::time start) override;
  private:
   std::optional<classical_leveler::Processor> processor_;
   classical_leveler::LookAheadPlan plan_{};

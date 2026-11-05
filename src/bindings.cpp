@@ -1,3 +1,4 @@
+#include <cmath>
 #include "analyzer.h"
 #include "audiobuffer/pull_buffer_stream.h"
 // Declarations of every FFI_PLUGIN_EXPORT entry point defined below, so they
@@ -3793,7 +3794,7 @@ extern "C"
         {
           *filterValue =
               busFilters->filters.getFilterParams(handle > 0 ? handle : busFilters->handle, filterType, attributeId);
-          if (!(isnormal(*filterValue) || isnan(*filterValue)))
+          if (!std::isfinite(*filterValue))
             return filterParameterGetError;
           if (*filterValue == 9999.0f)
             return filterNotFound;
@@ -3809,7 +3810,7 @@ extern "C"
         {
           *filterValue =
               s->filters.get()->getFilterParams(handle, filterType, attributeId);
-          if (!(isnormal(*filterValue) || isnan(*filterValue)))
+          if (!std::isfinite(*filterValue))
             return filterParameterGetError;
           if (*filterValue == 9999.0f)
             return filterNotFound;

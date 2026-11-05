@@ -43,6 +43,18 @@ void ClassicalLevelerInstance::updateParams(SoLoud::time time) {
     }
   }
 }
+void ClassicalLevelerInstance::fadeFilterParameter(unsigned int index, float to,
+    SoLoud::time duration, SoLoud::time start) {
+  if (index < ClassicalLeveler::APPLIED_GAIN_DB) {
+    SoLoud::FilterInstance::fadeFilterParameter(index, to, duration, start);
+  }
+}
+void ClassicalLevelerInstance::oscillateFilterParameter(unsigned int index,
+    float from, float to, SoLoud::time duration, SoLoud::time start) {
+  if (index < ClassicalLeveler::APPLIED_GAIN_DB) {
+    SoLoud::FilterInstance::oscillateFilterParameter(index, from, to, duration, start);
+  }
+}
 void ClassicalLevelerInstance::setFilterParameter(unsigned int index, float value) {
   using P = ClassicalLeveler;
   if (index >= P::PARAMETER_COUNT || !std::isfinite(value)) { return; }

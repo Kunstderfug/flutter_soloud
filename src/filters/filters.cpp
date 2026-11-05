@@ -292,7 +292,8 @@ float Filters::getFilterParams(SoLoud::handle handle, FilterType filterType,
   if (index < 0)
     return 9999.0f;
 
-  float ret = mSoloud->getFilterParameter(handle, index, attributeId);
+  const auto target = mBusData != nullptr ? mBusData->handle : handle;
+  float ret = mSoloud->getFilterParameter(target, index, attributeId);
   return ret;
 }
 

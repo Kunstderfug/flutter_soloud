@@ -106,9 +106,36 @@ void destroyPlayingBusWhileMixing(FilterType type, const char *name) {
     soloud.deinit();
 }
 
+void busParameterReadsUseTheBusVoice() {
+    SoLoud::Soloud soloud;
+    EXPECT(soloud.init(0, SoLoud::Soloud::NULLDRIVER,
+        kSampleRate, kBufferSize, kChannels) == SoLoud::SO_NO_ERROR, "init failed");
+    {
+        Filters global(&soloud, nullptr, nullptr);
+        EXPECT(global.addFilter(ClassicalLevelerFilter) == noError, "global add failed");
+        global.setFilterParams(0, ClassicalLevelerFilter, 1, 10);
+        BusData bus(1, &soloud);
+        bus.handle = soloud.play(bus.bus);
+        EXPECT(bus.filters.addFilter(ClassicalLevelerFilter) == noError, "bus add failed");
+        bus.filters.setFilterParams(0, ClassicalLevelerFilter, 1, 75);
+        EXPECT(bus.filters.getFilterParams(0, ClassicalLevelerFilter, 1) == 75,
+            "bus parameter read used a global slot");
+        EXPECT(global.getFilterParams(0, ClassicalLevelerFilter, 1) == 10,
+            "bus parameter update affected global filter");
+        EXPECT(bus.filters.getFilterParams(0, ClassicalLevelerFilter, 9) == 0,
+            "new bus gain must be zero");
+        EXPECT(bus.filters.getFilterParams(0, ClassicalLevelerFilter, 10) == 0,
+            "new bus look-ahead must be inactive");
+        global.removeFilter(ClassicalLevelerFilter);
+    }
+    soloud.deinit();
+}
+
 } // namespace
 
 int main() {
+    busParameterReadsUseTheBusVoice();
+    destroyPlayingBusWhileMixing(ClassicalLevelerFilter, "Classical Leveler");
     destroyPlayingBusWhileMixing(AmplitudeModulatorFilter, "amplitude modulator");
     destroyPlayingBusWhileMixing(ParametricEQFilter, "parametric EQ");
 

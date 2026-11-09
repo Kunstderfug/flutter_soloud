@@ -1842,6 +1842,10 @@ namespace SoLoud
 								voice->mResampleData[0], SAMPLE_GRANULARITY,
 								SAMPLE_GRANULARITY);
 						}
+						// ###### flutter_soloud local patch (voice tail) ######
+						// Nothing came back: everything read before this block has
+						// been resampled, so the voice may now be auto-stopped.
+						voice->mSourceDrained = readcount == 0;
 
                         // Clear remaining of the resample data if the full scratch wasn't used
 						if (readcount < SAMPLE_GRANULARITY)
@@ -1851,14 +1855,18 @@ namespace SoLoud
 								memset(voice->mResampleData[0] + readcount + SAMPLE_GRANULARITY * k, 0, sizeof(float) * (SAMPLE_GRANULARITY - readcount));
 						}
 
-						// If we go past zero, crop to zero (a bit of a kludge)
+						// ###### flutter_soloud local patch (resampler carry) ######
+						// We have new block of data, move pointer backwards. The previous
+						// block was resampled to its end (see writesamples below), so this
+						// carries what is left of the last step into the new block. Only a
+						// new or reset voice is still at offset 0 here; upstream cropped
+						// every block to 0, which skipped up to one step per block.
 						if (voice->mSrcOffset < SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL)
 						{
 							voice->mSrcOffset = 0;
 						}
 						else
 						{
-							// We have new block of data, move pointer backwards
 							voice->mSrcOffset -= SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL;
 						}
 
@@ -1891,11 +1899,10 @@ namespace SoLoud
 
 					if (voice->mSrcOffset < SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL)
 					{
-						writesamples = ((SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL) - voice->mSrcOffset) / step_fixed + 1;
-
-						// avoid reading past the current buffer..
-						if (((writesamples * step_fixed + voice->mSrcOffset) >> FIXPOINT_FRAC_BITS) >= SAMPLE_GRANULARITY)
-							writesamples--;
+						// ###### flutter_soloud local patch (resampler carry) ######
+						// Every position left in this block, rounded up: the last one is
+						// still inside the block, the one after it is at or past its end.
+						writesamples = ((SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL) - voice->mSrcOffset + step_fixed - 1) / step_fixed;
 					}
 
 
@@ -1966,7 +1973,14 @@ namespace SoLoud
 					voice->mStopSamplesLeft = -1;
 					stopVoice_internal(mActiveVoice[i]);
 				}
-				else if (!(voice->mFlags & (AudioSourceInstance::LOOPING | AudioSourceInstance::DISABLE_AUTOSTOP)) && voice->hasEnded())
+				// ###### flutter_soloud local patch (voice tail) ######
+				// hasEnded() alone turns true when the last block is read, with
+				// up to SAMPLE_GRANULARITY source samples of it not yet output.
+				// Wait for a read after the end to come back empty, so all of
+				// that block is output: the voice outlives its last sample by
+				// the silent rest of the block, at most one more pass at the
+				// usual buffer sizes.
+				else if (!(voice->mFlags & (AudioSourceInstance::LOOPING | AudioSourceInstance::DISABLE_AUTOSTOP)) && voice->hasEnded() && voice->mSourceDrained)
 				{
 					stopVoice_internal(mActiveVoice[i]);
 				}
@@ -2027,21 +2041,30 @@ namespace SoLoud
 
 						// Get a block of source data
 
+						// ###### flutter_soloud local patch (voice tail) ######
+						// Keep the read count, as the audible path does, so a
+						// ticking voice is auto-stopped in the same pass.
+						unsigned int readcount = 0;
 						if (!voice->hasEnded() || voice->mFlags & AudioSourceInstance::LOOPING)
 						{
-							readSourceSamples_internal(voice,
+							readcount = readSourceSamples_internal(voice,
 								voice->mResampleData[0], SAMPLE_GRANULARITY,
 								SAMPLE_GRANULARITY);
 						}
+						voice->mSourceDrained = readcount == 0;
 
-						// If we go past zero, crop to zero (a bit of a kludge)
+						// ###### flutter_soloud local patch (resampler carry) ######
+						// We have new block of data, move pointer backwards. The previous
+						// block was resampled to its end (see writesamples below), so this
+						// carries what is left of the last step into the new block. Only a
+						// new or reset voice is still at offset 0 here; upstream cropped
+						// every block to 0, which skipped up to one step per block.
 						if (voice->mSrcOffset < SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL)
 						{
 							voice->mSrcOffset = 0;
 						}
 						else
 						{
-							// We have new block of data, move pointer backwards
 							voice->mSrcOffset -= SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL;
 						}
 
@@ -2059,11 +2082,10 @@ namespace SoLoud
 
 					if (voice->mSrcOffset < SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL)
 					{
-						writesamples = ((SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL) - voice->mSrcOffset) / step_fixed + 1;
-
-						// avoid reading past the current buffer..
-						if (((writesamples * step_fixed + voice->mSrcOffset) >> FIXPOINT_FRAC_BITS) >= SAMPLE_GRANULARITY)
-							writesamples--;
+						// ###### flutter_soloud local patch (resampler carry) ######
+						// Every position left in this block, rounded up: the last one is
+						// still inside the block, the one after it is at or past its end.
+						writesamples = ((SAMPLE_GRANULARITY * FIXPOINT_FRAC_MUL) - voice->mSrcOffset + step_fixed - 1) / step_fixed;
 					}
 
 
@@ -2084,7 +2106,9 @@ namespace SoLoud
 				}
 
 				// clear voice if the sound is over
-				if (!(voice->mFlags & (AudioSourceInstance::LOOPING | AudioSourceInstance::DISABLE_AUTOSTOP)) && voice->hasEnded())
+				// ###### flutter_soloud local patch (voice tail) ######
+				// Once a read after the end came back empty, as above.
+				if (!(voice->mFlags & (AudioSourceInstance::LOOPING | AudioSourceInstance::DISABLE_AUTOSTOP)) && voice->hasEnded() && voice->mSourceDrained)
 				{
 					stopVoice_internal(mActiveVoice[i]);
 				}
@@ -2340,6 +2364,30 @@ namespace SoLoud
 
 		if (mActiveVoiceDirty)
 			calcActiveVoices_internal();
+
+		// ###### flutter_soloud local patch (voice tail) ######
+		// mixBus_internal stops a voice that read its last block only once a
+		// later read comes back empty, and only voices that are mixed read.
+		// One that is not mixed now (inaudible without ticking, or beyond the
+		// active voice count) would keep the unplayed rest of that block and
+		// stay alive, then play it late if it is ever mixed again. Nothing of
+		// it can be heard now, so stop the voice, as the mixer did before.
+		{
+			unsigned char mixed[VOICE_COUNT];
+			memset(mixed, 0, mHighestVoice);
+			for (i = 0; i < (signed)mActiveVoiceCount; i++)
+				mixed[mActiveVoice[i]] = 1;
+			for (i = 0; i < (signed)mHighestVoice; i++)
+			{
+				AudioSourceInstance *voice = mVoice[i];
+				if (voice && !mixed[i] &&
+					!(voice->mFlags & (AudioSourceInstance::PAUSED | AudioSourceInstance::LOOPING | AudioSourceInstance::DISABLE_AUTOSTOP)) &&
+					voice->hasEnded())
+				{
+					stopVoice_internal(i);
+				}
+			}
+		}
 
 		mixBus_internal(mOutputScratch.mData, aSamples, aStride, mScratch.mData, 0, (float)mSamplerate, mChannels, mResampler);
 

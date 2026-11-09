@@ -58,6 +58,7 @@ c++ -std=c++17 -O2 -w -pthread "${SANITIZER[@]}" \
     src/waveform/waveform.cpp \
     src/waveform/miniaudio_libvorbis.cpp \
     src/audiobuffer/*.cpp \
+    src/native_stream/*.cpp \
     src/native_decoder/native_audio_decoder.cpp \
     "${NATIVE_DECODER_PLATFORM_SOURCES[@]}" \
     src/capture/*.cpp \

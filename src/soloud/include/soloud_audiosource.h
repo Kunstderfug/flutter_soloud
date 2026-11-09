@@ -196,6 +196,13 @@ namespace SoLoud
 		unsigned int mSrcOffset;
 		// Samples left over from earlier pass
 		unsigned int mLeftoverSamples;
+		// ###### flutter_soloud local patch (voice tail) ######
+		// Whether the mixer's latest read from the source came back empty.
+		// hasEnded() turns true as soon as the last block is read into
+		// mResampleData, up to SAMPLE_GRANULARITY source samples ahead of
+		// the output; the mixer auto-stops a voice only once this is also
+		// set, so the rest of that block is still played.
+		bool mSourceDrained;
 		// Number of samples to delay streaming
 		unsigned int mDelaySamples;
 		// Samples this voice may still produce before being stopped by a
@@ -228,6 +235,14 @@ namespace SoLoud
 		// Restores a snapshot produced by captureSourceState(). Never called
 		// with nullptr, and only on the same instance that produced it.
 		virtual void restoreSourceState(SourceStateSnapshot *) {}
+		// ###### flutter_soloud local patch (bounded source history) ######
+		// Whether restoreSourceState() can still reproduce the audio that
+		// followed this snapshot exactly. Sources that keep only a bounded
+		// history of consumed data (disk streams) return false once the
+		// snapshot falls out of it; the rollback then degrades to
+		// going-forward behavior instead of restoring. Asked under the audio
+		// mutex right before a rollback.
+		virtual bool canRestoreSourceState(SourceStateSnapshot *) { return true; }
 		// Has the stream ended?
 		virtual bool hasEnded() = 0;
 		// Seek to certain place in the stream. Base implementation is generic "tape" seek (and slow).

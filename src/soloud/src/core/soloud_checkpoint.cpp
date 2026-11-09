@@ -223,6 +223,8 @@ namespace SoLoud
 		cv.mBusHandle = v->mBusHandle;
 		cv.mSrcOffset = v->mSrcOffset;
 		cv.mLeftoverSamples = v->mLeftoverSamples;
+		// ###### flutter_soloud local patch (voice tail) ######
+		cv.mSourceDrained = v->mSourceDrained;
 		cv.mDelaySamples = v->mDelaySamples;
 		cv.mStopSamplesLeft = v->mStopSamplesLeft;
 		cv.mLoopPoint = v->mLoopPoint;
@@ -303,6 +305,8 @@ namespace SoLoud
 		v->mBusHandle = cv.mBusHandle;
 		v->mSrcOffset = cv.mSrcOffset;
 		v->mLeftoverSamples = cv.mLeftoverSamples;
+		// ###### flutter_soloud local patch (voice tail) ######
+		v->mSourceDrained = cv.mSourceDrained;
 		v->mDelaySamples = cv.mDelaySamples;
 		if (cv.mStopSamplesLeft >= 0 || v->mStopSamplesLeft < 0)
 			v->mStopSamplesLeft = cv.mStopSamplesLeft;
@@ -800,6 +804,8 @@ namespace SoLoud
 				v->mResampleData[1] = NULL;
 				v->mSrcOffset = 0;
 				v->mLeftoverSamples = 0;
+				// ###### flutter_soloud local patch (voice tail) ######
+				v->mSourceDrained = false;
 				if (e.mBirth.mSourceState != NULL)
 					v->restoreSourceState(e.mBirth.mSourceState);
 				for (k = 0; k < FILTERS_PER_STREAM; k++)
@@ -884,6 +890,32 @@ namespace SoLoud
 			const RetroJournalEntry &e = mRetroJournal[j];
 			if (e.mTime > cp.mTime &&
 				e.mType == RetroJournalEntry::BIRTH && !e.mRestorable)
+				return -1;
+		}
+		// ###### flutter_soloud local patch (bounded source history) ######
+		// Sources with a bounded history (disk streams) may no longer be able
+		// to reproduce what followed a snapshot; ask the live instances the
+		// restore and the replay would rewind.
+		size_t cvi;
+		for (cvi = 0; cvi < cp.mVoices.size(); cvi++)
+		{
+			const CheckpointVoice &cv = cp.mVoices[cvi];
+			if (cv.mSourceState == NULL || cv.mSlot >= VOICE_COUNT)
+				continue;
+			AudioSourceInstance *voice = mVoice[cv.mSlot];
+			if (voice != NULL && voice->mPlayIndex == cv.mPlayIndex &&
+				!voice->canRestoreSourceState(cv.mSourceState))
+				return -1;
+		}
+		for (j = 0; j < mRetroJournal.size(); j++)
+		{
+			const RetroJournalEntry &e = mRetroJournal[j];
+			if (e.mTime < cp.mTime || e.mType != RetroJournalEntry::BIRTH ||
+				e.mBirth.mSourceState == NULL || e.mSlot >= VOICE_COUNT)
+				continue;
+			AudioSourceInstance *voice = mVoice[e.mSlot];
+			if (voice != NULL && voice->mPlayIndex == e.mPlayIndex &&
+				!voice->canRestoreSourceState(e.mBirth.mSourceState))
 				return -1;
 		}
 

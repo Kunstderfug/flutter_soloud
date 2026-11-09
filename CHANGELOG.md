@@ -1,6 +1,13 @@
 ##### Unreleased (4 Nov 2026)
 - feat: Classical Leveler with BS.1770 passage lift, gentle downward, applied-gain meter and prepared source-envelope look-ahead without audio delay. Available globally, per sound and per bus.
 
+##### 5.2.4 (X Xxx 2026)
+- fix: don't drop the end of a voice that doesn't loop. Thanks to @Colton127 #604
+
+##### 5.2.3 (5 Nov 2026)
+- fix win arm64: include `<malloc.h>` on MSVC for Windows ARM64 compilation #603
+- fix: resampler skips up to one source sample per 512-sample block (solve hearing clicks when buffer size is 512). Thanks to @NomiAdam #602
+
 ##### 5.2.2 (28 Oct 2026)
 - perf: block-copy pull buffer stream chunks into native memory. Thanks to @riderous #594
 - feat: per-bus audio visualization via `Bus.setVisualizationEnabled`, `Bus.getVisualizationEnabled`, and the `Bus.audioVisualizationEvents` stream (#590). Also fixes `Bus.getChannelVolume` and `SoLoud.getApproximateVolume` to accurately return peak volume levels. Thanks to @Colton127 #592

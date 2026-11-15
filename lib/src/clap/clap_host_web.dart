@@ -3,6 +3,7 @@ import 'package:flutter_soloud/src/clap/clap_types.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/custom_filter.dart';
+import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:meta/meta.dart';
 
 export 'package:flutter_soloud/src/clap/clap_types.dart';
@@ -83,6 +84,25 @@ abstract class ClapEffectPlugin {
   /// Queues the plain [value] for [paramId].
   void setParameterValue(int paramId, double value);
 
+  /// The [ClapParamInfo] of [paramId] in [parameters], or null.
+  ClapParamInfo? parameterInfo(int paramId);
+
+  /// The current value of [paramId], normalized to `0..1`.
+  double getParameterNormalized(int paramId);
+
+  /// Queues the normalized [value] for [paramId].
+  void setParameterNormalized(int paramId, double value);
+
+  /// Binds slot parameter [slotParamIndex] (`1..7`) to [paramId].
+  CustomFilterParam mapToSlotParameter({
+    required int slotParamIndex,
+    required int paramId,
+    SoundHandle? soundHandle,
+  });
+
+  /// Removes the binding of slot parameter [slotParamIndex].
+  void unmapSlotParameter(int slotParamIndex);
+
   /// Saves the plugin's state.
   Uint8List saveState();
 
@@ -91,6 +111,12 @@ abstract class ClapEffectPlugin {
 
   /// Takes up to [maxEvents] of the plugin's pending events.
   List<ClapHostEvent> drainEvents({int maxEvents = 1024});
+
+  /// Every event the plugin reports.
+  Stream<ClapHostEvent> get events;
+
+  /// The parameter changes the plugin makes itself.
+  Stream<ClapParamEditEvent> get paramEdits;
 
   /// Whether the plugin offers a native editor.
   bool get hasEditor;

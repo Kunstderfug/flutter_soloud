@@ -2026,6 +2026,30 @@ extern "C"
       unsigned int paramId,
       double plainValue);
 
+  /// Makes parameter [slotParamIndex] (1..15) of the plugin's filter slot
+  /// drive [paramId]: each change of the slot value (0..1, from a set, fade
+  /// or oscillation) reaches the plugin at the start of the next processed
+  /// block, mapped linearly onto the parameter's range (stepped, enum and
+  /// bypass parameters rounded). [slotValue] is the slot value the caller
+  /// read just before mapping: the first processed block sends the slot
+  /// value only when it maps to a different plain value, even if blocks were
+  /// skipped in between. NaN when unknown: the standing value is then not
+  /// sent unless the slot changed since the last processed block (best
+  /// effort). A later parameter-list change re-resolves the mapping, or
+  /// drops it when the parameter is gone. invalidParameter for an unknown or
+  /// read-only parameter, unknownError while the list is being rescanned.
+  /// Any non-audio thread.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapMapSlotParameter(
+      int pluginHandle,
+      unsigned int slotParamIndex,
+      unsigned int paramId,
+      float slotValue);
+
+  /// Stops forwarding filter-slot parameter [slotParamIndex] (1..15).
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapUnmapSlotParameter(
+      int pluginHandle,
+      unsigned int slotParamIndex);
+
   /// Saves the plugin's state. On success [outData] is malloc'd: free it with
   /// nativeFree(). An empty state gives null data and size 0. notImplemented
   /// when the plugin has no state extension. Main hop.

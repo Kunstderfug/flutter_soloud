@@ -200,6 +200,86 @@ void main() {
       );
     });
 
+    testWidgets('normalized values and a slot parameter drive the plugin', (
+      _,
+    ) async {
+      const slot = CustomFilterGlobal(0);
+      final plugin = host.loadEffect(bundlePath: bundle!, slot: slot);
+      final param = plugin.parameters.firstWhere(
+        (p) =>
+            !p.isStepped &&
+            !p.isReadOnly &&
+            !p.isHidden &&
+            p.maxValue > p.minValue,
+      );
+      final id = param.paramId;
+      expect(plugin.parameterInfo(id), param);
+
+      // Normalized set and get go through the plain range.
+      plugin.setParameterNormalized(id, 0.2);
+      expect(
+        await _waitForValue(plugin, id, param.fromNormalized(0.2)),
+        closeTo(param.fromNormalized(0.2), 1e-6),
+      );
+      expect(plugin.getParameterNormalized(id), closeTo(0.2, 1e-6));
+
+      // A slot parameter drives the plugin parameter once it changes.
+      slot.configureParameters(const [
+        CustomFilterParamSpec(name: 'Drive', min: 0, max: 1, defaultValue: 0),
+      ]);
+      final slotParam =
+          plugin.mapToSlotParameter(slotParamIndex: 1, paramId: id)
+            ..value = 0.6;
+      expect(
+        await _waitForValue(plugin, id, param.fromNormalized(0.6)),
+        closeTo(param.fromNormalized(0.6), 1e-6),
+      );
+      slotParam.fadeFilterParameter(
+        to: 0.9,
+        time: const Duration(milliseconds: 150),
+      );
+      expect(
+        await _waitForValue(plugin, id, param.fromNormalized(0.9)),
+        closeTo(param.fromNormalized(0.9), 1e-6),
+      );
+
+      // Unmapped, the slot no longer moves it.
+      plugin.unmapSlotParameter(1);
+      slotParam.value = 0.1;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(
+        plugin.getParameterValue(id),
+        closeTo(param.fromNormalized(0.9), 1e-6),
+      );
+
+      expect(
+        () => plugin.mapToSlotParameter(slotParamIndex: 0, paramId: id),
+        throwsArgumentError,
+      );
+      expect(
+        () => plugin.mapToSlotParameter(slotParamIndex: 8, paramId: id),
+        throwsArgumentError,
+      );
+      final unknown =
+          plugin.parameters
+              .map((p) => p.paramId)
+              .fold(0, (a, b) => a > b ? a : b) +
+          1;
+      expect(
+        () => plugin.mapToSlotParameter(slotParamIndex: 1, paramId: unknown),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      expect(
+        () => plugin.getParameterNormalized(unknown),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      plugin.dispose();
+      expect(
+        () => plugin.mapToSlotParameter(slotParamIndex: 1, paramId: id),
+        throwsA(isA<StateError>()),
+      );
+    });
+
     testWidgets('unloadAll leaves plugins inert until disposed', (_) async {
       const slot = CustomFilterGlobal(1);
       final plugin = host.loadEffect(
@@ -208,8 +288,17 @@ void main() {
         pluginId: host.scanBundle(bundle).first.pluginId,
       );
       expect(slot.index, greaterThanOrEqualTo(0));
+      final subscription = plugin.events.listen((_) {});
+      expect(plugin.isPollingEvents, isTrue);
       host.unloadAll();
+      // The first drain finds the handle gone: polling stops for good, and a
+      // new listener does not restart it.
       expect(plugin.drainEvents(), isEmpty);
+      expect(plugin.isPollingEvents, isFalse);
+      await subscription.cancel();
+      final again = plugin.paramEdits.listen((_) {});
+      expect(plugin.isPollingEvents, isFalse);
+      await again.cancel();
       expect(
         () => plugin.getParameterValue(plugin.parameters.first.paramId),
         throwsA(isA<SoLoudCppException>()),
@@ -399,6 +488,188 @@ void main() {
         [closeTo(2 / 3, 1e-9), closeTo(4 / 3, 1e-9), closeTo(2, 1e-9)],
       );
       expect(plugin.drainEvents(), isEmpty);
+      plugin.dispose();
+      expect(slot.index, lessThan(0));
+    });
+
+    testWidgets('the streams deliver events and edits while listened to', (
+      _,
+    ) async {
+      const slot = CustomFilterGlobal(2);
+      final plugin = host.loadEffect(
+        bundlePath: mockBundle!,
+        slot: slot,
+        pluginId: 'mock.ext',
+      );
+      final image = ffi.DynamicLibrary.open(
+        '$mockBundle/Contents/MacOS/MockClap',
+      );
+      final emitGestures = image
+          .lookupFunction<
+            ffi.Void Function(ffi.Int, ffi.Int),
+            void Function(int, int)
+          >('mock_clap_emit_gestures');
+      plugin.drainEvents();
+      final gain = plugin.parameterInfo(10)!;
+
+      final edits = <ClapParamEditEvent>[];
+      final events = <ClapHostEvent>[];
+      final editSub = plugin.paramEdits.listen(edits.add);
+      final eventSub = plugin.events.listen(events.add);
+      emitGestures(1, 3);
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      while (edits.length < 5 && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+      debugPrint('CLAP mock edits: $edits');
+      expect(edits.map((e) => e.kind), [
+        ClapParamEditKind.gestureBegin,
+        ClapParamEditKind.value,
+        ClapParamEditKind.value,
+        ClapParamEditKind.value,
+        ClapParamEditKind.gestureEnd,
+      ]);
+      expect(edits.map((e) => e.paramId).toSet(), {10});
+      expect(edits.map((e) => e.pluginHandle).toSet(), {plugin.pluginHandle});
+      expect(edits.map((e) => e.value), [
+        isNull,
+        closeTo(2 / 3, 1e-9),
+        closeTo(4 / 3, 1e-9),
+        closeTo(2, 1e-9),
+        isNull,
+      ]);
+      expect(edits.map((e) => e.normalizedValue), [
+        isNull,
+        closeTo(gain.toNormalized(2 / 3), 1e-9),
+        closeTo(gain.toNormalized(4 / 3), 1e-9),
+        closeTo(1, 1e-9),
+        isNull,
+      ]);
+      expect(
+        events
+            .where(
+              (e) =>
+                  e.type == ClapHostEventType.paramGestureBegin ||
+                  e.type == ClapHostEventType.paramValue ||
+                  e.type == ClapHostEventType.paramGestureEnd,
+            )
+            .length,
+        5,
+      );
+
+      // A manual drain also feeds the listeners. The poll blocks the
+      // isolate, so the stream timer cannot take the events first.
+      final before = events.length;
+      emitGestures(1, 1);
+      var manual = <ClapHostEvent>[];
+      final manualDeadline = DateTime.now().add(const Duration(seconds: 3));
+      while (manual.length < 3 && DateTime.now().isBefore(manualDeadline)) {
+        manual = [...manual, ...plugin.drainEvents()];
+        if (manual.length < 3) {
+          sleep(const Duration(milliseconds: 5));
+        }
+      }
+      expect(manual.map((e) => e.type), [
+        ClapHostEventType.paramGestureBegin,
+        ClapHostEventType.paramValue,
+        ClapHostEventType.paramGestureEnd,
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      expect(edits.length, 8);
+      expect(edits.last.kind, ClapParamEditKind.gestureEnd);
+      expect(events.sublist(before).map((e) => e.type), [
+        ClapHostEventType.paramGestureBegin,
+        ClapHostEventType.paramValue,
+        ClapHostEventType.paramGestureEnd,
+      ]);
+
+      // With no listeners left, nothing drains on its own.
+      await editSub.cancel();
+      await eventSub.cancel();
+      emitGestures(1, 1);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final queued = plugin.drainEvents();
+      expect(
+        queued.map((e) => e.type),
+        containsAllInOrder([
+          ClapHostEventType.paramGestureBegin,
+          ClapHostEventType.paramValue,
+          ClapHostEventType.paramGestureEnd,
+        ]),
+      );
+
+      // Dispose closes both streams.
+      final eventsDone = plugin.events.listen(null).asFuture<void>();
+      final editsDone = plugin.paramEdits.listen(null).asFuture<void>();
+      plugin.dispose();
+      await Future.wait([
+        eventsDone,
+        editsDone,
+      ]).timeout(const Duration(seconds: 1));
+      expect(slot.index, lessThan(0));
+    });
+
+    testWidgets('a slot parameter drives a mock parameter', (_) async {
+      final image = ffi.DynamicLibrary.open(
+        '$mockBundle/Contents/MacOS/MockClap',
+      );
+      final violations = image
+          .lookupFunction<ffi.Int Function(), int Function()>(
+            'mock_clap_violations',
+          );
+      final violationsBefore = violations();
+      const slot = CustomFilterGlobal(3);
+      final plugin = host.loadEffect(
+        bundlePath: mockBundle!,
+        slot: slot,
+        pluginId: 'mock.ext',
+      );
+      final gain = plugin.parameterInfo(10)!;
+      expect(gain.maxValue, 2);
+      slot.configureParameters(const [
+        CustomFilterParamSpec(name: 'A', min: 0, max: 1, defaultValue: 0),
+        CustomFilterParamSpec(name: 'B', min: 0, max: 1, defaultValue: 0),
+      ]);
+      // Mapped at once, though configureParameters just wrote the slot
+      // values: mapping alone sends nothing, the plugin keeps its default.
+      final param = plugin.mapToSlotParameter(slotParamIndex: 2, paramId: 10);
+      expect(param.attributeId, 2);
+      expect(param.slotIndex, slot.slotIndex);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(plugin.getParameterValue(10), gain.defaultValue);
+
+      // A slot value set just before mapping is the baseline: not sent.
+      final other = CustomFilterParam(null, null, slot.slotIndex, 1, 0, 1)
+        ..value = 0.75;
+      plugin.mapToSlotParameter(slotParamIndex: 1, paramId: 20);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      final mode = plugin.parameterInfo(20)!;
+      expect(plugin.getParameterValue(20), mode.defaultValue);
+      // A change after mapping is: 0.75 -> 1 is 3 on the 0..3 enum.
+      other.value = 1;
+      expect(await _waitForValue(plugin, 20, 3), 3);
+      plugin.unmapSlotParameter(1);
+
+      param.value = 0.25;
+      expect(await _waitForValue(plugin, 10, 0.5), closeTo(0.5, 1e-9));
+      param.value = 1;
+      expect(await _waitForValue(plugin, 10, 2), closeTo(2, 1e-9));
+
+      // A read-only parameter is refused.
+      final meter = plugin.parameters.firstWhere((p) => p.isReadOnly);
+      expect(
+        () => plugin.mapToSlotParameter(
+          slotParamIndex: 1,
+          paramId: meter.paramId,
+        ),
+        throwsA(isA<SoLoudCppException>()),
+      );
+
+      plugin.unmapSlotParameter(2);
+      param.value = 0;
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      expect(plugin.getParameterValue(10), 2);
+      expect(violations(), violationsBefore);
       plugin.dispose();
       expect(slot.index, lessThan(0));
     });

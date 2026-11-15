@@ -26,6 +26,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -99,6 +100,11 @@ namespace soloud_clap
         PlayerErrors parameterInfo(int handle, int index, ParamEntry &out);
         /// Any non-audio thread; never waits for main.
         PlayerErrors setParameterValue(int handle, clap_id id, double value);
+        /// Any non-audio thread (Phase 5a); see ClapInstance.
+        PlayerErrors mapSlotParameter(
+            int handle, unsigned slot, clap_id id,
+            float baseline = std::numeric_limits<float>::quiet_NaN());
+        PlayerErrors unmapSlotParameter(int handle, unsigned slot);
         // Main hops.
         PlayerErrors getParameterValue(int handle, clap_id id, double *outValue);
         PlayerErrors valueToText(int handle, clap_id id, double value,

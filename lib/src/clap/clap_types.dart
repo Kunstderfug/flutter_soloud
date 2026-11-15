@@ -100,6 +100,54 @@ class ClapParamInfo {
   /// The values name the items of a list (`CLAP_PARAM_IS_ENUM`).
   bool get isEnum => (flags & (1 << 16)) != 0;
 
+  /// Whether plain values snap to whole numbers: stepped, enum and bypass
+  /// parameters.
+  bool get _snaps => isStepped || isEnum || isBypass;
+
+  /// Converts the plain [plain] value to `0..1`, linearly over
+  /// [minValue]..[maxValue]. The value is clamped to the range first, and
+  /// rounded when [isStepped], [isEnum] or [isBypass]. A parameter with an
+  /// empty range maps everything to 0.
+  ///
+  /// Throws an [ArgumentError] for a value that is not finite.
+  double toNormalized(double plain) {
+    if (!plain.isFinite) {
+      throw ArgumentError.value(plain, 'plain', 'must be finite');
+    }
+    if (!(maxValue > minValue)) {
+      return 0;
+    }
+    var v = plain.clamp(minValue, maxValue);
+    if (_snaps) {
+      v = v.roundToDouble().clamp(minValue, maxValue);
+    }
+    return ((v - minValue) / (maxValue - minValue)).clamp(0.0, 1.0);
+  }
+
+  /// Converts the normalized [normalized] value (clamped to `0..1`) to a
+  /// plain value, linearly over [minValue]..[maxValue], rounded when
+  /// [isStepped], [isEnum] or [isBypass]. A parameter with an empty range
+  /// maps everything to [minValue].
+  ///
+  /// This is the mapping the host uses for a slot parameter bound with
+  /// `ClapEffectPlugin.mapToSlotParameter`.
+  ///
+  /// Throws an [ArgumentError] for a value that is not finite.
+  double fromNormalized(double normalized) {
+    if (!normalized.isFinite) {
+      throw ArgumentError.value(normalized, 'normalized', 'must be finite');
+    }
+    if (!(maxValue > minValue)) {
+      return minValue;
+    }
+    final n = normalized.clamp(0.0, 1.0);
+    var v = minValue + n * (maxValue - minValue);
+    if (_snaps) {
+      v = v.roundToDouble();
+    }
+    return v.clamp(minValue, maxValue);
+  }
+
   @override
   String toString() =>
       'ClapParamInfo(paramId: $paramId, name: $name, module: $module, '
@@ -160,4 +208,62 @@ class ClapHostEvent {
   String toString() =>
       'ClapHostEvent(type: ${type.name}, paramId: $paramId, value: $value, '
       'flags: $flags)';
+}
+
+/// What a [ClapParamEditEvent] reports.
+@experimental
+enum ClapParamEditKind {
+  /// The plugin changed the parameter's value.
+  value,
+
+  /// The user started dragging the parameter's control.
+  gestureBegin,
+
+  /// The user released the parameter's control.
+  gestureEnd,
+}
+
+/// A parameter change a CLAP plugin made itself, usually because the user
+/// moved a control in its editor. Delivered by
+/// `ClapEffectPlugin.paramEdits`.
+@experimental
+@immutable
+class ClapParamEditEvent {
+  /// Creates a [ClapParamEditEvent].
+  const ClapParamEditEvent({
+    required this.pluginHandle,
+    required this.paramId,
+    required this.kind,
+    this.value,
+    this.normalizedValue,
+    this.isDontRecord = false,
+  });
+
+  /// The native handle of the plugin that made the change.
+  final int pluginHandle;
+
+  /// The parameter's CLAP id.
+  final int paramId;
+
+  /// A value change, or the start or end of a gesture.
+  final ClapParamEditKind kind;
+
+  /// The new plain value of a [ClapParamEditKind.value] event, or null for
+  /// a gesture.
+  final double? value;
+
+  /// [value] normalized to `0..1` with [ClapParamInfo.toNormalized], or
+  /// null for a gesture or a parameter missing from
+  /// `ClapEffectPlugin.parameters` when the event was delivered.
+  final double? normalizedValue;
+
+  /// The plugin asked not to record this change as automation
+  /// (`CLAP_EVENT_DONT_RECORD`).
+  final bool isDontRecord;
+
+  @override
+  String toString() =>
+      'ClapParamEditEvent(handle: $pluginHandle, param: $paramId, '
+      'kind: ${kind.name}, value: $value, normalized: $normalizedValue, '
+      'dontRecord: $isDontRecord)';
 }

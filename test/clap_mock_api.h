@@ -61,6 +61,8 @@ struct MockClapState
     std::atomic<int> loadSwitchesVariant{-1};
     /// Appended to the name of id 10 when non-zero ("Gain 2").
     std::atomic<int> paramNameVariant{0};
+    /// The max of id 10 (Gain) when above 0, in get_info and the range check.
+    std::atomic<double> gainMax{0.0};
     /// The value get_value reports for the read-only meter (id 30).
     std::atomic<double> meterValue{0.0};
     /// Process calls left that each emit BEGIN, gestureValues x VALUE, END on

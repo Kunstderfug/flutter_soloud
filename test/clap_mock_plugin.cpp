@@ -346,7 +346,10 @@ namespace
             if ((rec.flags & CLAP_PARAM_IS_STEPPED) &&
                 e->value != std::floor(e->value))
                 violation(p, "stepped value");
-            if (e->value < rec.min || e->value > rec.max)
+            const double max = rec.id == 10 && gState.gainMax.load() > 0
+                                   ? gState.gainMax.load()
+                                   : rec.max;
+            if (e->value < rec.min || e->value > max)
                 violation(p, "value range");
             if ((rec.flags & CLAP_PARAM_REQUIRES_PROCESS) && path == 2)
                 violation(p, "requires_process via active flush");
@@ -461,7 +464,9 @@ namespace
             std::snprintf(info->name, sizeof(info->name), "%s", rec.name);
         std::snprintf(info->module, sizeof(info->module), "%s", rec.module);
         info->min_value = rec.min;
-        info->max_value = rec.max;
+        info->max_value = rec.id == 10 && gState.gainMax.load() > 0
+                              ? gState.gainMax.load()
+                              : rec.max;
         info->default_value = rec.def;
         return true;
     }
@@ -1447,6 +1452,7 @@ extern "C"
         gState.portsParamVariant = -1;
         gState.loadSwitchesVariant = -1;
         gState.paramNameVariant = 0;
+        gState.gainMax = 0.0;
         gState.meterValue = 0.0;
         gState.gestureFromProcess = 0;
         gState.gestureFromFlush = 0;

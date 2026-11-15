@@ -55,6 +55,69 @@ void main() {
       expect(info(1 << 5).isStepped, isFalse);
     });
 
+    test('normalized values map linearly, snap when stepped', () {
+      ClapParamInfo info(double min, double max, [int flags = 0]) =>
+          ClapParamInfo(
+            paramId: 1,
+            name: 'P',
+            module: '',
+            minValue: min,
+            maxValue: max,
+            defaultValue: min,
+            flags: flags,
+          );
+      final gain = info(-24, 24);
+      expect(gain.toNormalized(-24), 0);
+      expect(gain.toNormalized(0), 0.5);
+      expect(gain.toNormalized(24), 1);
+      expect(gain.toNormalized(48), 1);
+      expect(gain.toNormalized(-100), 0);
+      expect(gain.fromNormalized(0.25), -12);
+      expect(gain.fromNormalized(-1), -24);
+      expect(gain.fromNormalized(2), 24);
+      for (final n in [0.0, 0.1, 0.37, 0.5, 0.9, 1.0]) {
+        expect(gain.toNormalized(gain.fromNormalized(n)), closeTo(n, 1e-12));
+      }
+
+      // Stepped, enum and bypass values snap to whole numbers.
+      for (final flags in [1 << 0, (1 << 16) | 1, 1 << 4]) {
+        final mode = info(0, 3, flags);
+        expect(mode.fromNormalized(0.4), 1, reason: 'flags $flags');
+        expect(mode.fromNormalized(0.5), 2, reason: 'flags $flags');
+        expect(mode.toNormalized(1.4), closeTo(1 / 3, 1e-12));
+      }
+
+      // An empty or inverted range maps everything to its minimum.
+      for (final empty in [info(5, 5), info(5, 1)]) {
+        expect(empty.toNormalized(5), 0);
+        expect(empty.fromNormalized(0.7), 5);
+      }
+
+      expect(() => gain.toNormalized(double.nan), throwsArgumentError);
+      expect(() => gain.fromNormalized(double.infinity), throwsArgumentError);
+    });
+
+    test('param edit events carry their kind and values', () {
+      const edit = ClapParamEditEvent(
+        pluginHandle: 4,
+        paramId: 10,
+        kind: ClapParamEditKind.value,
+        value: 3,
+        normalizedValue: 0.75,
+        isDontRecord: true,
+      );
+      expect(edit.toString(), contains('kind: value'));
+      expect(edit.toString(), contains('dontRecord: true'));
+      const gesture = ClapParamEditEvent(
+        pluginHandle: 4,
+        paramId: 10,
+        kind: ClapParamEditKind.gestureBegin,
+      );
+      expect(gesture.value, isNull);
+      expect(gesture.normalizedValue, isNull);
+      expect(gesture.isDontRecord, isFalse);
+    });
+
     test('event flags are read only for their own event type', () {
       ClapHostEvent event(ClapHostEventType type, int flags) =>
           ClapHostEvent(type: type, paramId: 3, value: 0.5, flags: flags);

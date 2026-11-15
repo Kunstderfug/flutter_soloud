@@ -742,6 +742,23 @@ namespace soloud_clap
         return instance->setParameterValue(id, value);
     }
 
+    PlayerErrors ClapHostManager::mapSlotParameter(int handle, unsigned slot,
+                                                   clap_id id, float baseline)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        if (!instance)
+            return invalidParameter;
+        return instance->mapSlotParameter(slot, id, baseline);
+    }
+
+    PlayerErrors ClapHostManager::unmapSlotParameter(int handle, unsigned slot)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        if (!instance)
+            return invalidParameter;
+        return instance->unmapSlotParameter(slot);
+    }
+
     PlayerErrors ClapHostManager::getParameterValue(int handle, clap_id id,
                                                     double *outValue)
     {
@@ -885,9 +902,9 @@ extern "C" void clapFilterDspCallback(float *aBuffer, unsigned int aSamples,
                                       unsigned int aBufferSize,
                                       unsigned int aChannels,
                                       float /*aSamplerate*/, double /*aTime*/,
-                                      const float * /*aParams*/,
-                                      uint64_t /*aParamChangedMask*/,
-                                      unsigned int /*aParamCount*/,
+                                      const float *aParams,
+                                      uint64_t aParamChangedMask,
+                                      unsigned int aParamCount,
                                       void *aUserData)
 {
     const int handle =
@@ -901,7 +918,9 @@ extern "C" void clapFilterDspCallback(float *aBuffer, unsigned int aSamples,
             std::memory_order_acquire))
         hook(handle);
 #endif
-    instance->processAudio(aBuffer, aSamples, aBufferSize, aChannels);
+    instance->processAudio(aBuffer, aSamples, aBufferSize, aChannels, aParams,
+                           aParams != nullptr ? aParamCount : 0,
+                           aParamChangedMask);
 }
 
 #endif // SOLOUD_ENABLE_CLAP

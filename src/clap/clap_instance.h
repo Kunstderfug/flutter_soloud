@@ -15,6 +15,9 @@
 //   Lock order: mProcessMutex -> mEditProducerMutex -> mParamsMutex, and
 //   mDrainMutex -> mParamsMutex. DSP takes only the first; no plugin call runs
 //   under mEditProducerMutex or mParamsMutex.
+// - Phase 5a maps SoLoud filter-slot parameters onto plugin parameters: a
+//   seqlock table written on non-audio threads under mSlotMapMutex (taken
+//   before mParamsMutex, never with a plugin call) and read by DSP.
 #pragma once
 
 #ifdef SOLOUD_ENABLE_CLAP
@@ -29,6 +32,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -105,6 +109,9 @@ namespace soloud_clap
     constexpr uint64_t kDefaultIdleNs = 200ull * 1000ull * 1000ull;
     constexpr uint64_t kDefaultStateLimit = 64ull * 1024ull * 1024ull;
     constexpr uint32_t kMaxParams = 65536;
+    /// SoLoud filter-slot parameters a plugin parameter can follow: indices
+    /// 1..kMaxSlotParams-1 (0 is the slot's wet).
+    constexpr unsigned kMaxSlotParams = 16;
 
     /// Event types drainEvents reports (mirrors ClapHostEventType in enums.h).
     enum class HostEventType : int
@@ -164,6 +171,25 @@ namespace soloud_clap
         bool requiresProcess = false;
         uint64_t generation = 0;
         uint64_t epoch = 0;
+    };
+
+    /// One filter-slot parameter mapping (Phase 5a). [id] is CLAP_INVALID_ID
+    /// when the slot is unmapped. [version] changes on every map and unmap, and
+    /// when a re-resolve drops the mapping (not when it keeps it), so DSP
+    /// re-arms only for a new mapping.
+    struct SlotMapping
+    {
+        clap_id id = CLAP_INVALID_ID;
+        void *cookie = nullptr;
+        double min = 0;
+        double max = 0;
+        uint32_t flags = 0;
+        uint64_t generation = 0;
+        uint32_t version = 0;
+        /// The slot value (0..1) the mapping was made against: a later slot
+        /// value that maps to a different plain value is sent. NaN: none,
+        /// the slot's changed bit decides (best effort).
+        float baseline = std::numeric_limits<float>::quiet_NaN();
     };
 
     /// A plugin -> host param event in the out ring.
@@ -336,8 +362,13 @@ namespace soloud_clap
         void stopProcessingExclusive();
 
         // --- DSP ------------------------------------------------------------
+        /// [slotParams] are the filter slot's current parameter values
+        /// ([slotParamCount] of them, index 0 the wet) and [slotChangedMask]
+        /// the slot's changed bits; mapped ones are forwarded (Phase 5a).
         void processAudio(float *buffer, unsigned samples, unsigned bufferSize,
-                          unsigned channels) noexcept;
+                          unsigned channels, const float *slotParams = nullptr,
+                          unsigned slotParamCount = 0,
+                          uint64_t slotChangedMask = 0) noexcept;
 
         // --- Phase 3: extensions, params, state, events -------------------
         /// Main, after init: caches the plugin extensions the host calls.
@@ -383,6 +414,27 @@ namespace soloud_clap
             return mLatency.load(std::memory_order_acquire);
         }
         bool hasParamsExtension() const noexcept { return mPluginParams != nullptr; }
+
+        // --- Phase 5a: filter-slot parameter mapping ---------------------
+        /// Any non-audio thread: filter-slot parameter [slot] (1..15, a value
+        /// in 0..1) drives plugin parameter [id] from now on. Each change of
+        /// the slot value reaches the plugin at the start of the next block,
+        /// mapped linearly onto the parameter's range (stepped, enum and
+        /// bypass parameters rounded). With a finite [baseline] (the slot
+        /// value when mapped), the first block sends the slot value only when
+        /// it maps to a different plain value than [baseline], however many
+        /// blocks were skipped since. Without one (NaN), the standing value
+        /// is not sent unless the slot's changed bit is set in the first
+        /// block that runs. Refuses a read-only or unknown parameter, and a
+        /// pending parameter list.
+        PlayerErrors mapSlotParameter(
+            unsigned slot, clap_id id,
+            float baseline = std::numeric_limits<float>::quiet_NaN());
+        /// Any non-audio thread: stops forwarding [slot].
+        PlayerErrors unmapSlotParameter(unsigned slot);
+        /// Any non-audio thread: [slot]'s mapping (id CLAP_INVALID_ID when
+        /// unmapped).
+        SlotMapping slotMapping(unsigned slot) const;
         bool hasStateExtension() const noexcept { return mPluginState != nullptr; }
 
         // --- Phase 4b: the gui ------------------------------------------------
@@ -532,7 +584,9 @@ namespace soloud_clap
         static void silence(float *buffer, unsigned samples, unsigned bufferSize,
                             unsigned channels) noexcept;
         void processChunk(float *buffer, unsigned offset, unsigned frames,
-                          unsigned bufferSize, unsigned busChannels) noexcept;
+                          unsigned bufferSize, unsigned busChannels,
+                          const float *slotParams, unsigned slotParamCount,
+                          uint64_t slotChangedMask) noexcept;
 
         class CallPhaseScope;
 
@@ -540,6 +594,18 @@ namespace soloud_clap
         bool editStale(const Edit &edit) const noexcept;
         bool pushEditEvent(const Edit &edit) noexcept;
         void consumeEditsDsp() noexcept;
+        /// DSP: queues the changed mapped slot values (Phase 5a).
+        void pushSlotEventsDsp(const float *slotParams, unsigned slotParamCount,
+                               uint64_t slotChangedMask) noexcept;
+        /// mSlotMapMutex held: publishes [slot]'s mapping.
+        void writeSlotLocked(unsigned slot, const SlotMapping &mapping) noexcept;
+        /// DSP: a consistent copy of [slot]'s mapping, or false while a
+        /// writer is in it.
+        bool readSlotDsp(unsigned slot, SlotMapping &out) const noexcept;
+        /// Main, after a parameter list publish: re-resolves every mapping
+        /// against the current list, dropping the ones whose parameter is
+        /// gone or read-only.
+        void resolveSlotMappings();
         void retainedPush(const Edit &edit) noexcept;
         const Edit *retainedFront() const noexcept;
         void retainedPop() noexcept;
@@ -690,6 +756,41 @@ namespace soloud_clap
         std::atomic<uint64_t> mDryBlocksFromServicing{0};
         std::atomic<uint64_t> mFlushCount{0};
 
+        // --- Phase 5a: filter-slot mapping ---------------------------------
+        /// One seqlocked mapping: writers hold mSlotMapMutex and make [seq]
+        /// odd while they store; DSP retries nothing and skips the slot for
+        /// one block when [seq] moved.
+        struct SlotCell
+        {
+            std::atomic<uint32_t> seq{0};
+            std::atomic<uint32_t> id{CLAP_INVALID_ID};
+            std::atomic<void *> cookie{nullptr};
+            std::atomic<double> min{0};
+            std::atomic<double> max{0};
+            std::atomic<uint32_t> flags{0};
+            std::atomic<uint64_t> generation{0};
+            std::atomic<uint32_t> version{0};
+            std::atomic<float> baseline{
+                std::numeric_limits<float>::quiet_NaN()};
+        };
+        /// Serialises mapping writers. Taken before mParamsMutex.
+        mutable std::mutex mSlotMapMutex;
+        SlotCell mSlotCells[kMaxSlotParams];
+        /// Bit s set while slot s is mapped (DSP's fast path).
+        std::atomic<uint32_t> mSlotMappedBits{0};
+        /// Under mSlotMapMutex: the last mapping version handed out.
+        uint32_t mSlotVersionCounter = 0;
+        // DSP-only (mProcessMutex held): the mapping version each slot was
+        // armed for, and the plain value last sent.
+        uint32_t mSlotArmedVersion[kMaxSlotParams] = {};
+        bool mSlotHasLast[kMaxSlotParams] = {};
+        double mSlotLastPlain[kMaxSlotParams] = {};
+        /// DSP-only: the slot value an armed mapping counts as sent while
+        /// nothing was (the baseline, or the standing value), NaN once a
+        /// value went out. Compared under the current mapping, so a range
+        /// change cannot make a real change look sent.
+        float mSlotUnsentValue[kMaxSlotParams] = {};
+
         // Main-only.
         CallPhase mPhase = CallPhase::idle;
         bool mTearingDown = false;
@@ -780,6 +881,12 @@ namespace soloud_clap
         /// Runs inside setParameterValue's critical section, after the
         /// snapshot and before the push (null to clear).
         void setEditProducerHook(void (*hook)());
+        /// Runs in a slot-mapping write after the id store and before the
+        /// other fields (null to clear).
+        void setSlotWriteHook(void (*hook)());
+        /// Runs in DSP's slot-mapping read after the id load and before the
+        /// other fields (null to clear).
+        void setSlotReadHook(void (*hook)());
         /// Runs in drainEvents after the resync's word load and before its
         /// critical section (null to clear).
         void setDrainBeforeAckHook(void (*hook)());

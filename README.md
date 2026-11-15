@@ -21,6 +21,7 @@ A high-performance audio plugin designed primarily for games and immersive appli
 - 🌊 Generate waveforms in real-time with various types (sine, square, saw, triangle, etc.)
 - 🧬 Real-time PCM mixer injection (`setRealtimeStream` with managed Isolate/Web feeders) and synchronous zero-latency custom DSP callbacks (`createCustomAudioSource` and up to 8 `customFilters` slots per scope)
 - 🔌 Opt-in desktop **VST3 plugin hosting** (macOS, Windows, Linux): load external `.vst3` effects (`Fx`) into filter slots and virtual instruments (`Instrument|Synth`) as playable 3D voices, open native plugin GUI editor windows, and automate parameters
+- 🔌 Opt-in, experimental **CLAP plugin hosting** (macOS): load `.clap` effects into filter slots, open their native editors, and automate parameters
 - 🎮 3D positional audio with Doppler effect
 - 🔄 Gapless looping with half-open `[start, end)` loop regions
 - 🎵 Audio playback support for MP3, WAV, OGG, FLAC, plus native platform decoding for M4A, MP4 (audio tracks), AAC, AC-3, and E-AC-3
@@ -76,6 +77,45 @@ The hooks runner does not pass environment variables to build hooks, so use the 
 **Licensing Note**: By default (`enable_vst3: false`), `flutter_soloud` is 100% **MIT / Zlib** licensed and does not download or link any Steinberg code. When `enable_vst3: true` is set, the build hook links the prebuilt **Steinberg VST3 Hosting SDK**, which is dual-licensed by Steinberg under the **Steinberg VST3 License** (proprietary) or **GPLv3**. Ensure your application complies with Steinberg's VST3 licensing terms when distributing builds with `enable_vst3: true`. Steinberg released the VST 3 SDK under the MIT licence from SDK 3.8.0 (October 2025); check which SDK version the prebuilt bridge was built from before relying on that. For more information about VST® 3 licensing: https://steinbergmedia.github.io/vst3_dev_portal/pages/VST+3+Licensing/Index.html
 
 **Linux GUI Note**: The standard VST3 windowing backend on Linux uses **X11**. When hosting VST3 plugins with a graphical user interface (GUI) on Linux, the Flutter app must be launched with the `GDK_BACKEND=x11` environment variable (e.g. `GDK_BACKEND=x11 flutter run -d linux`), otherwise the Flutter engine defaults to Wayland (if available) and the native VST3 plugin GUI will not be displayed.
+
+### Desktop CLAP Plugin Hosting (Opt-In, Experimental)
+
+On **macOS**, you can host native `.clap` audio effects and open their editors. Enable it in your app's `pubspec.yaml` (`true` and `macos` are the same for now; other platforms ignore it):
+
+```yaml
+hooks:
+  user_defines:
+    flutter_soloud:
+      enable_clap: macos # Default is false
+```
+
+```dart
+final host = ClapHost();
+final plugins = host.scanBundle('/Library/Audio/Plug-Ins/CLAP/ZeroEQ.clap');
+final eq = host.loadEffect(
+  bundlePath: '/Library/Audio/Plug-Ins/CLAP/ZeroEQ.clap',
+  pluginId: plugins.first.pluginId,
+  slot: const CustomFilterGlobal(0),
+);
+
+final gain = eq.parameters.first;
+eq.setParameterValue(gain.paramId, gain.defaultValue); // plain units
+eq.setParameterNormalized(gain.paramId, 0.5); // 0..1
+
+// Drive a plugin parameter from a filter slot parameter (1..7).
+eq.mapToSlotParameter(slotParamIndex: 1, paramId: gain.paramId)
+    .fadeFilterParameter(to: 1, time: const Duration(seconds: 2));
+
+// Edits the user makes in the plugin's editor.
+final sub = eq.paramEdits.listen((edit) => debugPrint('$edit'));
+eq.openEditorWindow(title: 'ZeroEQ');
+
+final state = eq.saveState(); // restore later with eq.restoreState(state)
+await sub.cancel();
+eq.dispose();
+```
+
+Parameter values are plain (in the plugin's own units). The `events` stream (or `drainEvents()`) reports parameter rescans, latency changes, restarts, state changes and editor closes. Sandboxed macOS apps need read access to `/Library/Audio/Plug-Ins/CLAP/` and `~/Library/Audio/Plug-Ins/CLAP/` (temporary-exception entitlements). The CLAP SDK headers are MIT licensed.
 
 ### Extended Audio Formats (M4A, MP4, AAC, AC-3, E-AC-3)
 

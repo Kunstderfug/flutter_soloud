@@ -383,6 +383,37 @@ extern "C"
 #endif
     }
 
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapMapSlotParameter(
+        int pluginHandle,
+        unsigned int slotParamIndex,
+        unsigned int paramId,
+        float slotValue)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().mapSlotParameter(pluginHandle, slotParamIndex,
+                                          paramId, slotValue);
+#else
+        (void)pluginHandle;
+        (void)slotParamIndex;
+        (void)paramId;
+        (void)slotValue;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapUnmapSlotParameter(
+        int pluginHandle,
+        unsigned int slotParamIndex)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().unmapSlotParameter(pluginHandle, slotParamIndex);
+#else
+        (void)pluginHandle;
+        (void)slotParamIndex;
+        return notImplemented;
+#endif
+    }
+
     FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapGetState(
         int pluginHandle,
         unsigned char **outData,

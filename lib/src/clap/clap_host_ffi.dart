@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
@@ -5,6 +6,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_soloud/src/bindings/flutter_soloud_ffigen.dart'
     as ffigen;
+import 'package:flutter_soloud/src/bindings/soloud_controller.dart';
 import 'package:flutter_soloud/src/clap/clap_slot_owners.dart';
 import 'package:flutter_soloud/src/clap/clap_text.dart';
 import 'package:flutter_soloud/src/clap/clap_types.dart';
@@ -12,6 +14,7 @@ import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/custom_filter.dart';
 import 'package:flutter_soloud/src/soloud.dart';
+import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:meta/meta.dart';
 
 export 'package:flutter_soloud/src/clap/clap_types.dart';
@@ -256,11 +259,30 @@ class ClapHost {
 /// A loaded CLAP audio effect running in a [CustomFilterSlot].
 ///
 /// Parameter values are plain: in the plugin's own units, within
-/// [ClapParamInfo.minValue]..[ClapParamInfo.maxValue].
+/// [ClapParamInfo.minValue]..[ClapParamInfo.maxValue]. The `*Normalized`
+/// members convert with [ClapParamInfo.toNormalized] and
+/// [ClapParamInfo.fromNormalized].
+///
+/// The plugin's events are taken with [drainEvents], or delivered by the
+/// [events] and [paramEdits] streams, which drain on a timer while they have
+/// listeners. Each event is taken once: every event [drainEvents] returns
+/// is also delivered to the streams' current listeners.
 @experimental
 class ClapEffectPlugin {
   ClapEffectPlugin._({required this.pluginHandle, required this.slot})
-    : _parameters = _queryParameters(pluginHandle);
+    : _parameters = _queryParameters(pluginHandle) {
+    _events = StreamController<ClapHostEvent>.broadcast(
+      onListen: _updateDrainTimer,
+      onCancel: _updateDrainTimer,
+    );
+    _paramEdits = StreamController<ClapParamEditEvent>.broadcast(
+      onListen: _updateDrainTimer,
+      onCancel: _updateDrainTimer,
+    );
+  }
+
+  /// How often the streams drain while they have listeners.
+  static const Duration drainInterval = Duration(milliseconds: 16);
 
   /// The native plugin handle.
   final int pluginHandle;
@@ -270,9 +292,20 @@ class ClapEffectPlugin {
 
   List<ClapParamInfo> _parameters;
   bool _disposed = false;
+  late final StreamController<ClapHostEvent> _events;
+  late final StreamController<ClapParamEditEvent> _paramEdits;
+  Timer? _drainTimer;
+
+  /// Set once draining reports the native handle gone (after
+  /// [ClapHost.unloadAll]): nothing will arrive, so polling stops for good.
+  bool _nativeGone = false;
 
   /// Whether [dispose] was called.
   bool get isDisposed => _disposed;
+
+  /// Whether the [events] and [paramEdits] drain timer is running.
+  @visibleForTesting
+  bool get isPollingEvents => _drainTimer != null;
 
   /// The plugin's latency in frames, or 0.
   int get latencySamples =>
@@ -403,6 +436,123 @@ class ClapEffectPlugin {
     _check(ffigen.soloud_clapSetParameterValue(pluginHandle, paramId, value));
   }
 
+  /// The [ClapParamInfo] of [paramId] in [parameters], or null.
+  ClapParamInfo? parameterInfo(int paramId) {
+    for (final info in _parameters) {
+      if (info.paramId == paramId) {
+        return info;
+      }
+    }
+    return null;
+  }
+
+  ClapParamInfo _requireInfo(int paramId) {
+    final info = parameterInfo(paramId);
+    if (info == null) {
+      throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
+    }
+    return info;
+  }
+
+  /// The plugin's current value of [paramId], normalized to `0..1` with
+  /// [ClapParamInfo.toNormalized].
+  ///
+  /// Throws a [SoLoudCppException] for a parameter missing from
+  /// [parameters].
+  double getParameterNormalized(int paramId) {
+    _checkNotDisposed();
+    final info = _requireInfo(paramId);
+    return info.toNormalized(getParameterValue(paramId));
+  }
+
+  /// Queues the normalized [value] (`0..1`) for [paramId], converted with
+  /// [ClapParamInfo.fromNormalized]. See [setParameterValue].
+  ///
+  /// Throws a [SoLoudCppException] for a parameter missing from
+  /// [parameters], and an [ArgumentError] for a value that is not finite.
+  void setParameterNormalized(int paramId, double value) {
+    _checkNotDisposed();
+    final info = _requireInfo(paramId);
+    setParameterValue(paramId, info.fromNormalized(value));
+  }
+
+  /// Binds parameter [slotParamIndex] (`1..7`) of [slot] to the plugin
+  /// parameter [paramId], so `fadeFilterParameter` and
+  /// `oscillateFilterParameter` on the returned [CustomFilterParam] drive
+  /// it. The slot value (`0..1`) is converted with
+  /// [ClapParamInfo.fromNormalized] and sent at the start of each processed
+  /// block in which it changed.
+  ///
+  /// Binding does not send the slot's current value: the plugin keeps its
+  /// value until the slot value changes. The first processed block after
+  /// binding sends the slot value only when it differs (as a plain value)
+  /// from the one read at binding time, even if blocks were skipped in
+  /// between. A binding replaces an earlier one for the same index, and
+  /// survives a rescan while [paramId] still exists and is writable.
+  ///
+  /// Throws an [ArgumentError] for an index outside `1..7` (0 is the slot's
+  /// wet level), and a [SoLoudCppException] for an unknown or read-only
+  /// parameter, or while the parameter list is being rebuilt.
+  CustomFilterParam mapToSlotParameter({
+    required int slotParamIndex,
+    required int paramId,
+    SoundHandle? soundHandle,
+  }) {
+    _checkNotDisposed();
+    _checkSlotParamIndex(slotParamIndex);
+    // The value the binding is made against (NaN when it cannot be read:
+    // the native side then falls back to the slot's changed bit).
+    var baseline = double.nan;
+    try {
+      final read = SoLoudController().soLoudFFI.getCustomFilterParams(
+        slot.slotIndex,
+        slotParamIndex,
+        handle: soundHandle,
+        busId: slot.busId,
+      );
+      if (read.error == PlayerErrors.noError) {
+        baseline = read.value;
+      }
+    } catch (_) {}
+    _check(
+      ffigen.soloud_clapMapSlotParameter(
+        pluginHandle,
+        slotParamIndex,
+        paramId,
+        baseline,
+      ),
+    );
+    return CustomFilterParam(
+      soundHandle,
+      slot.busId,
+      slot.slotIndex,
+      slotParamIndex,
+      0,
+      1,
+    );
+  }
+
+  /// Removes the binding of slot parameter [slotParamIndex] (`1..7`), if
+  /// any. The plugin keeps the last value it was sent.
+  ///
+  /// Throws an [ArgumentError] for an index outside `1..7`.
+  void unmapSlotParameter(int slotParamIndex) {
+    _checkNotDisposed();
+    _checkSlotParamIndex(slotParamIndex);
+    _check(ffigen.soloud_clapUnmapSlotParameter(pluginHandle, slotParamIndex));
+  }
+
+  static void _checkSlotParamIndex(int slotParamIndex) {
+    if (slotParamIndex < 1 || slotParamIndex > CustomFilterSlot.maxUserParams) {
+      throw ArgumentError.value(
+        slotParamIndex,
+        'slotParamIndex',
+        'must be between 1 and ${CustomFilterSlot.maxUserParams} '
+            '(index 0 is the wet level)',
+      );
+    }
+  }
+
   /// Saves the plugin's state.
   ///
   /// Throws a [SoLoudCppException] when the plugin cannot save its state,
@@ -449,8 +599,11 @@ class ClapEffectPlugin {
   /// changes the list (`CLAP_PARAM_RESCAN_INFO` or `_ALL`) and a resync with
   /// [ClapHostEvent.isParamsReset] refresh [parameters] before they are
   /// returned. Never waits for the main thread.
+  ///
+  /// The events are also delivered to the current listeners of [events]
+  /// and, for parameter changes, [paramEdits].
   List<ClapHostEvent> drainEvents({int maxEvents = 1024}) {
-    if (_disposed || maxEvents <= 0) {
+    if (_disposed || _nativeGone || maxEvents <= 0) {
       return const [];
     }
     const chunk = 256;
@@ -476,8 +629,11 @@ class ClapEffectPlugin {
           outCount,
         );
         // invalidParameter once the handle is gone (after unloadAll): there
-        // is nothing left to take.
+        // is nothing left to take, now or later.
         if (error != ffigen.PlayerErrors.noError) {
+          if (error == ffigen.PlayerErrors.invalidParameter) {
+            _nativeGone = true;
+          }
           break;
         }
         final count = outCount.value;
@@ -507,7 +663,89 @@ class ClapEffectPlugin {
     if (refresh) {
       refreshParameters();
     }
+    if (_nativeGone) {
+      _updateDrainTimer();
+    }
+    _deliver(events);
     return events;
+  }
+
+  /// Every event the plugin reports, as [drainEvents] would return it.
+  ///
+  /// While this stream or [paramEdits] has a listener, the plugin's events
+  /// are drained every [drainInterval]. Closed by [dispose].
+  Stream<ClapHostEvent> get events => _events.stream;
+
+  /// The parameter changes the plugin makes itself, usually from its
+  /// editor: value changes and gesture starts and ends, in order.
+  ///
+  /// Drains like [events]. A [ClapHostEventType.resync] on [events] means
+  /// edits were lost. Closed by [dispose].
+  Stream<ClapParamEditEvent> get paramEdits => _paramEdits.stream;
+
+  void _deliver(List<ClapHostEvent> events) {
+    if (events.isEmpty) {
+      return;
+    }
+    if (_events.hasListener && !_events.isClosed) {
+      events.forEach(_events.add);
+    }
+    if (!_paramEdits.hasListener || _paramEdits.isClosed) {
+      return;
+    }
+    for (final event in events) {
+      final kind = switch (event.type) {
+        ClapHostEventType.paramValue => ClapParamEditKind.value,
+        ClapHostEventType.paramGestureBegin => ClapParamEditKind.gestureBegin,
+        ClapHostEventType.paramGestureEnd => ClapParamEditKind.gestureEnd,
+        _ => null,
+      };
+      if (kind == null) {
+        continue;
+      }
+      double? value;
+      double? normalized;
+      if (kind == ClapParamEditKind.value) {
+        value = event.value;
+        final info = parameterInfo(event.paramId);
+        if (info != null && value.isFinite) {
+          normalized = info.toNormalized(value);
+        }
+      }
+      _paramEdits.add(
+        ClapParamEditEvent(
+          pluginHandle: pluginHandle,
+          paramId: event.paramId,
+          kind: kind,
+          value: value,
+          normalizedValue: normalized,
+          isDontRecord: event.isDontRecord,
+        ),
+      );
+    }
+  }
+
+  void _updateDrainTimer() {
+    final wanted =
+        !_disposed &&
+        !_nativeGone &&
+        (_events.hasListener || _paramEdits.hasListener);
+    if (wanted && _drainTimer == null) {
+      _drainTimer = Timer.periodic(drainInterval, (_) => _drainTick());
+    } else if (!wanted && _drainTimer != null) {
+      _drainTimer!.cancel();
+      _drainTimer = null;
+    }
+  }
+
+  void _drainTick() {
+    // drainEvents takes up to 1024 events per call. Bounded, so a plugin
+    // that floods events cannot hold the isolate.
+    for (var i = 0; i < 8; i++) {
+      if (_disposed || _nativeGone || drainEvents().length < 1024) {
+        return;
+      }
+    }
   }
 
   // --- native editor ---
@@ -559,8 +797,9 @@ class ClapEffectPlugin {
     }
   }
 
-  /// Unbinds and deactivates [slot] and unloads the plugin. Safe to call
-  /// more than once, and after [ClapHost.unloadAll].
+  /// Closes [events] and [paramEdits], unbinds and deactivates [slot] and
+  /// unloads the plugin. Safe to call more than once, and after
+  /// [ClapHost.unloadAll].
   ///
   /// The slot is left alone when another CLAP plugin was loaded into it
   /// since, or the engine was shut down since this plugin was loaded.
@@ -569,6 +808,10 @@ class ClapEffectPlugin {
       return;
     }
     _disposed = true;
+    _drainTimer?.cancel();
+    _drainTimer = null;
+    unawaited(_events.close());
+    unawaited(_paramEdits.close());
     try {
       if (_slotOwners.release(slot, this, SoLoud.instance.engineSession) &&
           SoLoud.instance.isInitialized &&

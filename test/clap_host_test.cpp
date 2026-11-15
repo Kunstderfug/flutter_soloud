@@ -4648,6 +4648,602 @@ namespace
     }
 
     // The C ABI.
+    // =========================================================================
+    // Phase 5a. Filter-slot parameter mapping
+    // =========================================================================
+
+    void callDspSlots(int handle, float *buffer, unsigned samples,
+                      unsigned bufferSize, unsigned channels,
+                      const float *params, uint64_t mask, unsigned count)
+    {
+        std::lock_guard<std::mutex> lock(gAudioMutex);
+        clapFilterDspCallback(buffer, samples, bufferSize, channels,
+                              static_cast<float>(kSampleRate), 0.0, params,
+                              mask, count,
+                              reinterpret_cast<void *>(
+                                  static_cast<uintptr_t>(handle)));
+    }
+
+    /// A stereo block that carries the filter-slot values [slots]
+    /// (kMaxSlotParams of them) and the changed bits [mask].
+    void slotBlock(int handle, const float *slots, uint64_t mask = 0,
+                   unsigned samples = 256)
+    {
+        Bus bus(2, samples);
+        bus.fill({1.0f, 0.5f});
+        std::thread audio([&] {
+            callDspSlots(handle, bus.data.data(), samples, bus.size,
+                         bus.channels, slots, mask, kMaxSlotParams);
+        });
+        audio.join();
+    }
+
+    constexpr uint64_t slotBit(unsigned slot) { return 1ull << slot; }
+
+    void testSlotMapping()
+    {
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        stereoBlock(h);
+        float slots[kMaxSlotParams] = {};
+        slots[0] = 1.0f;
+
+        // Refusals.
+        CHECK(mgr().mapSlotParameter(h, 0, 10) == invalidParameter);
+        CHECK(mgr().mapSlotParameter(h, kMaxSlotParams, 10) == invalidParameter);
+        CHECK(mgr().mapSlotParameter(h, 1, 30) == invalidParameter); // read-only
+        CHECK(mgr().mapSlotParameter(h, 1, 99) == invalidParameter);
+        CHECK(mgr().mapSlotParameter(h, 1, CLAP_INVALID_ID) == invalidParameter);
+        CHECK(mgr().mapSlotParameter(0x7fff, 1, 10) == invalidParameter);
+        CHECK(mgr().unmapSlotParameter(h, 0) == invalidParameter);
+        CHECK(mgr().unmapSlotParameter(0x7fff, 1) == invalidParameter);
+        CHECK(instance->slotMapping(1).id == CLAP_INVALID_ID);
+
+        // A new mapping keeps the plugin's value: the standing slot value is
+        // not sent.
+        slots[1] = 0.25f;
+        CHECK(mgr().mapSlotParameter(h, 1, 10) == noError);
+        size_t base = received().size();
+        slotBlock(h, slots);
+        slotBlock(h, slots, slotBit(1));
+        CHECK(receivedFor(10, base).empty());
+
+        // Each change goes out once, linear over 0..2, at time 0.
+        slots[1] = 0.75f;
+        slotBlock(h, slots, slotBit(1));
+        std::vector<MockReceived> got = receivedFor(10, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 1.5 && got[0].path == 1 && got[0].time == 0);
+        slotBlock(h, slots, slotBit(1));
+        slotBlock(h, slots);
+        CHECK(receivedFor(10, base).size() == 1);
+        // Without the changed bit (it was cleared while bypassed): the value
+        // still differs, so it goes out.
+        slots[1] = 0.5f;
+        slotBlock(h, slots);
+        got = receivedFor(10, base);
+        REQUIRE(got.size() == 2);
+        CHECK(got[1].value == 1.0);
+        // Out-of-range and non-finite slot values.
+        slots[1] = 1.5f;
+        slotBlock(h, slots);
+        slots[1] = NAN;
+        slotBlock(h, slots);
+        got = receivedFor(10, base);
+        REQUIRE(got.size() == 3);
+        CHECK(got[2].value == 2.0);
+        slots[1] = -0.5f;
+        slotBlock(h, slots);
+        got = receivedFor(10, base);
+        REQUIRE(got.size() == 4);
+        CHECK(got[3].value == 0.0);
+
+        // A stepped enum (0..3): rounded, and a new step only when it moves.
+        slots[2] = 0.1f;
+        CHECK(mgr().mapSlotParameter(h, 2, 20) == noError);
+        slotBlock(h, slots);
+        base = received().size();
+        slots[2] = 0.5f; // 1.5 -> 2
+        slotBlock(h, slots);
+        slots[2] = 0.55f; // 1.65 -> 2: the same step
+        slotBlock(h, slots);
+        slots[2] = 1.0f;
+        slotBlock(h, slots);
+        got = receivedFor(20, base);
+        REQUIRE(got.size() == 2);
+        CHECK(got[0].value == 2.0 && got[1].value == 3.0);
+
+        // Changed right after mapping (the changed bit): sent at once.
+        slots[3] = 1.0f;
+        CHECK(mgr().mapSlotParameter(h, 3, 40) == noError);
+        base = received().size();
+        slotBlock(h, slots, slotBit(3));
+        got = receivedFor(40, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 1.0 && got[0].path == 1);
+
+        // Fewer slot values than the mapped index: nothing for it.
+        base = received().size();
+        slots[3] = 0.0f;
+        {
+            Bus bus(2, 256);
+            std::thread audio([&] {
+                callDspSlots(h, bus.data.data(), 256, bus.size, 2, slots,
+                             slotBit(3), 3);
+            });
+            audio.join();
+        }
+        CHECK(receivedFor(40, base).empty());
+        slotBlock(h, slots);
+        CHECK(receivedFor(40, base).size() == 1);
+
+        // Unmap stops it; a remap re-arms (no jump).
+        CHECK(mgr().unmapSlotParameter(h, 1) == noError);
+        CHECK(instance->slotMapping(1).id == CLAP_INVALID_ID);
+        base = received().size();
+        slots[1] = 0.1f;
+        slotBlock(h, slots, slotBit(1));
+        CHECK(receivedFor(10, base).empty());
+        slots[1] = 0.2f;
+        CHECK(mgr().mapSlotParameter(h, 1, 10) == noError);
+        slotBlock(h, slots);
+        CHECK(receivedFor(10, base).empty());
+        // A remap to another parameter re-arms too.
+        CHECK(mgr().mapSlotParameter(h, 1, 40) == noError);
+        slots[1] = 0.9f;
+        slotBlock(h, slots); // armed at the new mapping: not sent
+        CHECK(receivedFor(40, base).empty());
+        CHECK(mgr().mapSlotParameter(h, 1, 10) == noError);
+        slotBlock(h, slots);
+        slots[1] = 0.25f;
+        slotBlock(h, slots);
+        got = receivedFor(10, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 0.5);
+
+        // A plain setParameterValue is not overridden by an unchanged slot.
+        CHECK(mgr().setParameterValue(h, 10, 1.75) == noError);
+        slotBlock(h, slots);
+        slotBlock(h, slots);
+        got = receivedFor(10, base);
+        REQUIRE(got.size() == 2);
+        CHECK(got[1].value == 1.75);
+
+        // The full C ABI.
+        CHECK(soloud_clapMapSlotParameter(h, 5, 10, 0.5f) == noError);
+        CHECK(instance->slotMapping(5).baseline == 0.5f);
+        CHECK(soloud_clapMapSlotParameter(h, 5, 10, NAN) == noError);
+        CHECK(std::isnan(instance->slotMapping(5).baseline));
+        CHECK(soloud_clapMapSlotParameter(h, 5, 30, 0.5f) == invalidParameter);
+        CHECK(soloud_clapUnmapSlotParameter(h, 5) == noError);
+        CHECK(soloud_clapUnmapSlotParameter(h, 16) == invalidParameter);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testSlotMappingRescan()
+    {
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        auto *params = hostParams(host);
+        stereoBlock(h);
+        float slots[kMaxSlotParams] = {};
+        slots[0] = 1.0f;
+        CHECK(mgr().mapSlotParameter(h, 1, 10, 0.0f) == noError);
+        slotBlock(h, slots);
+        const SlotMapping first = instance->slotMapping(1);
+        CHECK(first.id == 10 && first.max == 2.0 && first.baseline == 0.0f &&
+              first.generation == instance->paramsGeneration());
+
+        // INFO (a rename): the mapping stays as it was, values flow.
+        gMock.state->paramNameVariant = 2;
+        params->rescan(host, CLAP_PARAM_RESCAN_INFO);
+        CHECK(pumpUntil([&] {
+            ParamEntry e;
+            return mgr().parameterInfo(h, 0, e) == noError && e.name == "Gain 2";
+        }));
+        SlotMapping m = instance->slotMapping(1);
+        CHECK(m.id == 10 && m.version == first.version &&
+              m.cookie == first.cookie && m.generation == first.generation);
+        size_t base = received().size();
+        slots[1] = 0.5f;
+        slotBlock(h, slots);
+        CHECK(receivedValue(10, 1.0, base));
+
+        // ALL while active: pending, new maps refused, the slot held back
+        // until the restart's rebuild re-resolves it, then delivered.
+        const uint64_t restarts = instance->restartCount();
+        params->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        CHECK(instance->paramsPending());
+        CHECK(mgr().mapSlotParameter(h, 2, 10) == unknownError);
+        base = received().size();
+        slots[1] = 0.25f;
+        slotBlock(h, slots);
+        CHECK(receivedFor(10, base).empty());
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == restarts + 1 &&
+                   !instance->paramsPending();
+        }));
+        m = instance->slotMapping(1);
+        CHECK(m.id == 10 && m.version == first.version &&
+              m.generation == instance->paramsGeneration() &&
+              m.generation != first.generation);
+        slotBlock(h, slots);
+        {
+            std::vector<MockReceived> got = receivedFor(10, base);
+            REQUIRE(got.size() == 1);
+            CHECK(got[0].value == 0.5);
+        }
+
+        // A variant with new cookies and id 50: the cookie follows.
+        gMock.state->pendingParamVariant = 1;
+        uint64_t r = instance->restartCount();
+        host->request_restart(host);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == r + 1 && !instance->paramsPending();
+        }));
+        m = instance->slotMapping(1);
+        CHECK(m.id == 10 && m.cookie != first.cookie && m.version == first.version);
+        CHECK(mgr().mapSlotParameter(h, 4, 50) == noError);
+        base = received().size();
+        slots[1] = 1.0f;
+        slots[4] = 0.5f;
+        slotBlock(h, slots, slotBit(4));
+        CHECK(receivedValue(10, 2.0, base));
+        CHECK(receivedValue(50, 0.5, base));
+
+        // A range change (rescan ALL in deactivate): the new max applies.
+        gMock.state->gainMax = 4.0;
+        gMock.state->rescanAllInDeactivate = 1;
+        r = instance->restartCount();
+        host->request_restart(host);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == r + 1 && !instance->paramsPending();
+        }));
+        m = instance->slotMapping(1);
+        CHECK(m.id == 10 && m.max == 4.0 && m.version == first.version &&
+              m.baseline == 0.0f);
+        base = received().size();
+        slotBlock(h, slots); // 1.0 now maps to 4
+        slots[1] = 0.75f;
+        slotBlock(h, slots);
+        {
+            std::vector<MockReceived> got = receivedFor(10, base);
+            REQUIRE(got.size() == 2);
+            CHECK(got[0].value == 4.0 && got[1].value == 3.0);
+        }
+
+        // Back to variant 0: id 50 is gone, so slot 4 is unmapped.
+        gMock.state->pendingParamVariant = 0;
+        r = instance->restartCount();
+        host->request_restart(host);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == r + 1 && !instance->paramsPending();
+        }));
+        CHECK(instance->slotMapping(4).id == CLAP_INVALID_ID);
+        CHECK(instance->slotMapping(1).id == 10);
+        base = received().size();
+        slots[4] = 0.9f;
+        slotBlock(h, slots, slotBit(4));
+        CHECK(receivedFor(50, base).empty());
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    std::atomic<int> gSlotHookHandle{0};
+    std::atomic<int> gSlotHookRuns{0};
+    float gSlotHookValues[kMaxSlotParams] = {};
+
+    /// Mid-write: an audio block on another thread, which must skip the
+    /// half-written mapping.
+    void slotWriteHook()
+    {
+        gSlotHookRuns.fetch_add(1);
+        gSlotHookValues[1] = static_cast<float>((gSlotHookRuns.load() % 9) / 8.0);
+        Bus bus(2, 128);
+        bus.fill({1.0f, 0.5f});
+        std::thread audio([&] {
+            callDspSlots(gSlotHookHandle.load(), bus.data.data(), 128, 128, 2,
+                         gSlotHookValues, slotBit(1), kMaxSlotParams);
+        });
+        audio.join();
+    }
+
+    std::atomic<int> gSlotReadRemaps{0};
+
+    /// Mid-read: a whole remap on another thread, which the read's recheck
+    /// must notice.
+    void slotReadHook()
+    {
+        if (gSlotReadRemaps.load() <= 0)
+            return;
+        gSlotReadRemaps.fetch_sub(1);
+        // Alternates, so the torn copy mixes two parameters.
+        const int n = gSlotHookRuns.fetch_add(1);
+        std::thread writer([n] {
+            CHECK(mgr().mapSlotParameter(gSlotHookHandle.load(), 1,
+                                         n % 2 == 0 ? 20 : 10) == noError);
+        });
+        writer.join();
+    }
+
+    void testSlotMappingRace()
+    {
+        // Deterministic: a block inside every write sees the slot mid-write
+        // (id 20 stored, the cookie and range still id 10's, or back) and
+        // skips it.
+        {
+            const int h = load("mock.ext");
+            REQUIRE(h > 0);
+            stereoBlock(h);
+            gSlotHookHandle = h;
+            gSlotHookRuns = 0;
+            gSlotHookValues[0] = 1.0f;
+            CHECK(mgr().mapSlotParameter(h, 1, 10) == noError);
+            slotBlock(h, gSlotHookValues);
+            test::setSlotWriteHook(&slotWriteHook);
+            for (int i = 0; i < 40; ++i)
+                CHECK(mgr().mapSlotParameter(h, 1, i % 2 == 0 ? 20 : 10) == noError);
+            test::setSlotWriteHook(nullptr);
+            CHECK(gSlotHookRuns.load() == 40);
+            CHECK(gMock.state->violations.load() == 0);
+
+            // A whole write inside a read: the recheck drops the torn copy
+            // (an old id with the new cookie and range).
+            test::setSlotReadHook(&slotReadHook);
+            for (int i = 0; i < 40; ++i)
+            {
+                gSlotReadRemaps = 1;
+                gSlotHookValues[1] = static_cast<float>((i % 7 + 1) / 8.0);
+                slotBlock(h, gSlotHookValues, slotBit(1));
+            }
+            test::setSlotReadHook(nullptr);
+            CHECK(gMock.state->violations.load() == 0);
+            CHECK(mgr().unloadPlugin(h) == noError);
+        }
+
+        // Remaps between a continuous and a stepped parameter while DSP
+        // forwards changing slot values: never a torn mapping (the mock
+        // flags a stale cookie, an off-step value or one out of range).
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        stereoBlock(h);
+        std::atomic<bool> running{true};
+        std::atomic<int> blocks{0};
+        std::thread audio([&] {
+            float slots[kMaxSlotParams] = {};
+            slots[0] = 1.0f;
+            Bus bus(2, 128);
+            int i = 0;
+            while (running.load())
+            {
+                slots[1] = static_cast<float>((i % 97) / 96.0);
+                slots[2] = static_cast<float>(((i * 7) % 89) / 88.0);
+                ++i;
+                bus.fill({1.0f, 0.5f});
+                callDspSlots(h, bus.data.data(), 128, 128, 2, slots,
+                             slotBit(1) | slotBit(2), kMaxSlotParams);
+                blocks.fetch_add(1);
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            }
+        });
+        std::thread mapper([&] {
+            for (int i = 0; i < 2000; ++i)
+            {
+                CHECK(mgr().mapSlotParameter(h, 1, i % 2 == 0 ? 10 : 20) == noError);
+                CHECK(mgr().mapSlotParameter(h, 2, i % 3 == 0 ? 40 : 10) == noError);
+                if (i % 5 == 0)
+                    CHECK(mgr().unmapSlotParameter(h, 2) == noError);
+            }
+        });
+        mapper.join();
+        const int target = blocks.load() + 20;
+        while (blocks.load() < target)
+            std::this_thread::yield();
+        running.store(false);
+        audio.join();
+        CHECK(received().size() > 0);
+        CHECK(gMock.state->violations.load() == 0);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    /// Mid-write of a mapping: a block carrying a changed slot 1, which must
+    /// skip the half-written cell.
+    void slotBaselineWriteHook()
+    {
+        gSlotHookRuns.fetch_add(1);
+        Bus bus(2, 128);
+        bus.fill({1.0f, 0.5f});
+        std::thread audio([&] {
+            callDspSlots(gSlotHookHandle.load(), bus.data.data(), 128, 128, 2,
+                         gSlotHookValues, slotBit(1), kMaxSlotParams);
+        });
+        audio.join();
+    }
+
+    void testSlotMappingBaseline()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        stereoBlock(h);
+        float slots[kMaxSlotParams] = {};
+        slots[0] = 1.0f;
+
+        // The slot still holds the baseline: not sent, even with its changed
+        // bit set (a value set just before mapping, like configureParameters'
+        // defaults).
+        slots[1] = 0.25f;
+        CHECK(mgr().mapSlotParameter(h, 1, 10, 0.25f) == noError);
+        CHECK(instance->slotMapping(1).baseline == 0.25f);
+        size_t base = received().size();
+        slotBlock(h, slots, slotBit(1));
+        slotBlock(h, slots);
+        CHECK(receivedFor(10, base).empty());
+        slots[1] = 0.5f;
+        slotBlock(h, slots);
+        std::vector<MockReceived> got = receivedFor(10, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 1.0);
+
+        // Changed after mapping, the block that saw the changed bit never ran
+        // (wet 0 or no callback): the first block that runs sends it once.
+        slots[2] = 0.0f;
+        CHECK(mgr().mapSlotParameter(h, 2, 40, 0.0f) == noError);
+        slots[2] = 0.75f; // 0.75 -> 1 (stepped 0..1)
+        base = received().size();
+        slotBlock(h, slots);
+        slotBlock(h, slots);
+        got = receivedFor(40, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 1.0);
+
+        // A stepped parameter: a baseline on the same step is not a change.
+        slots[3] = 0.5f; // 1.5 -> 2
+        CHECK(mgr().mapSlotParameter(h, 3, 20, 0.55f) == noError); // 1.65 -> 2
+        base = received().size();
+        slotBlock(h, slots, slotBit(3));
+        CHECK(receivedFor(20, base).empty());
+        slots[3] = 1.0f;
+        slotBlock(h, slots);
+        got = receivedFor(20, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 3.0);
+
+        // The changed block was dry (servicing a paused flush), its changed
+        // bit lost: the next block still sends the value once.
+        CHECK(mgr().unmapSlotParameter(h, 1) == noError);
+        slots[1] = 0.25f;
+        CHECK(mgr().mapSlotParameter(h, 1, 10, 0.25f) == noError);
+        slots[1] = 0.75f;
+        base = received().size();
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::atomic<bool> flushing{false}, dspDone{false};
+            setHook([&](const std::string &event, const clap_host_t *) {
+                if (event == "flush" && !flushing.exchange(true))
+                {
+                    const auto end = std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(3);
+                    while (!dspDone.load() && std::chrono::steady_clock::now() < end)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            });
+            const uint64_t dry = instance->dryBlocksFromServicing();
+            Bus bus(2, 256);
+            std::thread audio([&] {
+                while (!flushing.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                bus.fill({1.0f, 0.5f});
+                callDspSlots(h, bus.data.data(), 256, bus.size, 2, slots,
+                             slotBit(1), kMaxSlotParams);
+                dspDone = true;
+            });
+            CHECK(mgr().setParameterValue(h, 20, 1.0) == noError);
+            CHECK(pumpUntil([&] { return dspDone.load(); }));
+            audio.join();
+            setHook(nullptr);
+            CHECK(instance->dryBlocksFromServicing() == dry + 1);
+        }
+        CHECK(receivedFor(10, base).empty());
+        slotBlock(h, slots);
+        slotBlock(h, slots);
+        got = receivedFor(10, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 1.5);
+
+        // A remap over the live mapping: the changed block failed its read of
+        // the half-written cell. The next block sends the value once.
+        gSlotHookHandle = h;
+        gSlotHookRuns = 0;
+        gSlotHookValues[0] = 1.0f;
+        gSlotHookValues[1] = 0.5f;
+        test::setSlotWriteHook(&slotBaselineWriteHook);
+        CHECK(mgr().mapSlotParameter(h, 1, 10, 0.0f) == noError);
+        test::setSlotWriteHook(nullptr);
+        CHECK(gSlotHookRuns.load() == 1);
+        base = received().size();
+        slotBlock(h, gSlotHookValues);
+        slotBlock(h, gSlotHookValues);
+        got = receivedFor(10, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 1.0);
+
+        // A remap against the current value does not replay a change the old
+        // mapping never sent.
+        CHECK(mgr().unmapSlotParameter(h, 2) == noError);
+        slots[2] = 0.25f; // never sent: slot 2 is unmapped
+        slotBlock(h, slots, slotBit(2));
+        CHECK(mgr().mapSlotParameter(h, 2, 40, 0.25f) == noError);
+        base = received().size();
+        slotBlock(h, slots, slotBit(2));
+        slotBlock(h, slots);
+        CHECK(receivedFor(40, base).empty());
+        CHECK(gMock.state->violations.load() == 0);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testSlotMappingBaselineRescan()
+    {
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        auto *params = hostParams(host);
+        stereoBlock(h);
+        float slots[kMaxSlotParams] = {};
+        slots[0] = 1.0f;
+
+        // Unarmed, then a block against a stale list: it must not arm with
+        // the old range. After the range doubles, the change (0.5 -> 0.25)
+        // maps to 1, the old range's baseline plain: still sent.
+        slots[1] = 0.5f;
+        CHECK(mgr().mapSlotParameter(h, 1, 10, 0.5f) == noError);
+        // Slot 2 stays at its baseline throughout.
+        slots[2] = 0.5f;
+        CHECK(mgr().mapSlotParameter(h, 2, 10, 0.5f) == noError);
+        gMock.state->gainMax = 4.0;
+        const uint64_t restarts = instance->restartCount();
+        params->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        CHECK(instance->paramsPending());
+        slots[1] = 0.25f;
+        size_t base = received().size();
+        slotBlock(h, slots, slotBit(1));
+        CHECK(receivedFor(10, base).empty());
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == restarts + 1 &&
+                   !instance->paramsPending();
+        }));
+        CHECK(instance->slotMapping(1).max == 4.0);
+        slotBlock(h, slots);
+        slotBlock(h, slots);
+        std::vector<MockReceived> got = receivedFor(10, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 1.0);
+
+        // Armed and never sent, then a range change: the slot still holds
+        // its baseline, so the plugin keeps its own value.
+        gMock.state->gainMax = 2.0;
+        gMock.state->rescanAllInDeactivate = 1;
+        const uint64_t r = instance->restartCount();
+        host->request_restart(host);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == r + 1 && !instance->paramsPending();
+        }));
+        CHECK(instance->slotMapping(2).max == 2.0);
+        // Slot 1 was sent 1.0 under 0..4: 0.25 is 0.5 now, so it follows.
+        base = received().size();
+        slotBlock(h, slots);
+        slotBlock(h, slots);
+        got = receivedFor(10, base);
+        REQUIRE(got.size() == 1);
+        CHECK(got[0].value == 0.5);
+        CHECK(gMock.state->violations.load() == 0);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
     void testGuiAbi()
     {
         gMock.state->guiApis = 1;
@@ -4746,6 +5342,11 @@ namespace
         {"gui_floating", testGuiFloating},
         {"gui_lifetime", testGuiLifetime},
         {"gui_abi", testGuiAbi},
+        {"slot_mapping", testSlotMapping},
+        {"slot_mapping_rescan", testSlotMappingRescan},
+        {"slot_mapping_race", testSlotMappingRace},
+        {"slot_mapping_baseline", testSlotMappingBaseline},
+        {"slot_mapping_baseline_rescan", testSlotMappingBaselineRescan},
     };
 } // namespace
 

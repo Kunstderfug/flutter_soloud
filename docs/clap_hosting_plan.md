@@ -419,3 +419,42 @@ No VST3 editor defects were found, so Phase 4a extracts the existing window beha
     - a close during `get_resize_hints` reports `editorClosed` for a failed open, which is accurate because the user closed it;
     - request bits cleared while the plugin is not callable, which teardown or the next open covers;
     - a busy `closeEditorWindow()` from a reentrant call is ignored.
+
+### Phase 5a: effect API completion (2026-11-15, Fable 5.2 arbitration ACCEPT after two Sol 6.1 rounds)
+
+Phase 5 is split in two. 5a completes the effect API; 5b adds instruments (`loadInstrument`, `ClapInstrumentPlugin`, note ports and dialect).
+
+**Filter-slot parameter mapping (native):**
+- SoLoud filter-slot parameters 1..15 (0 is the wet) drive CLAP parameters. Each slot has a seqlock cell holding the id, cookie, range, flags, parameter-list generation, version and baseline. Writers take `mSlotMapMutex`, before `mParamsMutex`, and never hold it across a plugin call. DSP reads the cell lock-free and skips a torn read.
+- After `consumeEditsDsp`, `pushSlotEventsDsp` turns each changed slot value into a `CLAP_EVENT_PARAM_VALUE` at time 0. The value is mapped linearly onto the parameter's range; stepped, enum and bypass values are rounded.
+- Arming is per mapping version. The version changes on map, unmap and a drop, but not on a re-resolve.
+- The baseline is the slot value read when mapping. Until something is sent, it counts as sent: it is compared as a slot value under the current mapping, so a range change cannot fake a match. A slot value that differs is sent exactly once, even across dry blocks, seqlock skips or cleared changed bits. Without a baseline (NaN, C callers), the slot's changed bit decides, as a best effort.
+- A block against a stale parameter list changes no state and waits for the re-resolve. A full event list leaves the value to be retried next block, and later slots still arm. Non-finite slot values are skipped.
+- `resolveSlotMappings` runs after every params publish: it follows new cookies and ranges, and unmaps a parameter that is gone or now read-only.
+- Refusals: slot 0 or ≥16, an invalid id, and an unknown or read-only parameter give `invalidParameter`; a pending list gives `unknownError`.
+- C ABI: `soloud_clapMapSlotParameter(handle, slot, paramId, float slotValue)` and `soloud_clapUnmapSlotParameter`.
+
+**Dart:**
+- `ClapParamInfo.toNormalized`/`fromNormalized` (snapping for stepped, enum and bypass; 0 or the minimum for an empty range), `parameterInfo`, `getParameterNormalized` and `setParameterNormalized`.
+- `mapToSlotParameter({slotParamIndex 1..7, paramId, soundHandle})` reads the slot value as the baseline and returns a `CustomFilterParam` for set, fade and oscillate. `unmapSlotParameter` removes the binding.
+- `events` and `paramEdits` (`ClapParamEditEvent` with value, gestureBegin and gestureEnd, the plain and normalized value, and dontRecord) are broadcast streams. While listened to, they are drained every 16 ms, at most 8×1024 events per tick. `drainEvents` delivers to the listeners too.
+- After `unloadAll`, the first drain marks the handle gone and polling stops for good. `dispose` closes both streams.
+- The web stub declares the same API. The README has an opt-in CLAP section.
+
+**Tests:**
+- The native harness has 70 tests, including slot_mapping, slot_mapping_rescan, slot_mapping_race (deterministic mid-write and mid-read hooks plus a concurrent remap stress), slot_mapping_baseline and slot_mapping_baseline_rescan. slot_mapping_baseline covers a dry block during a paused flush and a remap over a live mapping that fails the seqlock read; slot_mapping_baseline_rescan covers Sol's stale-generation case. It passes in plain, ASan+UBSan and TSan.
+- The live example test passes 14/14:
+  - ZeroEQ: normalized values, and a slot parameter driving it with set and fade.
+  - Mock: the streams with kinds and values; mapping right after `configureParameters` sends nothing; a slot value set just before mapping is not sent, a later one is; read-only refused; `unloadAll` stops polling.
+- The hook matrix passes 20/20 in all four configurations. `flutter analyze` shows only the 4 pre-existing infos.
+
+**Mutation probes, each failing its test:**
+- Native: no baseline arming; no baseline copy on re-resolve; no cell store or DSP load of the baseline; the raw baseline instead of its plain value; the map dropping the baseline; the round-1 DSP; not clearing the unsent value after a send; not recording the standing value.
+- Dart: no delivery; no timer cancel; no normalized value; snapping only stepped values; no empty-range guard; an always-NaN baseline; a listener restarting polling after `unloadAll`.
+
+**Review:**
+- **Round 1, Sol REVISE.**
+  - (1) Blocking: an initial slot write was lost when the first block was skipped (dry during servicing, or a failed seqlock read) and SoLoud cleared the changed bit. Fix: the baseline.
+  - (2) After `unloadAll`, the drain timer kept polling the dead handle. Fix: stop on `invalidParameter`.
+- **Round 2, Sol REVISE.** (2) resolved. New blocking finding: the generation check ran after arming, so a block against a stale list stored the baseline as a plain value in the old range, and after a range change a real change could match it and be suppressed forever. Fix: the generation check comes first, and an unsent baseline is kept as a slot value compared under the current mapping.
+- **Fable arbitration, ACCEPT, no blocking findings.** The round-2 fix is correct. Full lists, non-finite values, unmap and remap, a dropping re-resolve, a map racing a re-resolve, the seqlock and the DSP cost all hold. Its three minors were folded in before landing: `continue` instead of `break` on a full list, and two comment fixes.

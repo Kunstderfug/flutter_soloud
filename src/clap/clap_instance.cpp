@@ -88,6 +88,8 @@ namespace soloud_clap
         std::atomic<void (*)()> gDrainBeforeAckHook{nullptr};
         std::atomic<void (*)()> gDrainInsideAckHook{nullptr};
         std::atomic<void (*)()> gRescanAfterPendingHook{nullptr};
+        std::atomic<void (*)()> gSlotWriteHook{nullptr};
+        std::atomic<void (*)()> gSlotReadHook{nullptr};
 #endif
         std::atomic<uint64_t> gLockOrderViolations{0};
 
@@ -268,6 +270,14 @@ namespace soloud_clap
     {
         gStateLimit.store(bytes == 0 ? kDefaultStateLimit : bytes,
                           std::memory_order_release);
+    }
+    void test::setSlotWriteHook(void (*hook)())
+    {
+        gSlotWriteHook.store(hook, std::memory_order_release);
+    }
+    void test::setSlotReadHook(void (*hook)())
+    {
+        gSlotReadHook.store(hook, std::memory_order_release);
     }
     void test::setEditProducerHook(void (*hook)())
     {
@@ -617,8 +627,10 @@ namespace soloud_clap
     }
 
     void ClapInstance::processAudio(float *buffer, unsigned samples,
-                                    unsigned bufferSize,
-                                    unsigned channels) noexcept
+                                    unsigned bufferSize, unsigned channels,
+                                    const float *slotParams,
+                                    unsigned slotParamCount,
+                                    uint64_t slotChangedMask) noexcept
     {
         if (buffer == nullptr || samples == 0 || channels == 0)
             return;
@@ -667,13 +679,21 @@ namespace soloud_clap
         {
             const unsigned frames =
                 std::min<unsigned>(mMaxBlockSize, samples - offset);
-            processChunk(buffer, offset, frames, bufferSize, busChannels);
+            // Slot values go with the first chunk only, at time 0.
+            const bool first = offset == 0;
+            processChunk(buffer, offset, frames, bufferSize, busChannels,
+                         first ? slotParams : nullptr,
+                         first ? slotParamCount : 0,
+                         first ? slotChangedMask : 0);
         }
     }
 
     void ClapInstance::processChunk(float *buffer, unsigned offset,
                                     unsigned frames, unsigned bufferSize,
-                                    unsigned busChannels) noexcept
+                                    unsigned busChannels,
+                                    const float *slotParams,
+                                    unsigned slotParamCount,
+                                    uint64_t slotChangedMask) noexcept
     {
         float *left = buffer + offset;
         float *right = busChannels == 2 ? buffer + bufferSize + offset : left;
@@ -707,6 +727,8 @@ namespace soloud_clap
 
         mInputEvents.clear();
         consumeEditsDsp();
+        if (slotParams != nullptr)
+            pushSlotEventsDsp(slotParams, slotParamCount, slotChangedMask);
 
         clap_process_t process{};
         process.steady_time = mSteadyTime;
@@ -1343,6 +1365,7 @@ namespace soloud_clap
             if (published)
             {
                 mLastRealCache = cache;
+                resolveSlotMappings();
                 if (bump)
                     notifyParamsRescan(CLAP_PARAM_RESCAN_ALL);
                 else if ((flags & CLAP_PARAM_RESCAN_INFO) != 0 || infoChanged)
@@ -1587,6 +1610,263 @@ namespace soloud_clap
         }
         if (examined > mMaxExamined.load(std::memory_order_relaxed))
             mMaxExamined.store(examined, std::memory_order_release);
+    }
+
+    // --- Phase 5a: filter-slot parameter mapping ---------------------------
+
+    namespace
+    {
+        /// The plain value a slot value (0..1) maps to: linear over the
+        /// parameter's range, rounded for stepped, enum and bypass ones.
+        double slotPlain(float slotValue, const SlotMapping &m) noexcept
+        {
+            const double v =
+                std::min(std::max(static_cast<double>(slotValue), 0.0), 1.0);
+            if (!(m.max > m.min))
+                return m.min;
+            double plain = m.min + v * (m.max - m.min);
+            if ((m.flags & (CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM |
+                            CLAP_PARAM_IS_BYPASS)) != 0)
+                plain = std::min(std::max(std::round(plain), m.min), m.max);
+            return plain;
+        }
+    } // namespace
+
+    void ClapInstance::writeSlotLocked(unsigned slot,
+                                       const SlotMapping &mapping) noexcept
+    {
+        SlotCell &cell = mSlotCells[slot];
+        const uint32_t seq = cell.seq.load(std::memory_order_relaxed);
+        cell.seq.store(seq + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        cell.id.store(mapping.id, std::memory_order_relaxed);
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+        if (auto hook = gSlotWriteHook.load(std::memory_order_acquire))
+            hook();
+#endif
+        cell.cookie.store(mapping.cookie, std::memory_order_relaxed);
+        cell.min.store(mapping.min, std::memory_order_relaxed);
+        cell.max.store(mapping.max, std::memory_order_relaxed);
+        cell.flags.store(mapping.flags, std::memory_order_relaxed);
+        cell.generation.store(mapping.generation, std::memory_order_relaxed);
+        cell.version.store(mapping.version, std::memory_order_relaxed);
+        cell.baseline.store(mapping.baseline, std::memory_order_relaxed);
+        cell.seq.store(seq + 2, std::memory_order_release);
+        const uint32_t bit = 1u << slot;
+        if (mapping.id != CLAP_INVALID_ID)
+            mSlotMappedBits.fetch_or(bit, std::memory_order_acq_rel);
+        else
+            mSlotMappedBits.fetch_and(~bit, std::memory_order_acq_rel);
+    }
+
+    bool ClapInstance::readSlotDsp(unsigned slot,
+                                   SlotMapping &out) const noexcept
+    {
+        const SlotCell &cell = mSlotCells[slot];
+        const uint32_t before = cell.seq.load(std::memory_order_acquire);
+        if ((before & 1u) != 0)
+            return false;
+        out.id = cell.id.load(std::memory_order_relaxed);
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+        if (auto hook = gSlotReadHook.load(std::memory_order_acquire))
+            hook();
+#endif
+        out.cookie = cell.cookie.load(std::memory_order_relaxed);
+        out.min = cell.min.load(std::memory_order_relaxed);
+        out.max = cell.max.load(std::memory_order_relaxed);
+        out.flags = cell.flags.load(std::memory_order_relaxed);
+        out.generation = cell.generation.load(std::memory_order_relaxed);
+        out.version = cell.version.load(std::memory_order_relaxed);
+        out.baseline = cell.baseline.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return cell.seq.load(std::memory_order_relaxed) == before;
+    }
+
+    SlotMapping ClapInstance::slotMapping(unsigned slot) const
+    {
+        SlotMapping m;
+        if (slot == 0 || slot >= kMaxSlotParams)
+            return m;
+        GuardedLock lock(mSlotMapMutex);
+        const SlotCell &cell = mSlotCells[slot];
+        m.id = cell.id.load(std::memory_order_relaxed);
+        m.cookie = cell.cookie.load(std::memory_order_relaxed);
+        m.min = cell.min.load(std::memory_order_relaxed);
+        m.max = cell.max.load(std::memory_order_relaxed);
+        m.flags = cell.flags.load(std::memory_order_relaxed);
+        m.generation = cell.generation.load(std::memory_order_relaxed);
+        m.version = cell.version.load(std::memory_order_relaxed);
+        m.baseline = cell.baseline.load(std::memory_order_relaxed);
+        return m;
+    }
+
+    PlayerErrors ClapInstance::mapSlotParameter(unsigned slot, clap_id id,
+                                                float baseline)
+    {
+        if (slot == 0 || slot >= kMaxSlotParams || id == CLAP_INVALID_ID)
+            return PlayerErrors::invalidParameter;
+        GuardedLock lock(mSlotMapMutex);
+        std::shared_ptr<const ParamCache> cache;
+        {
+            GuardedLock paramsLock(mParamsMutex);
+            cache = mParamsCache;
+        }
+        if (cache->pending)
+            return PlayerErrors::unknownError;
+        const ParamEntry *entry = cache->find(id);
+        if (entry == nullptr || (entry->flags & CLAP_PARAM_IS_READONLY) != 0)
+            return PlayerErrors::invalidParameter;
+        SlotMapping m;
+        m.id = id;
+        m.cookie = entry->cookie;
+        m.min = entry->min;
+        m.max = entry->max;
+        m.flags = entry->flags;
+        m.generation = cache->generation;
+        m.baseline = std::isfinite(baseline)
+                         ? baseline
+                         : std::numeric_limits<float>::quiet_NaN();
+        if (++mSlotVersionCounter == 0)
+            ++mSlotVersionCounter;
+        m.version = mSlotVersionCounter;
+        writeSlotLocked(slot, m);
+        return PlayerErrors::noError;
+    }
+
+    PlayerErrors ClapInstance::unmapSlotParameter(unsigned slot)
+    {
+        if (slot == 0 || slot >= kMaxSlotParams)
+            return PlayerErrors::invalidParameter;
+        GuardedLock lock(mSlotMapMutex);
+        SlotMapping m;
+        if (++mSlotVersionCounter == 0)
+            ++mSlotVersionCounter;
+        m.version = mSlotVersionCounter;
+        writeSlotLocked(slot, m);
+        return PlayerErrors::noError;
+    }
+
+    void ClapInstance::resolveSlotMappings()
+    {
+        GuardedLock lock(mSlotMapMutex);
+        if (mSlotMappedBits.load(std::memory_order_acquire) == 0)
+            return;
+        std::shared_ptr<const ParamCache> cache;
+        {
+            GuardedLock paramsLock(mParamsMutex);
+            cache = mParamsCache;
+        }
+        // A newer rescan(ALL) made the list pending again: its rebuild
+        // resolves; until then the stale generation keeps DSP out.
+        if (cache->pending)
+            return;
+        for (unsigned slot = 1; slot < kMaxSlotParams; ++slot)
+        {
+            const SlotCell &cell = mSlotCells[slot];
+            const clap_id id = cell.id.load(std::memory_order_relaxed);
+            if (id == CLAP_INVALID_ID)
+                continue;
+            SlotMapping m;
+            m.version = cell.version.load(std::memory_order_relaxed);
+            const ParamEntry *entry = cache->find(id);
+            if (entry == nullptr ||
+                (entry->flags & CLAP_PARAM_IS_READONLY) != 0)
+            {
+                // Gone: the slot is unmapped (a new version).
+                if (++mSlotVersionCounter == 0)
+                    ++mSlotVersionCounter;
+                m.version = mSlotVersionCounter;
+                writeSlotLocked(slot, m);
+                continue;
+            }
+            m.id = id;
+            m.cookie = entry->cookie;
+            m.min = entry->min;
+            m.max = entry->max;
+            m.flags = entry->flags;
+            m.generation = cache->generation;
+            m.baseline = cell.baseline.load(std::memory_order_relaxed);
+            if (m.cookie == cell.cookie.load(std::memory_order_relaxed) &&
+                m.min == cell.min.load(std::memory_order_relaxed) &&
+                m.max == cell.max.load(std::memory_order_relaxed) &&
+                m.flags == cell.flags.load(std::memory_order_relaxed) &&
+                m.generation ==
+                    cell.generation.load(std::memory_order_relaxed))
+                continue;
+            writeSlotLocked(slot, m);
+        }
+    }
+
+    void ClapInstance::pushSlotEventsDsp(const float *slotParams,
+                                         unsigned slotParamCount,
+                                         uint64_t slotChangedMask) noexcept
+    {
+        const uint32_t bits = mSlotMappedBits.load(std::memory_order_acquire);
+        if (bits == 0)
+            return;
+        const uint64_t generation =
+            mParamsGeneration.load(std::memory_order_acquire);
+        const unsigned count = std::min(slotParamCount, kMaxSlotParams);
+        for (unsigned slot = 1; slot < count; ++slot)
+        {
+            if ((bits & (1u << slot)) == 0)
+                continue;
+            SlotMapping m;
+            if (!readSlotDsp(slot, m) || m.id == CLAP_INVALID_ID)
+                continue;
+            const float value = slotParams[slot];
+            if (!std::isfinite(value))
+                continue;
+            // Mapped against an older list: wait for the re-resolve, leaving
+            // the arming and dedupe state alone (its range may change).
+            if (m.generation != generation)
+                continue;
+            const double plain = slotPlain(value, m);
+            if (mSlotArmedVersion[slot] != m.version)
+            {
+                // A new mapping. With a baseline, the value it was made
+                // against counts as sent: a different one goes out once, even
+                // when the blocks (and changed bits) in between were skipped.
+                // Without one, the standing value is not sent (the plugin
+                // keeps its own) unless it changed since the last block.
+                mSlotArmedVersion[slot] = m.version;
+                mSlotHasLast[slot] = false;
+                mSlotUnsentValue[slot] = std::numeric_limits<float>::quiet_NaN();
+                if (std::isfinite(m.baseline))
+                    mSlotUnsentValue[slot] = m.baseline;
+                else if ((slotChangedMask & (1ull << slot)) == 0)
+                    mSlotUnsentValue[slot] = value;
+            }
+            if (std::isfinite(mSlotUnsentValue[slot]))
+            {
+                // Nothing sent yet: compared as slot values under the
+                // current mapping.
+                if (plain == slotPlain(mSlotUnsentValue[slot], m))
+                    continue;
+            }
+            else if (mSlotHasLast[slot] && plain == mSlotLastPlain[slot])
+            {
+                continue;
+            }
+            clap_event_param_value_t event{};
+            event.header.size = sizeof(event);
+            event.header.time = 0;
+            event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+            event.header.type = CLAP_EVENT_PARAM_VALUE;
+            event.header.flags = 0;
+            event.param_id = m.id;
+            event.cookie = m.cookie;
+            event.note_id = -1;
+            event.port_index = -1;
+            event.channel = -1;
+            event.key = -1;
+            event.value = plain;
+            if (!mInputEvents.tryPush(&event.header))
+                continue; // Full: retried next block; later slots still arm.
+            mSlotLastPlain[slot] = plain;
+            mSlotHasLast[slot] = true;
+            mSlotUnsentValue[slot] = std::numeric_limits<float>::quiet_NaN();
+        }
     }
 
     void ClapInstance::stallRecord() noexcept

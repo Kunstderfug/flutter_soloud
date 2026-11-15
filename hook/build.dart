@@ -118,9 +118,25 @@ void main(List<String> args) async {
     }
 
     final isDesktop = os == OS.macOS || os == OS.windows || os == OS.linux;
+    // `enable_vst3` accepts a bool, or platform names (`macos`, `windows`,
+    // `linux`) as a list or comma-separated string, so an app can opt in on
+    // one desktop platform without changing its other desktop builds.
+    bool? parseVst3Platforms(Object? val) {
+      final names = switch (val) {
+        final List<Object?> list => list.map((e) => '$e'),
+        final String s when s.contains(',') || parseBool(s) == null =>
+          s.split(','),
+        _ => null,
+      };
+      if (names == null) return null;
+      return names.map((n) => n.trim().toLowerCase()).contains(os.name);
+    }
+
+    final vst3Define = input.userDefines['enable_vst3'];
     final enableVst3 =
         isDesktop &&
-        (parseBool(input.userDefines['enable_vst3']) ??
+        (parseBool(vst3Define) ??
+            parseVst3Platforms(vst3Define) ??
             parseBool(Platform.environment['SOLOUD_ENABLE_VST3']) ??
             false);
     final vst3 = enableVst3

@@ -2,6 +2,8 @@
 
 #include "clap_instance.h"
 
+#include "clap_editor.h"
+
 #include <pthread.h>
 
 #include <algorithm>
@@ -11,6 +13,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+
+#if defined(SOLOUD_ENABLE_PLUGIN_UI) && defined(__APPLE__)
+#define SOLOUD_CLAP_GUI 1
+#else
+namespace soloud_clap
+{
+    /// No plugin UI in this build: the gui extension is not offered.
+    class ClapEditor
+    {
+    };
+} // namespace soloud_clap
+#endif
 
 namespace soloud_clap
 {
@@ -800,7 +814,17 @@ namespace soloud_clap
             return &kTimer;
         if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0)
             return &kAudioPorts;
-        // gui is Phase 4b.
+#ifdef SOLOUD_CLAP_GUI
+        static const clap_host_gui_t kGui = {
+            &ClapInstance::hostGuiResizeHintsChanged,
+            &ClapInstance::hostGuiRequestResize,
+            &ClapInstance::hostGuiRequestShow,
+            &ClapInstance::hostGuiRequestHide,
+            &ClapInstance::hostGuiClosed,
+        };
+        if (std::strcmp(id, CLAP_EXT_GUI) == 0)
+            return &kGui;
+#endif
         return nullptr;
     }
 
@@ -940,6 +964,206 @@ namespace soloud_clap
                 logMisbehaving("incomplete latency extension");
         }
         resolveTimerExtension();
+        cacheGuiExtension();
+    }
+
+    // --- Phase 4b: gui -------------------------------------------------------
+
+    void ClapInstance::cacheGuiExtension()
+    {
+#ifdef SOLOUD_CLAP_GUI
+        checkPluginCall();
+        const auto *gui = static_cast<const clap_plugin_gui_t *>(
+            mPlugin->get_extension(mPlugin, CLAP_EXT_GUI));
+        if (gui == nullptr)
+            return;
+        if (gui->is_api_supported == nullptr || gui->create == nullptr ||
+            gui->destroy == nullptr || gui->show == nullptr ||
+            gui->hide == nullptr)
+        {
+            logMisbehaving("incomplete gui extension");
+            return;
+        }
+        const bool embeddedCalls = gui->get_size != nullptr &&
+                                   gui->can_resize != nullptr &&
+                                   gui->set_size != nullptr &&
+                                   gui->set_parent != nullptr;
+        const bool floatingCalls =
+            gui->set_transient != nullptr && gui->suggest_title != nullptr;
+        checkPluginCall();
+        bool embedded = gui->is_api_supported(mPlugin, CLAP_WINDOW_API_COCOA, false);
+        checkPluginCall();
+        bool floating = gui->is_api_supported(mPlugin, CLAP_WINDOW_API_COCOA, true);
+        if ((embedded && !embeddedCalls) || (floating && !floatingCalls))
+            logMisbehaving("incomplete gui extension");
+        embedded = embedded && embeddedCalls;
+        floating = floating && floatingCalls;
+        if (!embedded && !floating)
+            return;
+        mPluginGui = gui;
+        mGuiEmbedded = embedded;
+        mGuiFloating = floating;
+        mHasEditor.store(true, std::memory_order_release);
+#endif
+    }
+
+    bool ClapInstance::guiCallable() const noexcept
+    {
+        const Lifecycle l = lifecycle();
+        return mPlugin != nullptr &&
+               (l == Lifecycle::inited || l == Lifecycle::activated) &&
+               !mTearingDown;
+    }
+
+    void ClapInstance::postGuiRequest(uint32_t bits) noexcept
+    {
+        mGuiRequests.fetch_or(bits, std::memory_order_acq_rel);
+    }
+
+    void ClapInstance::storeNewestGuiResize(uint64_t packed) noexcept
+    {
+        // Concurrent requests: the newest wins.
+        uint64_t stored = mGuiRequestedSize.load(std::memory_order_acquire);
+        while (guiResizeNewer(guiResizeSerial(packed), guiResizeSerial(stored)) &&
+               !mGuiRequestedSize.compare_exchange_weak(
+                   stored, packed, std::memory_order_acq_rel,
+                   std::memory_order_acquire))
+        {
+        }
+    }
+
+    PlayerErrors ClapInstance::openEditor(const std::string &title)
+    {
+#ifdef SOLOUD_CLAP_GUI
+        if (mPluginGui == nullptr || !callable())
+            return invalidParameter;
+        if (!mEditor)
+            mEditor = std::make_unique<ClapEditor>(*this, mPluginGui,
+                                                   mGuiEmbedded, mGuiFloating);
+        const bool opened = mEditor->open(title);
+        afterPluginCall();
+        return opened ? noError : unknownError;
+#else
+        (void)title;
+        return invalidParameter;
+#endif
+    }
+
+    PlayerErrors ClapInstance::closeEditor()
+    {
+#ifdef SOLOUD_CLAP_GUI
+        if (mPluginGui == nullptr)
+            return invalidParameter;
+        if (mEditor)
+        {
+            mEditor->close();
+            afterPluginCall();
+        }
+#endif
+        return noError;
+    }
+
+    void ClapInstance::serviceEditor()
+    {
+        const uint32_t bits = mGuiRequests.exchange(0, std::memory_order_acq_rel);
+#ifdef SOLOUD_CLAP_GUI
+        const uint64_t resize =
+            mGuiRequestedSize.load(std::memory_order_acquire);
+        if (bits == 0 || !mEditor || !guiCallable())
+            return;
+        mEditor->service(bits, resize);
+        afterPluginCall();
+#else
+        (void)bits;
+#endif
+    }
+
+    void ClapInstance::destroyEditor()
+    {
+#ifdef SOLOUD_CLAP_GUI
+        if (mEditor)
+        {
+            mEditor->close();
+            mEditor.reset();
+        }
+#endif
+        mGuiRequests.store(0, std::memory_order_release);
+        mEditorVisible.store(false, std::memory_order_release);
+        mEditorCreated.store(false, std::memory_order_release);
+    }
+
+    // Thread-safe gui callbacks: posted for the pump, except a request_resize
+    // on main, which is answered now (plan Phase 4b).
+
+    void CLAP_ABI ClapInstance::hostGuiResizeHintsChanged(const clap_host_t *host)
+    {
+        if (ClapInstance *self = from(host))
+            self->postGuiRequest(kGuiRequestHints);
+    }
+
+    bool CLAP_ABI ClapInstance::hostGuiRequestResize(const clap_host_t *host,
+                                                     uint32_t width,
+                                                     uint32_t height)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr || !self->hasEditor() ||
+            !self->mEditorCreated.load(std::memory_order_acquire))
+            return false;
+        // One order for every request, on any thread: a queued request older
+        // than one applied on main is dropped (it is superseded, so the
+        // plugin already knows the newer size).
+        const uint32_t serial =
+            self->mGuiResizeSerial.fetch_add(1, std::memory_order_acq_rel) + 1;
+        const uint64_t packed = packGuiResize(serial, width, height);
+#ifdef SOLOUD_CLAP_GUI
+        if (pthread_main_np() != 0 && !self->isAudioThread())
+        {
+            if (!self->mEditor ||
+                !self->mEditor->requestResizeOnMain(width, height, serial))
+                return false;
+            // Keeps the stored serial recent, so the wrap-safe comparison
+            // holds however many requests come on main.
+            self->storeNewestGuiResize(packed);
+            return true;
+        }
+#endif
+        self->storeNewestGuiResize(packed);
+        self->postGuiRequest(kGuiRequestResize);
+        return true; // Acknowledged: applied or reverted by the pump.
+    }
+
+    bool CLAP_ABI ClapInstance::hostGuiRequestShow(const clap_host_t *host)
+    {
+        // Only a gui the host created can be shown: the plugin cannot open
+        // the editor itself (a close racing this request still wins).
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mEditorCreated.load(std::memory_order_acquire))
+            return false;
+        self->mGuiRequests.fetch_and(~static_cast<uint32_t>(kGuiRequestHide),
+                                     std::memory_order_acq_rel);
+        self->postGuiRequest(kGuiRequestShow);
+        return true;
+    }
+
+    bool CLAP_ABI ClapInstance::hostGuiRequestHide(const clap_host_t *host)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mEditorCreated.load(std::memory_order_acquire))
+            return false;
+        self->mGuiRequests.fetch_and(~static_cast<uint32_t>(kGuiRequestShow),
+                                     std::memory_order_acq_rel);
+        self->postGuiRequest(kGuiRequestHide);
+        return true;
+    }
+
+    void CLAP_ABI ClapInstance::hostGuiClosed(const clap_host_t *host,
+                                              bool wasDestroyed)
+    {
+        if (ClapInstance *self = from(host))
+            self->postGuiRequest(kGuiRequestClosed |
+                                 (wasDestroyed ? kGuiRequestDestroyed : 0u));
     }
 
     // --- Phase 3: parameter cache ------------------------------------------
@@ -1686,7 +1910,7 @@ namespace soloud_clap
             // Notifications phase, in R11 order.
             static constexpr uint32_t kOrder[] = {
                 kNotifyRestartFailed, kNotifyRestarted, kNotifyLatencyChanged,
-                kNotifyParamsRescan, kNotifyStateDirty};
+                kNotifyParamsRescan, kNotifyStateDirty, kNotifyEditorClosed};
             for (const uint32_t bit : kOrder)
             {
                 if ((mNotifyPending & bit) == 0)
@@ -1714,6 +1938,9 @@ namespace soloud_clap
                 case kNotifyParamsRescan:
                     emit(HostEventType::paramsRescan, 0, 0, mRescanPending);
                     mRescanPending = 0;
+                    break;
+                case kNotifyEditorClosed:
+                    emit(HostEventType::editorClosed, 0, 0, 0);
                     break;
                 default:
                     emit(HostEventType::stateDirty, 0, 0, 0);

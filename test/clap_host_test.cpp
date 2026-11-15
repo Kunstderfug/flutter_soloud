@@ -9,6 +9,7 @@
 // the engine's soloud_pluginAudioThreadBarrier defined here.
 #include "../src/bindings.h"
 #include "../src/clap/clap_host.h"
+#include "clap_fake_window.h"
 #include "clap_mock_api.h"
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -397,6 +398,10 @@ namespace
         test::setRescanAfterPendingHook(nullptr);
         mgr().setAudioThreadBarrier(&testBarrier, nullptr);
         mgr().unloadAll();
+        // A closed editor never leaves its window up (plan Phase 4b).
+        CHECK(!fakeWindow().open);
+        CHECK(gMock.state->guiLive.load() == 0);
+        resetFakeWindow();
         const bool drained = pumpUntil([] {
             return mgr().liveInstanceCount() == 0 &&
                    mgr().retiredBatchCount() == 0 && !mgr().pumpRunning();
@@ -2010,9 +2015,9 @@ namespace
         const clap_host_t *host = instance->host();
         for (const char *id :
              {CLAP_EXT_THREAD_CHECK, CLAP_EXT_LOG, CLAP_EXT_PARAMS, CLAP_EXT_STATE,
-              CLAP_EXT_LATENCY, CLAP_EXT_TIMER_SUPPORT, CLAP_EXT_AUDIO_PORTS})
+              CLAP_EXT_LATENCY, CLAP_EXT_TIMER_SUPPORT, CLAP_EXT_AUDIO_PORTS,
+              CLAP_EXT_GUI}) // gui: this harness builds with the plugin UI.
             CHECK(host->get_extension(host, id) != nullptr);
-        CHECK(host->get_extension(host, CLAP_EXT_GUI) == nullptr);
         CHECK(host->get_extension(host, "com.example.unknown") == nullptr);
         CHECK(host->get_extension(host, nullptr) == nullptr);
         CHECK(instance->hasParamsExtension());
@@ -3925,6 +3930,750 @@ namespace
         CHECK(mgr().unloadPlugin(h) == noError);
     }
 
+    // =========================================================================
+    // Phase 4b: the plugin gui
+    // =========================================================================
+
+    constexpr int kEvEditorClosed = static_cast<int>(HostEventType::editorClosed);
+
+    const clap_host_gui_t *hostGui(const clap_host_t *host)
+    {
+        return static_cast<const clap_host_gui_t *>(
+            host->get_extension(host, CLAP_EXT_GUI));
+    }
+
+    /// The position of the first "<event>:" in [id]'s log, or -1.
+    int eventIndex(const std::string &id, const std::string &event)
+    {
+        const std::vector<std::string> evs = events(id);
+        for (size_t i = 0; i < evs.size(); ++i)
+            if (evs[i].compare(0, event.size() + 1, event + ":") == 0)
+                return static_cast<int>(i);
+        return -1;
+    }
+
+    /// The position of the last "<event>:" in [id]'s log, or -1.
+    int lastEventIndex(const std::string &id, const std::string &event)
+    {
+        const std::vector<std::string> evs = events(id);
+        for (size_t i = evs.size(); i-- > 0;)
+            if (evs[i].compare(0, event.size() + 1, event + ":") == 0)
+                return static_cast<int>(i);
+        return -1;
+    }
+
+    bool windowSize(int width, int height)
+    {
+        return fakeWindow().current.width == width &&
+               fakeWindow().current.height == height &&
+               fakeWindow().base.width == width &&
+               fakeWindow().base.height == height;
+    }
+
+    bool unloadAndWait(int h)
+    {
+        if (mgr().unloadPlugin(h) != noError)
+            return false;
+        return pumpUntil([] { return gMock.state->liveInstances.load() == 0; });
+    }
+
+    // Embedded open, close, reopen; no editorClosed for host closes.
+    void testGuiOpenClose()
+    {
+        const int plain = load("mock.stereo");
+        REQUIRE(plain > 0);
+        CHECK(!mgr().hasEditor(plain));
+        CHECK(mgr().openEditor(plain, "No gui") == invalidParameter);
+        CHECK(mgr().closeEditor(plain) == invalidParameter);
+        CHECK(!mgr().isEditorOpen(plain));
+        CHECK(unloadAndWait(plain));
+        gMock.reset();
+        gMock.setHook(&hookTrampoline);
+
+        gMock.state->guiApis = 1;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        CHECK(hostGui(instance->host()) != nullptr);
+        CHECK(mgr().hasEditor(h));
+        CHECK(!mgr().isEditorOpen(h));
+        CHECK(mgr().closeEditor(h) == noError); // Nothing open: a no-op.
+        CHECK(gMock.state->guiCreates.load() == 0);
+
+        REQUIRE(mgr().openEditor(h, "Mock EQ") == noError);
+        CHECK(mgr().isEditorOpen(h));
+        CHECK(gMock.state->guiLive.load() == 1);
+        CHECK(gMock.state->guiShown.load() == 1);
+        CHECK(fakeWindow().open && fakeWindow().visible);
+        CHECK(fakeWindow().title == "Mock EQ");
+        CHECK(fakeWindow().mode == SoLoud::PluginWindowResize::Native);
+        CHECK(windowSize(400, 300));
+        CHECK(fakeWindow().hasLimits);
+        const int create = eventIndex("mock.ext", "gui_create");
+        const int canResize = eventIndex("mock.ext", "gui_can_resize");
+        const int getSize = eventIndex("mock.ext", "gui_get_size");
+        const int parent = eventIndex("mock.ext", "gui_set_parent");
+        const int show = eventIndex("mock.ext", "gui_show");
+        CHECK(create >= 0 && create < canResize && canResize < getSize &&
+              getSize < parent && parent < show);
+        CHECK(countEvent("mock.ext", "gui_set_transient") == 0);
+        CHECK(countEvent("mock.ext", "gui_suggest_title") == 0);
+
+        // Opening an open editor brings it to the front: no second create.
+        const int shows = fakeWindow().shows;
+        CHECK(mgr().openEditor(h, "Mock EQ") == noError);
+        CHECK(gMock.state->guiCreates.load() == 1);
+        CHECK(fakeWindow().shows == shows + 1);
+
+        CHECK(mgr().closeEditor(h) == noError);
+        CHECK(!mgr().isEditorOpen(h));
+        CHECK(gMock.state->guiLive.load() == 0);
+        CHECK(countEvent("mock.ext", "gui_hide") == 1);
+        CHECK(eventIndex("mock.ext", "gui_hide") <
+              eventIndex("mock.ext", "gui_destroy"));
+        CHECK(!fakeWindow().open);
+        CHECK(fakeWindow().listenerDetached);
+        pumpFor(0.05);
+        CHECK(countType(drainAll(h), kEvEditorClosed) == 0);
+
+        // Reopen: a new gui in a new window.
+        CHECK(mgr().openEditor(h, "Again") == noError);
+        CHECK(gMock.state->guiCreates.load() == 2);
+        CHECK(fakeWindow().open && fakeWindow().opens == 2);
+        CHECK(fakeWindow().title == "Again");
+        CHECK(mgr().closeEditor(h) == noError);
+
+        // Not resizable: a fixed window and no hints.
+        gMock.state->guiCanResize = 0;
+        const int limitsCalls = fakeWindow().setNativeLimitsCalls;
+        CHECK(mgr().openEditor(h, "Fixed") == noError);
+        CHECK(fakeWindow().mode == SoLoud::PluginWindowResize::Fixed);
+        CHECK(fakeWindow().setNativeLimitsCalls == limitsCalls);
+        CHECK(!fakeUserResize({500, 500}));
+        CHECK(gMock.state->guiSetSizes.load() == 0);
+        CHECK(mgr().closeEditor(h) == noError);
+        CHECK(unloadAndWait(h));
+        CHECK(!mgr().hasEditor(h) && !mgr().isEditorOpen(h));
+        CHECK(mgr().openEditor(h, "Gone") == invalidParameter);
+    }
+
+    // request_hide / request_show from the plugin; no editorClosed.
+    void testGuiHideShow()
+    {
+        gMock.state->guiApis = 1;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        const clap_host_t *host = mgr().getInstance(h)->host();
+        const clap_host_gui_t *gui = hostGui(host);
+        REQUIRE(gui != nullptr);
+        // Only a gui the host created can be shown or hidden.
+        CHECK(!gui->request_show(host));
+        CHECK(!gui->request_hide(host));
+        pumpFor(0.03);
+        CHECK(gMock.state->guiCreates.load() == 0 && !fakeWindow().open);
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+
+        bool hideAccepted = false;
+        onWorker([&] { hideAccepted = gui->request_hide(host); });
+        CHECK(hideAccepted);
+        CHECK(pumpUntil([&] { return !mgr().isEditorOpen(h); }));
+        CHECK(gMock.state->guiShown.load() == 0);
+        CHECK(gMock.state->guiLive.load() == 1);
+        CHECK(fakeWindow().open && !fakeWindow().visible);
+
+        CHECK(gui->request_show(host));
+        CHECK(pumpUntil([&] { return mgr().isEditorOpen(h); }));
+        CHECK(gMock.state->guiShown.load() == 1);
+        CHECK(fakeWindow().visible);
+        CHECK(gMock.state->guiCreates.load() == 1);
+
+        // Hide then show before the pump: the later one wins.
+        CHECK(gui->request_hide(host));
+        CHECK(gui->request_show(host));
+        pumpFor(0.05);
+        CHECK(mgr().isEditorOpen(h) && fakeWindow().visible);
+        CHECK(countEvent("mock.ext", "gui_hide") == 1);
+
+        // The host reopens a hidden editor by showing it.
+        CHECK(gui->request_hide(host));
+        CHECK(pumpUntil([&] { return !mgr().isEditorOpen(h); }));
+        CHECK(mgr().openEditor(h, "Mock") == noError);
+        CHECK(mgr().isEditorOpen(h) && fakeWindow().visible);
+        CHECK(gMock.state->guiCreates.load() == 1);
+
+        pumpFor(0.05);
+        CHECK(countType(drainAll(h), kEvEditorClosed) == 0);
+        // After a host close or a user close: rejected, nothing reopens.
+        CHECK(mgr().closeEditor(h) == noError);
+        CHECK(!gui->request_show(host));
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        REQUIRE(fakeUserClose());
+        CHECK(!gui->request_show(host) && !gui->request_hide(host));
+        pumpFor(0.03);
+        CHECK(!mgr().isEditorOpen(h) && !fakeWindow().open);
+        CHECK(gMock.state->guiLive.load() == 0);
+        drainAll(h);
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        // Unloading a hidden editor still destroys the gui.
+        CHECK(gui->request_hide(host));
+        CHECK(pumpUntil([&] { return !mgr().isEditorOpen(h); }));
+        CHECK(unloadAndWait(h));
+        CHECK(gMock.state->guiDestroys.load() == 3);
+    }
+
+    // User resizes: set_size, a rejected size reverts, hints and adjust_size.
+    void testGuiUserResize()
+    {
+        gMock.state->guiApis = 1;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        const clap_host_t *host = mgr().getInstance(h)->host();
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        // No hints: the default limits.
+        CHECK(fakeWindow().limits.minSize.width == 100);
+        CHECK(fakeWindow().limits.maxSize.width == 16384);
+        CHECK(fakeWindow().limits.resizeHorizontally &&
+              fakeWindow().limits.resizeVertically);
+        CHECK(fakeWindow().limits.aspectWidth == 0);
+
+        REQUIRE(fakeUserResize({500, 400}));
+        CHECK(gMock.state->guiSetSizes.load() == 1);
+        CHECK(gMock.state->guiCurrentWidth.load() == 500 &&
+              gMock.state->guiCurrentHeight.load() == 400);
+        // The accepted size is the window's base from now on.
+        CHECK(windowSize(500, 400));
+        CHECK(fakeWindow().acceptedUserSizes == 1);
+        CHECK(countEvent("mock.ext", "gui_size") == 1);
+
+        // The same size again: no call.
+        REQUIRE(fakeUserResize({500, 400}));
+        CHECK(gMock.state->guiSetSizes.load() == 1);
+
+        // Rejected: the window goes back to the agreed size.
+        gMock.state->guiRejectSetSize = 1;
+        REQUIRE(fakeUserResize({640, 480}));
+        CHECK(gMock.state->guiSetSizes.load() == 2);
+        CHECK(windowSize(500, 400));
+        gMock.state->guiRejectSetSize = 0;
+
+        // Hints: the vertical axis locked, with an aspect ratio that only
+        // applies while both axes are free (the window handles that).
+        gMock.state->guiHints = 1;
+        gMock.state->guiHintVertical = 0;
+        gMock.state->guiHintAspectWidth = 16;
+        gMock.state->guiHintAspectHeight = 9;
+        hostGui(host)->resize_hints_changed(host);
+        CHECK(pumpUntil([] { return !fakeWindow().limits.resizeVertically; }));
+        CHECK(fakeWindow().limits.resizeHorizontally);
+        CHECK(fakeWindow().limits.aspectWidth == 16 &&
+              fakeWindow().limits.aspectHeight == 9);
+        // AppKit gets the locked height the plugin has (not the 300 at
+        // open).
+        CHECK(fakeContentLimits().minSize.height == 400 &&
+              fakeContentLimits().maxSize.height == 400);
+        CHECK(fakeContentLimits().minSize.width == 100);
+        REQUIRE(fakeUserResize({700, 999}));
+        CHECK(gMock.state->guiCurrentWidth.load() == 700 &&
+              gMock.state->guiCurrentHeight.load() == 400);
+        CHECK(fakeWindow().current.height == 400);
+
+        // adjust_size snaps the drag.
+        gMock.state->guiHintVertical = 1;
+        gMock.state->guiHintAspectWidth = 0;
+        gMock.state->guiHintAspectHeight = 0;
+        gMock.state->guiAdjustStep = 64;
+        hostGui(host)->resize_hints_changed(host);
+        CHECK(pumpUntil([] { return fakeWindow().limits.resizeVertically; }));
+        CHECK(fakeWindow().limits.aspectWidth == 0);
+        REQUIRE(fakeUserResize({650, 500}));
+        CHECK(gMock.state->guiCurrentWidth.load() == 640 &&
+              gMock.state->guiCurrentHeight.load() == 448);
+        CHECK(windowSize(640, 448));
+
+        // Hints withdrawn (get_resize_hints false): the defaults again.
+        gMock.state->guiHints = 0;
+        hostGui(host)->resize_hints_changed(host);
+        CHECK(pumpUntil([] { return fakeWindow().limits.resizeVertically &&
+                                    fakeWindow().limits.aspectWidth == 0; }));
+        CHECK(countEvent("mock.ext", "gui_set_scale") == 0);
+        CHECK(mgr().closeEditor(h) == noError);
+        CHECK(unloadAndWait(h));
+    }
+
+    // Plugin-initiated sizes: on main now, off main through the pump, never
+    // answered with set_size; recursion through set_size.
+    void testGuiRequestResize()
+    {
+        gMock.state->guiApis = 1;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        const clap_host_t *host = mgr().getInstance(h)->host();
+        const clap_host_gui_t *gui = hostGui(host);
+        REQUIRE(gui != nullptr);
+        // No editor yet.
+        CHECK(!gui->request_resize(host, 320, 240));
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+
+        CHECK(gui->request_resize(host, 320, 240));
+        CHECK(windowSize(320, 240));
+        CHECK(!gui->request_resize(host, 0, 240));
+        CHECK(!gui->request_resize(host, 320, 20000));
+        CHECK(windowSize(320, 240));
+
+        bool accepted = false;
+        onWorker([&] { accepted = gui->request_resize(host, 350, 260); });
+        CHECK(accepted);
+        CHECK(pumpUntil([] { return windowSize(350, 260); }));
+        CHECK(gMock.state->guiSetSizes.load() == 0);
+
+        // A queued request older than one applied on main is superseded.
+        onWorker([&] { accepted = gui->request_resize(host, 360, 270); });
+        CHECK(accepted);
+        CHECK(gui->request_resize(host, 380, 290));
+        CHECK(windowSize(380, 290));
+        pumpFor(0.05);
+        CHECK(windowSize(380, 290));
+        CHECK(gMock.state->guiSetSizes.load() == 0);
+        // A newer queued one still applies.
+        CHECK(gui->request_resize(host, 390, 300));
+        onWorker([&] { accepted = gui->request_resize(host, 340, 250); });
+        CHECK(accepted);
+        CHECK(pumpUntil([] { return windowSize(340, 250); }));
+        // Concurrent off-main requests: the newest wins.
+        onWorker([&] {
+            (void)gui->request_resize(host, 330, 240);
+            (void)gui->request_resize(host, 350, 260);
+        });
+        CHECK(pumpUntil([] { return windowSize(350, 260); }));
+        pumpFor(0.03);
+        CHECK(windowSize(350, 260));
+        CHECK(gMock.state->guiSetSizes.load() == 0);
+
+        // Acknowledged off main but out of range: the plugin is told the
+        // size the window keeps.
+        onWorker([&] { accepted = gui->request_resize(host, 0, 0); });
+        CHECK(accepted);
+        CHECK(pumpUntil([] { return gMock.state->guiSetSizes.load() == 1; }));
+        CHECK(windowSize(350, 260));
+        CHECK(gMock.state->guiCurrentWidth.load() == 350 &&
+              gMock.state->guiCurrentHeight.load() == 260);
+
+        // The plugin answers set_size with its own size: its size stands
+        // and no further set_size follows.
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "gui_set_size")
+                (void)hostGui(hst)->request_resize(hst, 450, 350);
+        });
+        REQUIRE(fakeUserResize({500, 400}));
+        setHook(nullptr);
+        CHECK(gMock.state->guiSetSizes.load() == 2);
+        CHECK(windowSize(450, 350));
+        pumpFor(0.05);
+        CHECK(gMock.state->guiSetSizes.load() == 2);
+        // The next user resize compares against the plugin's size.
+        REQUIRE(fakeUserResize({450, 350}));
+        CHECK(gMock.state->guiSetSizes.load() == 2);
+
+        // After close, a late off-main request is dropped.
+        CHECK(mgr().closeEditor(h) == noError);
+        onWorker([&] { accepted = gui->request_resize(host, 300, 300); });
+        CHECK(!accepted);
+        pumpFor(0.05);
+        CHECK(!fakeWindow().open);
+        CHECK(gMock.state->guiSetSizes.load() == 2);
+
+        // Serials order requests across the 32-bit wrap, and a new gui
+        // starts after every request made so far.
+        mgr().getInstance(h)->testSetGuiResizeSerial(UINT32_MAX - 1);
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        const uint32_t sizes[][2] = {{300, 200}, {310, 210}, {320, 220}};
+        for (const auto &size : sizes) // Serials UINT32_MAX, 0 and 1.
+        {
+            const uint32_t w = size[0];
+            const uint32_t hgt = size[1];
+            onWorker([&] { accepted = gui->request_resize(host, w, hgt); });
+            CHECK(accepted);
+            CHECK(pumpUntil([&] { return windowSize(w, hgt); }));
+        }
+        CHECK(gui->request_resize(host, 330, 230));
+        onWorker([&] { accepted = gui->request_resize(host, 340, 240); });
+        CHECK(pumpUntil([] { return windowSize(340, 240); }));
+        CHECK(gMock.state->guiSetSizes.load() == 2);
+        CHECK(unloadAndWait(h));
+    }
+
+    // closed(was_destroyed) from the plugin, and the user closing the window.
+    void testGuiClosed()
+    {
+        gMock.state->guiApis = 1;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        const clap_host_gui_t *gui = hostGui(host);
+        REQUIRE(gui != nullptr);
+
+        for (const bool wasDestroyed : {false, true})
+        {
+            REQUIRE(mgr().openEditor(h, "Mock") == noError);
+            drainAll(h);
+            const int destroys = gMock.state->guiDestroys.load();
+            onWorker([&] { gui->closed(host, wasDestroyed); });
+            CHECK(pumpUntil([&] { return gMock.state->guiLive.load() == 0; }));
+            CHECK(gMock.state->guiDestroys.load() == destroys + 1);
+            CHECK(!mgr().isEditorOpen(h));
+            CHECK(!fakeWindow().open);
+            pumpFor(0.03);
+            CHECK(countType(drainAll(h), kEvEditorClosed) == 1);
+        }
+        // A late closed() with nothing open: no event.
+        gui->closed(host, false);
+        pumpFor(0.05);
+        CHECK(countType(drainAll(h), kEvEditorClosed) == 0);
+
+        // The user closes the window: hide, destroy, one editorClosed.
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        const int hides = gMock.state->guiHides.load();
+        REQUIRE(fakeUserClose());
+        CHECK(gMock.state->guiLive.load() == 0);
+        CHECK(gMock.state->guiHides.load() == hides + 1);
+        CHECK(!mgr().isEditorOpen(h));
+        pumpFor(0.03);
+        CHECK(countType(drainAll(h), kEvEditorClosed) == 1);
+
+        // ... while a plugin call is in progress (a nested run loop): the
+        // gui is destroyed on a later tick, still once.
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        drainAll(h);
+        std::atomic<int> closedInside{0};
+        bool parentAliveInside = false;
+        bool showRejectedInside = false;
+        bool parentAliveAtDestroy = false;
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "on_main" && closedInside.load() == 0)
+            {
+                closedInside.store(fakeUserClose() ? 1 : 2);
+                // The window is gone; the view the gui is parented to is not.
+                parentAliveInside = !fakeWindow().open &&
+                                    fakeContentViewAlive() &&
+                                    gMock.state->guiLive.load() == 1;
+                showRejectedInside = !hostGui(hst)->request_show(hst);
+            }
+            if (event == "gui_destroy")
+                parentAliveAtDestroy = fakeContentViewAlive();
+        });
+        host->request_callback(host);
+        CHECK(pumpUntil([&] { return closedInside.load() != 0; }));
+        CHECK(closedInside.load() == 1);
+        CHECK(parentAliveInside);
+        CHECK(showRejectedInside);
+        CHECK(!mgr().isEditorOpen(h));
+        CHECK(pumpUntil([&] { return gMock.state->guiLive.load() == 0; }));
+        setHook(nullptr);
+        CHECK(parentAliveAtDestroy);
+        CHECK(fakeWindow().contentViewRetains == 0);
+        CHECK(!fakeContentViewAlive());
+        CHECK(lastEventIndex("mock.ext", "on_main") <
+              lastEventIndex("mock.ext", "gui_destroy"));
+        pumpFor(0.03);
+        CHECK(countType(drainAll(h), kEvEditorClosed) == 1);
+
+        // The user closes the window from a run loop the host's own hide()
+        // or destroy() spins: the parent still outlives the destroy, and
+        // there is no editorClosed (the host closed it).
+        for (const char *spinning : {"gui_hide", "gui_destroy"})
+        {
+            REQUIRE(mgr().openEditor(h, "Mock") == noError);
+            drainAll(h);
+            const std::string at = spinning;
+            bool closedThere = false;
+            bool aliveAfterClose = false;
+            bool aliveAtDestroy = false;
+            setHook([&](const std::string &event, const clap_host_t *) {
+                if (event == at && !closedThere)
+                {
+                    closedThere = fakeUserClose();
+                    aliveAfterClose = !fakeWindow().open &&
+                                      fakeContentViewAlive();
+                }
+                if (event == "gui_destroy")
+                    aliveAtDestroy = fakeContentViewAlive();
+            });
+            CHECK(mgr().closeEditor(h) == noError);
+            setHook(nullptr);
+            CHECK(closedThere);
+            CHECK(aliveAfterClose);
+            CHECK(aliveAtDestroy);
+            CHECK(gMock.state->guiLive.load() == 0);
+            CHECK(fakeWindow().contentViewRetains == 0);
+            CHECK(!fakeContentViewAlive());
+            CHECK(!mgr().isEditorOpen(h));
+            pumpFor(0.03);
+            CHECK(countType(drainAll(h), kEvEditorClosed) == 0);
+        }
+
+        // The user closes the window while the host opens or reshows the
+        // editor (a run loop set_parent() or show() spins): the open fails,
+        // the close is reported and the pump destroys the gui.
+        for (const char *spinning : {"gui_set_parent", "gui_show", "reshow"})
+        {
+            const std::string at = spinning;
+            if (at == "reshow")
+            {
+                REQUIRE(mgr().openEditor(h, "Mock") == noError);
+                CHECK(gui->request_hide(host));
+                REQUIRE(pumpUntil([&] { return !mgr().isEditorOpen(h); }));
+                REQUIRE(fakeWindow().open);
+            }
+            drainAll(h);
+            bool closedThere = false;
+            setHook([&](const std::string &event, const clap_host_t *) {
+                if ((event == at || (at == "reshow" && event == "gui_show")) &&
+                    !closedThere)
+                    closedThere = fakeUserClose();
+            });
+            CHECK(mgr().openEditor(h, "Mock") != noError);
+            setHook(nullptr);
+            CHECK(closedThere);
+            CHECK(!mgr().isEditorOpen(h));
+            CHECK(!fakeWindow().open);
+            CHECK(pumpUntil([] { return gMock.state->guiLive.load() == 0; }));
+            CHECK(fakeWindow().contentViewRetains == 0);
+            pumpFor(0.03);
+            CHECK(countType(drainAll(h), kEvEditorClosed) == 1);
+        }
+
+        // The application terminates: the gui goes with the window, without
+        // an editorClosed.
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        drainAll(h);
+        REQUIRE(fakeAppTerminate());
+        CHECK(gMock.state->guiLive.load() == 0);
+        CHECK(!fakeWindow().open);
+        CHECK(!mgr().isEditorOpen(h));
+        CHECK(fakeWindow().contentViewRetains == 0);
+        pumpFor(0.03);
+        CHECK(countType(drainAll(h), kEvEditorClosed) == 0);
+
+        // ... during a plugin call: as for a user close then, the gui is
+        // destroyed on a later tick and its parent lives until then.
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        drainAll(h);
+        std::atomic<int> terminatedInside{0};
+        bool deferredInside = false;
+        bool parentAliveAtTermDestroy = false;
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "on_main" && terminatedInside.load() == 0)
+            {
+                terminatedInside.store(fakeAppTerminate() ? 1 : 2);
+                deferredInside = !fakeWindow().open &&
+                                 fakeContentViewAlive() &&
+                                 gMock.state->guiLive.load() == 1 &&
+                                 !hostGui(hst)->request_show(hst) &&
+                                 !hostGui(hst)->request_hide(hst);
+            }
+            if (event == "gui_destroy")
+                parentAliveAtTermDestroy = fakeContentViewAlive();
+        });
+        host->request_callback(host);
+        CHECK(pumpUntil([&] { return terminatedInside.load() != 0; }));
+        CHECK(terminatedInside.load() == 1);
+        CHECK(deferredInside);
+        CHECK(!mgr().isEditorOpen(h));
+        CHECK(pumpUntil([&] { return gMock.state->guiLive.load() == 0; }));
+        setHook(nullptr);
+        CHECK(parentAliveAtTermDestroy);
+        CHECK(fakeWindow().contentViewRetains == 0);
+        CHECK(!fakeContentViewAlive());
+        pumpFor(0.03);
+        CHECK(countType(drainAll(h), kEvEditorClosed) == 0);
+
+        // Reopening after any of these works.
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        CHECK(mgr().isEditorOpen(h) && fakeWindow().open);
+        CHECK(unloadAndWait(h));
+        pumpFor(0.03);
+    }
+
+    // Each failing step leaves nothing behind.
+    void testGuiFailures()
+    {
+        gMock.state->guiApis = 1;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        captureLogs();
+        struct Case
+        {
+            const char *name;
+            std::function<void()> arm;
+            bool windowOpened;
+        };
+        const Case cases[] = {
+            {"create", [] { gMock.state->guiFailCreate = 1; }, false},
+            {"get_size", [] { gMock.state->guiFailGetSize = 1; }, false},
+            {"zero size", [] { gMock.state->guiWidth = 0; }, false},
+            {"window", [] { fakeWindow().failOpen = true; }, false},
+            {"content view", [] { fakeWindow().nullContentView = true; }, true},
+            {"set_parent", [] { gMock.state->guiFailSetParent = 1; }, true},
+            {"show", [] { gMock.state->guiFailShow = 1; }, true},
+        };
+        for (const Case &c : cases)
+        {
+            const int creates = gMock.state->guiCreates.load();
+            const int opens = fakeWindow().opens;
+            c.arm();
+            const PlayerErrors e = mgr().openEditor(h, "Mock");
+            if (e != unknownError)
+                std::fprintf(stderr, "  case %s: %d\n", c.name, static_cast<int>(e));
+            CHECK(e == unknownError);
+            CHECK(gMock.state->guiLive.load() == 0);
+            CHECK(gMock.state->guiDestroys.load() ==
+                  gMock.state->guiCreates.load());
+            CHECK(!fakeWindow().open);
+            CHECK(!mgr().isEditorOpen(h));
+            CHECK(fakeWindow().opens == opens + (c.windowOpened ? 1 : 0));
+            (void)creates;
+            gMock.state->guiWidth = 400;
+            fakeWindow().nullContentView = false;
+            fakeWindow().failOpen = false;
+        }
+        CHECK(sinkCount("get_size") >= 2);
+        CHECK(countEvent("mock.ext", "gui_hide") == 0);
+        // Everything works again afterwards.
+        CHECK(mgr().openEditor(h, "Mock") == noError);
+        CHECK(mgr().isEditorOpen(h) && fakeWindow().open);
+        CHECK(mgr().closeEditor(h) == noError);
+        CHECK(unloadAndWait(h));
+    }
+
+    // The plugin's own window: suggest_title and set_transient, no embedded
+    // calls and no host window; also the fallback from a failed embed.
+    void testGuiFloating()
+    {
+        gMock.state->guiApis = 2;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        CHECK(mgr().hasEditor(h));
+        REQUIRE(mgr().openEditor(h, "Floating") == noError);
+        CHECK(mgr().isEditorOpen(h));
+        CHECK(fakeWindow().creates == 0 && !fakeWindow().open);
+        CHECK(countEvent("mock.ext", "gui_create_floating") == 1);
+        CHECK(countEvent("mock.ext", "gui_title") == 1);
+        bool titled = false;
+        for (const std::string &e : events("mock.ext"))
+            titled = titled || e == "gui_title:Floating";
+        CHECK(titled);
+        CHECK(gMock.state->guiTransients.load() == 1);
+        CHECK(gMock.state->guiTransientNull.load() == 0);
+        CHECK(eventIndex("mock.ext", "gui_set_transient") <
+              eventIndex("mock.ext", "gui_show"));
+        for (const char *embedded :
+             {"gui_get_size", "gui_can_resize", "gui_set_parent", "gui_set_size"})
+            CHECK(countEvent("mock.ext", embedded) == 0);
+        // A plugin-initiated resize of its own window is not ours to apply.
+        const clap_host_t *host = mgr().getInstance(h)->host();
+        CHECK(!hostGui(host)->request_resize(host, 300, 300));
+        CHECK(mgr().closeEditor(h) == noError);
+        CHECK(gMock.state->guiLive.load() == 0);
+        CHECK(!mgr().isEditorOpen(h));
+
+        // Without an application window: no set_transient.
+        fakeWindow().noApplicationWindow = true;
+        REQUIRE(mgr().openEditor(h, "Floating") == noError);
+        CHECK(gMock.state->guiTransients.load() == 1);
+        CHECK(mgr().closeEditor(h) == noError);
+        CHECK(unloadAndWait(h));
+
+        // Both offered: embedding fails at set_parent, the floating window
+        // follows.
+        gMock.reset();
+        gMock.setHook(&hookTrampoline);
+        resetFakeWindow();
+        gMock.state->guiApis = 3;
+        const int h2 = load("mock.ext");
+        REQUIRE(h2 > 0);
+        gMock.state->guiFailSetParent = 1;
+        REQUIRE(mgr().openEditor(h2, "Fallback") == noError);
+        CHECK(gMock.state->guiCreates.load() == 2);
+        CHECK(gMock.state->guiLive.load() == 1);
+        CHECK(countEvent("mock.ext", "gui_create_floating") == 1);
+        CHECK(!fakeWindow().open);
+        CHECK(mgr().isEditorOpen(h2));
+        CHECK(mgr().closeEditor(h2) == noError);
+        CHECK(unloadAndWait(h2));
+    }
+
+    // A restart keeps the editor; teardown destroys it before deactivate.
+    void testGuiLifetime()
+    {
+        gMock.state->guiApis = 1;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        REQUIRE(mgr().openEditor(h, "Mock") == noError);
+        stereoBlock(h);
+
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 1; }));
+        CHECK(gMock.state->guiLive.load() == 1);
+        CHECK(countEvent("mock.ext", "gui_destroy") == 0);
+        CHECK(mgr().isEditorOpen(h) && fakeWindow().open);
+        // The editor still works after the restart.
+        REQUIRE(fakeUserResize({480, 320}));
+        CHECK(gMock.state->guiCurrentWidth.load() == 480);
+
+        instance.reset();
+        CHECK(unloadAndWait(h));
+        const int guiDestroy = eventIndex("mock.ext", "gui_destroy");
+        const int deactivate = eventIndex("mock.ext", "deactivate");
+        int lastDeactivate = -1;
+        const std::vector<std::string> evs = events("mock.ext");
+        for (size_t i = 0; i < evs.size(); ++i)
+            if (evs[i].compare(0, 11, "deactivate:") == 0)
+                lastDeactivate = static_cast<int>(i);
+        CHECK(deactivate >= 0 && guiDestroy > deactivate); // After the restart.
+        CHECK(guiDestroy >= 0 && guiDestroy < lastDeactivate);
+        CHECK(eventIndex("mock.ext", "gui_hide") < guiDestroy);
+        CHECK(!fakeWindow().open);
+        pumpFor(0.03);
+
+        // unloadAll with an open editor too.
+        const int h2 = load("mock.ext");
+        REQUIRE(h2 > 0);
+        REQUIRE(mgr().openEditor(h2, "Mock") == noError);
+        mgr().unloadAll();
+        CHECK(pumpUntil([] { return gMock.state->liveInstances.load() == 0; }));
+        CHECK(gMock.state->guiLive.load() == 0);
+    }
+
+    // The C ABI.
+    void testGuiAbi()
+    {
+        gMock.state->guiApis = 1;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        CHECK(soloud_clapHasEditor(h) == 1);
+        CHECK(soloud_clapIsEditorOpen(h) == 0);
+        CHECK(soloud_clapOpenEditor(h, nullptr) == noError);
+        CHECK(fakeWindow().title.empty());
+        CHECK(soloud_clapIsEditorOpen(h) == 1);
+        CHECK(soloud_clapCloseEditor(h) == noError);
+        CHECK(soloud_clapIsEditorOpen(h) == 0);
+        CHECK(soloud_clapOpenEditor(h, "ABI") == noError);
+        CHECK(fakeWindow().title == "ABI");
+        // From a worker: hops to main.
+        PlayerErrors e = unknownError;
+        onWorker([&] { e = soloud_clapCloseEditor(h); });
+        CHECK(e == noError);
+        CHECK(!fakeWindow().open);
+        CHECK(soloud_clapHasEditor(0) == 0);
+        CHECK(soloud_clapOpenEditor(0, "x") == invalidParameter);
+        CHECK(soloud_clapCloseEditor(0) == invalidParameter);
+        CHECK(soloud_clapIsEditorOpen(0) == 0);
+        CHECK(unloadAndWait(h));
+    }
+
     struct Test
     {
         const char *name;
@@ -3988,6 +4737,15 @@ namespace
         {"ack_vs_inactive_pending_store", testAckVsInactivePendingStore},
         {"ack_vs_active_pending_store", testAckVsActivePendingStore},
         {"reset_held_by_active_rescan", testResetHeldByActiveRescan},
+        {"gui_open_close", testGuiOpenClose},
+        {"gui_hide_show", testGuiHideShow},
+        {"gui_user_resize", testGuiUserResize},
+        {"gui_request_resize", testGuiRequestResize},
+        {"gui_closed", testGuiClosed},
+        {"gui_failures", testGuiFailures},
+        {"gui_floating", testGuiFloating},
+        {"gui_lifetime", testGuiLifetime},
+        {"gui_abi", testGuiAbi},
     };
 } // namespace
 

@@ -364,3 +364,58 @@ No VST3 editor defects were found, so Phase 4a extracts the existing window beha
   - sound/bus aliases getting separate keys;
   - retired sessions retaining plugin objects.
 - Round 3 accepted with no findings.
+
+### Phase 4b: CLAP gui (2026-11-15, Fable 5.2 arbitration ACCEPT after two Sol 6.1 rounds)
+
+`src/clap/clap_editor.{h,cpp}` (macOS, `SOLOUD_ENABLE_PLUGIN_UI`) is the host side of one instance's gui, in the shared `PluginHostWindow` from 4a.
+
+**Flows:**
+- Embedded: `create(cocoa, false)` → `can_resize` → `get_size` → the window opens → `get_resize_hints` → `set_parent(content view)` → `show`. No `set_scale`: cocoa sizes are logical points.
+- Floating fallback, when embedding is not offered or fails: `create(cocoa, true)` → `suggest_title` → `set_transient(application window)`, which is optional → `show`.
+- Close: `hide` (when shown) → `destroy` → the parent view is released. This order holds on every path, and the gui always goes before deactivate or unload.
+- User resize: `adjust_size`/`set_size` through `constrainUserResize`. An accepted size becomes the window's base size (`setAcceptedUserSize`), so native limits and a locked axis follow it. Resize hints map to native limits.
+
+**Plugin requests:**
+- On main, `request_resize` applies at once and sends no `set_size` back.
+- Off main, requests are posted as `GuiRequestBit` flags and the pump applies them under the call guard. An off-main `request_resize` is acknowledged, then applied, or reverted with `set_size(accepted)`.
+- Every `request_resize` gets a serial (wrap-safe, int32 difference). A queued request older than one already applied is dropped. Each new gui starts after every serial issued so far.
+- `request_show`, `request_hide` and an off-main `request_resize` are refused unless a gui exists and no destroy is pending (`mEditorCreated`).
+- `closed(was_destroyed)` destroys the gui and reports `editorClosed`.
+
+**Nested run loops:**
+- A user close or an application termination that arrives during a plugin call (when the guard cannot be acquired) closes the window at once. The gui is destroyed on a later pump tick.
+- The content view the gui is parented to is retained until that destroy (`retainNativeView`/`releaseNativeView`). It is also retained across the host's own `hide`/`destroy`, in case the user closes the window from a run loop one of them spins.
+- If the user closes the window while the host opens or reshows the editor, the open fails, `editorClosed` is reported, and the pump destroys the gui.
+
+**Events and C ABI:**
+- `editorClosed` is emitted only for a user close or a plugin `closed()`. A host close, a hidden editor, an app termination or an unload emits nothing.
+- `soloud_clap{HasEditor, OpenEditor, CloseEditor, IsEditorOpen}`, with inert stubs when CLAP or plugin UI is off.
+
+**Dart:** `ClapEffectPlugin.hasEditor`, `openEditorWindow({String? title})` returning bool, `closeEditorWindow()` and `isEditorOpen`, mirroring VST3. Dispose closes the editor. The web stub declares the same API. `paramEdits` stays in Phase 5.
+
+**Tests:**
+- The native harness, now 65 tests including gui_open_close, gui_hide_show, gui_user_resize, gui_request_resize, gui_closed, gui_failures, gui_floating, gui_lifetime and gui_abi, uses a fake `PluginHostWindow` (`test/clap_fake_window.{h,cpp}`) that can act as the user (close, resize, terminate) and tracks the content view's lifetime. It passes in plain, ASan+UBSan and TSan builds.
+- The live example test passes 11/11. ZeroEQ's real editor opens, reopens, closes, reopens again and closes on dispose. A mock group follows the gui modes the plugin offers.
+- The hook matrix passes 18/18 in all four configurations. Syntax checks are clean in every CLAP/plugin-UI configuration, and for the `.mm` with and without ARC. `flutter analyze` shows only the 4 pre-existing infos.
+
+**Mutation probes, each failing its test:** the serial check; the parent retain on a deferred destroy; `setAcceptedUserSize`; show/hide gating; servicing a pending destroy first; the retain in `destroyGui`; the deferral on a nested terminate; the unsigned serial comparison, in `service` and in the CAS; the baseline at open; failing an open closed meanwhile (on first open and on reshow); and the off-main resize gate.
+
+**Review:**
+- **Round 1, Sol REVISE.** Five fixes:
+  - stale off-main resizes overriding newer ones → serials;
+  - a deferred destroy outliving its parent view → retain;
+  - accepted user sizes not becoming the window base;
+  - show/hide accepted with no gui;
+  - the pending destroy not serviced first.
+- **Round 2, Sol REVISE.**
+  - (1) `destroyGui` cleared `mCreated` before `hide`/`destroy`, so a close from their run loop did not retain the parent.
+  - (2) A nested application termination closed the window but left the gui created and its parent unprotected.
+  - (3) Unsigned serial comparisons broke across the 32-bit wrap.
+  - Fixes: `retainParent()` in `destroyGui`; a shared `deferDestroy()` for a nested close and a nested terminate; `guiResizeNewer` plus a baseline when a gui is created.
+- **Fable arbitration, ACCEPT, no blocking findings.**
+  - All three fixes are correct. `isOpen()` holds during `onShouldClose`. A terminate with a destroy already pending does not destroy twice. A request racing `open()` is either dropped or applied by the pump.
+  - Two of its minors were folded in before landing: an open the user closed meanwhile now fails instead of returning true, and an off-main `request_resize` is gated on a live gui.
+  - The other minors are left as non-blocking:
+    - a close during `get_resize_hints` reports `editorClosed` for a failed open, which is accurate because the user closed it;
+    - request bits cleared while the plugin is not callable, which teardown or the next open covers;
+    - a busy `closeEditorWindow()` from a reentrant call is ignored.

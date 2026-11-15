@@ -134,6 +134,13 @@ namespace
         std::atomic<int> inDsp{0};
         bool destroying = false;
         uint32_t latency = 0;
+        // mock.ext gui
+        bool guiCreated = false;
+        bool guiFloating = false;
+        bool guiParented = false;
+        bool guiShown = false;
+        uint32_t guiWidth = 0;
+        uint32_t guiHeight = 0;
     };
 
     // --- mock.ext parameters --------------------------------------------------
@@ -663,6 +670,240 @@ namespace
 
     const clap_plugin_timer_support_t kTimerExt = {timerOnTimer};
 
+    // --- mock.ext: gui ---------------------------------------------------------
+
+    bool guiSupported(const char *api, bool floating)
+    {
+        return api != nullptr && std::strcmp(api, CLAP_WINDOW_API_COCOA) == 0 &&
+               (gState.guiApis.load() & (floating ? 2 : 1)) != 0;
+    }
+
+    /// Logs a gui call, checks main and that the gui exists (and its mode:
+    /// 1 embedded only, 2 floating only, 0 either).
+    MockPlugin *guiEnter(const clap_plugin_t *plugin, const char *event,
+                         int mode)
+    {
+        MockPlugin *p = self(plugin);
+        enter(p, event, false);
+        if (!p->guiCreated)
+            violation(p, (std::string(event) + " without gui").c_str());
+        else if ((mode == 1 && p->guiFloating) || (mode == 2 && !p->guiFloating))
+            violation(p, (std::string(event) + " in the wrong mode").c_str());
+        return p;
+    }
+
+    void syncGuiState(const MockPlugin *p)
+    {
+        gState.guiCurrentWidth.store(static_cast<int>(p->guiWidth));
+        gState.guiCurrentHeight.store(static_cast<int>(p->guiHeight));
+        gState.guiShown.store(p->guiShown ? 1 : 0);
+    }
+
+    bool CLAP_ABI guiIsApiSupported(const clap_plugin_t *plugin, const char *api,
+                                    bool isFloating)
+    {
+        InCall call;
+        mainOnly(self(plugin), "gui_is_api_supported");
+        return guiSupported(api, isFloating);
+    }
+
+    bool CLAP_ABI guiGetPreferredApi(const clap_plugin_t *plugin,
+                                     const char **api, bool *isFloating)
+    {
+        InCall call;
+        mainOnly(self(plugin), "gui_get_preferred_api");
+        (void)api;
+        (void)isFloating;
+        return false;
+    }
+
+    bool CLAP_ABI guiCreate(const clap_plugin_t *plugin, const char *api,
+                            bool isFloating)
+    {
+        InCall call;
+        MockPlugin *p = self(plugin);
+        enter(p, isFloating ? "gui_create_floating" : "gui_create", false);
+        if (p->guiCreated)
+            violation(p, "gui_create twice");
+        if (!guiSupported(api, isFloating))
+            violation(p, "gui_create unsupported");
+        callHook("gui_create", p->desc->id, p->host);
+        if (takeOne(gState.guiFailCreate))
+            return false;
+        p->guiCreated = true;
+        p->guiFloating = isFloating;
+        p->guiParented = false;
+        p->guiShown = false;
+        p->guiWidth = static_cast<uint32_t>(gState.guiWidth.load());
+        p->guiHeight = static_cast<uint32_t>(gState.guiHeight.load());
+        gState.guiCreates.fetch_add(1);
+        gState.guiLive.fetch_add(1);
+        syncGuiState(p);
+        return true;
+    }
+
+    void CLAP_ABI guiDestroy(const clap_plugin_t *plugin)
+    {
+        InCall call;
+        MockPlugin *p = guiEnter(plugin, "gui_destroy", 0);
+        if (!p->guiCreated)
+            return;
+        p->guiCreated = false;
+        p->guiShown = false;
+        gState.guiDestroys.fetch_add(1);
+        gState.guiLive.fetch_sub(1);
+        syncGuiState(p);
+        callHook("gui_destroy", p->desc->id, p->host);
+    }
+
+    bool CLAP_ABI guiSetScale(const clap_plugin_t *plugin, double scale)
+    {
+        InCall call;
+        (void)scale;
+        violation(self(plugin), "gui_set_scale on cocoa");
+        return false;
+    }
+
+    bool CLAP_ABI guiGetSize(const clap_plugin_t *plugin, uint32_t *width,
+                             uint32_t *height)
+    {
+        InCall call;
+        MockPlugin *p = guiEnter(plugin, "gui_get_size", 1);
+        if (takeOne(gState.guiFailGetSize))
+            return false;
+        *width = p->guiWidth;
+        *height = p->guiHeight;
+        return true;
+    }
+
+    bool CLAP_ABI guiCanResize(const clap_plugin_t *plugin)
+    {
+        InCall call;
+        guiEnter(plugin, "gui_can_resize", 1);
+        return gState.guiCanResize.load() != 0;
+    }
+
+    bool CLAP_ABI guiGetResizeHints(const clap_plugin_t *plugin,
+                                    clap_gui_resize_hints_t *hints)
+    {
+        InCall call;
+        guiEnter(plugin, "gui_get_resize_hints", 1);
+        if (gState.guiHints.load() == 0)
+            return false;
+        hints->can_resize_horizontally = gState.guiHintHorizontal.load() != 0;
+        hints->can_resize_vertically = gState.guiHintVertical.load() != 0;
+        hints->aspect_ratio_width =
+            static_cast<uint32_t>(gState.guiHintAspectWidth.load());
+        hints->aspect_ratio_height =
+            static_cast<uint32_t>(gState.guiHintAspectHeight.load());
+        hints->preserve_aspect_ratio = hints->aspect_ratio_width != 0 &&
+                                       hints->aspect_ratio_height != 0;
+        return true;
+    }
+
+    bool CLAP_ABI guiAdjustSize(const clap_plugin_t *plugin, uint32_t *width,
+                                uint32_t *height)
+    {
+        InCall call;
+        guiEnter(plugin, "gui_adjust_size", 1);
+        const int step = gState.guiAdjustStep.load();
+        if (step <= 0)
+            return false;
+        const uint32_t s = static_cast<uint32_t>(step);
+        *width = std::max(s, *width / s * s);
+        *height = std::max(s, *height / s * s);
+        return true;
+    }
+
+    bool CLAP_ABI guiSetSize(const clap_plugin_t *plugin, uint32_t width,
+                             uint32_t height)
+    {
+        InCall call;
+        MockPlugin *p = guiEnter(plugin, "gui_set_size", 1);
+        logLine(std::string(p->desc->id) + ":gui_size:" +
+                std::to_string(width) + "x" + std::to_string(height));
+        gState.guiSetSizes.fetch_add(1);
+        if (gState.guiCanResize.load() == 0)
+            violation(p, "gui_set_size not resizable");
+        callHook("gui_set_size", p->desc->id, p->host);
+        if (gState.guiRejectSetSize.load() != 0)
+            return false;
+        p->guiWidth = width;
+        p->guiHeight = height;
+        syncGuiState(p);
+        return true;
+    }
+
+    bool CLAP_ABI guiSetParent(const clap_plugin_t *plugin,
+                               const clap_window_t *window)
+    {
+        InCall call;
+        MockPlugin *p = guiEnter(plugin, "gui_set_parent", 1);
+        if (window == nullptr || window->api == nullptr ||
+            std::strcmp(window->api, CLAP_WINDOW_API_COCOA) != 0 ||
+            window->cocoa == nullptr)
+            violation(p, "gui_set_parent window");
+        if (p->guiParented)
+            violation(p, "gui_set_parent twice");
+        if (takeOne(gState.guiFailSetParent))
+            return false;
+        p->guiParented = true;
+        callHook("gui_set_parent", p->desc->id, p->host);
+        return true;
+    }
+
+    bool CLAP_ABI guiSetTransient(const clap_plugin_t *plugin,
+                                  const clap_window_t *window)
+    {
+        InCall call;
+        guiEnter(plugin, "gui_set_transient", 2);
+        gState.guiTransients.fetch_add(1);
+        if (window == nullptr || window->cocoa == nullptr)
+            gState.guiTransientNull.fetch_add(1);
+        return true;
+    }
+
+    void CLAP_ABI guiSuggestTitle(const clap_plugin_t *plugin, const char *title)
+    {
+        InCall call;
+        MockPlugin *p = guiEnter(plugin, "gui_suggest_title", 2);
+        logLine(std::string(p->desc->id) + ":gui_title:" +
+                (title != nullptr ? title : "(null)"));
+    }
+
+    bool CLAP_ABI guiShow(const clap_plugin_t *plugin)
+    {
+        InCall call;
+        MockPlugin *p = guiEnter(plugin, "gui_show", 0);
+        if (p->guiCreated && !p->guiFloating && !p->guiParented)
+            violation(p, "gui_show without parent");
+        callHook("gui_show", p->desc->id, p->host);
+        if (takeOne(gState.guiFailShow))
+            return false;
+        p->guiShown = true;
+        gState.guiShows.fetch_add(1);
+        syncGuiState(p);
+        return true;
+    }
+
+    bool CLAP_ABI guiHide(const clap_plugin_t *plugin)
+    {
+        InCall call;
+        MockPlugin *p = guiEnter(plugin, "gui_hide", 0);
+        p->guiShown = false;
+        gState.guiHides.fetch_add(1);
+        syncGuiState(p);
+        callHook("gui_hide", p->desc->id, p->host);
+        return true;
+    }
+
+    const clap_plugin_gui_t kGuiExt = {
+        guiIsApiSupported, guiGetPreferredApi, guiCreate,     guiDestroy,
+        guiSetScale,       guiGetSize,         guiCanResize,  guiGetResizeHints,
+        guiAdjustSize,     guiSetSize,         guiSetParent,  guiSetTransient,
+        guiSuggestTitle,   guiShow,            guiHide,
+    };
+
     // --- plugin -----------------------------------------------------------
 
     bool CLAP_ABI pluginInit(const clap_plugin_t *plugin)
@@ -710,6 +951,11 @@ namespace
             enter(p, "destroy", false);
             if (p->activated)
                 violation(p, "destroy while activated");
+            if (p->guiCreated)
+            {
+                violation(p, "destroy with the gui alive");
+                gState.guiLive.fetch_sub(1);
+            }
             p->destroying = true;
             if (p->desc->kind == Kind::ext && gState.unregisterInDestroy.load())
             {
@@ -966,6 +1212,8 @@ namespace
             return &kLatencyExt;
         if (std::strcmp(id, CLAP_EXT_TIMER_SUPPORT) == 0)
             return &kTimerExt;
+        if (std::strcmp(id, CLAP_EXT_GUI) == 0 && gState.guiApis.load() != 0)
+            return &kGuiExt;
         return nullptr;
     }
 
@@ -1121,6 +1369,25 @@ extern "C"
         gState.gestureFromProcess.store(processCalls);
     }
 
+    /// For the Dart integration test: which cocoa gui modes mock.ext offers
+    /// to plugins created from now on (bit 0 embedded, bit 1 floating).
+    __attribute__((visibility("default"))) void mock_clap_set_gui_apis(int apis)
+    {
+        gState.guiApis.store(apis);
+    }
+
+    /// For the Dart integration test: live guis, and host contract violations
+    /// so far.
+    __attribute__((visibility("default"))) int mock_clap_gui_live()
+    {
+        return gState.guiLive.load();
+    }
+
+    __attribute__((visibility("default"))) int mock_clap_violations()
+    {
+        return gState.violations.load();
+    }
+
     __attribute__((visibility("default"))) void mock_clap_set_hook(
         MockClapHook hook)
     {
@@ -1207,5 +1474,31 @@ extern "C"
         gState.flushCalls = 0;
         gState.failInitExt = 0;
         gState.failStartCount = 0;
+        gState.guiApis = 0;
+        gState.guiFailCreate = 0;
+        gState.guiFailGetSize = 0;
+        gState.guiFailSetParent = 0;
+        gState.guiFailShow = 0;
+        gState.guiWidth = 400;
+        gState.guiHeight = 300;
+        gState.guiCanResize = 1;
+        gState.guiRejectSetSize = 0;
+        gState.guiHints = 0;
+        gState.guiHintHorizontal = 1;
+        gState.guiHintVertical = 1;
+        gState.guiHintAspectWidth = 0;
+        gState.guiHintAspectHeight = 0;
+        gState.guiAdjustStep = 0;
+        gState.guiCreates = 0;
+        gState.guiDestroys = 0;
+        gState.guiShows = 0;
+        gState.guiHides = 0;
+        gState.guiSetSizes = 0;
+        gState.guiLive = 0;
+        gState.guiCurrentWidth = 0;
+        gState.guiCurrentHeight = 0;
+        gState.guiShown = 0;
+        gState.guiTransients = 0;
+        gState.guiTransientNull = 0;
     }
 }

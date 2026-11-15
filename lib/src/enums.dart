@@ -776,7 +776,8 @@ enum ClapHostEventType {
   /// The plugin's state changed and is worth saving.
   stateDirty(9),
 
-  /// The plugin's editor window was closed.
+  /// The user or the plugin closed the editor. Not reported for
+  /// `ClapEffectPlugin.closeEditorWindow`, a hidden editor or an unload.
   editorClosed(10);
 
   const ClapHostEventType(this.value);

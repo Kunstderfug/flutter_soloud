@@ -193,6 +193,47 @@ void runOnMainThreadSync(const std::function<void()> &fn) {
   }
 }
 
+void *retainNativeView(void *view) {
+  if (view != nullptr) {
+    CFRetain(static_cast<CFTypeRef>(view));
+  }
+  return view;
+}
+
+void releaseNativeView(void *view) {
+  if (view != nullptr) {
+    CFRelease(static_cast<CFTypeRef>(view));
+  }
+}
+
+void *applicationWindowView() {
+  auto usable = [](NSWindow *window) {
+    return window != nil && ![window isKindOfClass:[SoLoudPluginWindow class]] &&
+           [window isVisible] && [window contentView] != nil;
+  };
+  NSWindow *found = nil;
+  if (usable([NSApp mainWindow])) {
+    found = [NSApp mainWindow];
+  } else if (usable([NSApp keyWindow])) {
+    found = [NSApp keyWindow];
+  } else {
+    for (NSWindow *window in [NSApp orderedWindows]) {
+      if (usable(window) && [window canBecomeMainWindow]) {
+        found = window;
+        break;
+      }
+    }
+  }
+  if (found == nil) {
+    return nullptr;
+  }
+#if __has_feature(objc_arc)
+  return (__bridge void *)[found contentView];
+#else
+  return reinterpret_cast<void *>([found contentView]);
+#endif
+}
+
 class PluginHostWindowMacOS final : public PluginHostWindow {
 public:
   PluginHostWindowMacOS() = default;
@@ -205,6 +246,7 @@ public:
     ++mGeneration;
     mBase = size;
     mMode = mode;
+    mHasNativeLimits = false;
 
     const bool resizable = mode != PluginWindowResize::Fixed;
     NSWindowStyleMask style = NSWindowStyleMaskTitled |
@@ -296,6 +338,9 @@ public:
       break;
     case PluginWindowResize::Native:
       mWindow.supportsHostScaling = NO;
+      if (mHasNativeLimits) {
+        applyNativeLimits();
+      }
       [contentView setFrame:NSMakeRect(0, 0, w, h)];
       [contentView setBounds:NSMakeRect(0, 0, w, h)];
       break;
@@ -320,6 +365,8 @@ public:
       setScalableLimits();
     } else if (mMode == PluginWindowResize::Fixed) {
       setLockedLimits();
+    } else if (mHasNativeLimits) {
+      applyNativeLimits();
     }
     NSRect contentRect = [mWindow contentRectForFrameRect:mWindow.frame];
     const CGFloat diffY = h - contentRect.size.height;
@@ -346,6 +393,35 @@ public:
   }
 
   PluginWindowSize baseSize() const override { return mBase; }
+
+  void setNativeLimits(const PluginWindowNativeLimits &limits) override {
+    mNativeLimits = limits;
+    mHasNativeLimits = true;
+    if (mWindow != nil && mMode == PluginWindowResize::Native) {
+      applyNativeLimits();
+    }
+  }
+
+  void setAcceptedUserSize(PluginWindowSize size) override {
+    if (mWindow == nil || mMode != PluginWindowResize::Native) {
+      return;
+    }
+    mBase = size;
+    if (mHasNativeLimits) {
+      applyNativeLimits();
+    }
+  }
+
+  void hide() override {
+    if (mWindow == nil) {
+      return;
+    }
+    [mWindow orderOut:nil];
+  }
+
+  bool isVisible() const override {
+    return mWindow != nil && [mWindow isVisible];
+  }
 
   void show() override {
     if (mWindow == nil) {
@@ -522,6 +598,30 @@ private:
     [mWindow setContentMaxSize:NSMakeSize(mBase.width, mBase.height)];
   }
 
+  // Native mode after setNativeLimits(): the given limits, a locked axis
+  // pinned to the base size, and the aspect ratio if any.
+  void applyNativeLimits() {
+    const PluginWindowNativeLimits &l = mNativeLimits;
+    CGFloat minW = std::min(l.minSize.width, mBase.width);
+    CGFloat minH = std::min(l.minSize.height, mBase.height);
+    CGFloat maxW = std::max(l.maxSize.width, mBase.width);
+    CGFloat maxH = std::max(l.maxSize.height, mBase.height);
+    if (!l.resizeHorizontally) {
+      minW = maxW = mBase.width;
+    }
+    if (!l.resizeVertically) {
+      minH = maxH = mBase.height;
+    }
+    [mWindow setContentMinSize:NSMakeSize(minW, minH)];
+    [mWindow setContentMaxSize:NSMakeSize(maxW, maxH)];
+    if (l.aspectWidth > 0 && l.aspectHeight > 0 && l.resizeHorizontally &&
+        l.resizeVertically) {
+      [mWindow setContentAspectRatio:NSMakeSize(l.aspectWidth, l.aspectHeight)];
+    } else {
+      [mWindow setContentAspectRatio:NSMakeSize(0, 0)];
+    }
+  }
+
   // Stops listener calls for this open: unregisters the termination observer
   // and detaches the delegate from this object.
   void stopCallbacks() {
@@ -546,6 +646,8 @@ private:
   PluginWindowSize mBase{800, 600};
   PluginWindowResize mMode = PluginWindowResize::Fixed;
   uint64_t mGeneration = 0;
+  PluginWindowNativeLimits mNativeLimits;
+  bool mHasNativeLimits = false;
   bool mApplyingContentSize = false;
   bool mTearingDown = false;
 };

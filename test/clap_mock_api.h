@@ -103,6 +103,42 @@ struct MockClapState
     std::atomic<int> failInitExt{0};
     /// The next N start_processing() calls fail.
     std::atomic<int> failStartCount{0};
+
+    // --- mock.ext gui (Phase 4b) -------------------------------------------
+    /// The cocoa modes mock.ext offers: bit 0 embedded, bit 1 floating. 0
+    /// (the default): no gui extension at all.
+    std::atomic<int> guiApis{0};
+    /// The next N create / get_size / set_parent / show calls fail.
+    std::atomic<int> guiFailCreate{0};
+    std::atomic<int> guiFailGetSize{0};
+    std::atomic<int> guiFailSetParent{0};
+    std::atomic<int> guiFailShow{0};
+    /// The size create() starts with, and can_resize.
+    std::atomic<int> guiWidth{400};
+    std::atomic<int> guiHeight{300};
+    std::atomic<int> guiCanResize{1};
+    /// set_size returns false (the size is kept).
+    std::atomic<int> guiRejectSetSize{0};
+    /// get_resize_hints: 0 returns false; else the fields below.
+    std::atomic<int> guiHints{0};
+    std::atomic<int> guiHintHorizontal{1};
+    std::atomic<int> guiHintVertical{1};
+    std::atomic<int> guiHintAspectWidth{0};
+    std::atomic<int> guiHintAspectHeight{0};
+    /// adjust_size rounds both edges down to a multiple of this (0: false).
+    std::atomic<int> guiAdjustStep{0};
+    /// Counters and the gui's current state.
+    std::atomic<int> guiCreates{0};
+    std::atomic<int> guiDestroys{0};
+    std::atomic<int> guiShows{0};
+    std::atomic<int> guiHides{0};
+    std::atomic<int> guiSetSizes{0};
+    std::atomic<int> guiLive{0};
+    std::atomic<int> guiCurrentWidth{0};
+    std::atomic<int> guiCurrentHeight{0};
+    std::atomic<int> guiShown{0};
+    std::atomic<int> guiTransients{0};
+    std::atomic<int> guiTransientNull{0};
 };
 
 /// One parameter value the mock received (process or flush).
@@ -120,7 +156,8 @@ struct MockReceived
 /// with the event name ("entry_init", "entry_deinit", "create", "init",
 /// "activate", "deactivate", "start", "stop", "destroy", "on_main"; for
 /// mock.ext also "process", "flush", "save", "load", "on_timer",
-/// "get_value", "get_info") and the instance's host (null for entry events). Runs before
+/// "get_value", "get_info", "gui_create", "gui_show", "gui_hide",
+/// "gui_set_size", "gui_destroy") and the instance's host (null for entry events). Runs before
 /// the mock returns.
 typedef void (*MockClapHook)(const char *event, const char *pluginId,
                              const clap_host_t *host);

@@ -273,6 +273,42 @@ void main() {
       );
     });
 
+    testWidgets('the editor opens, closes and reopens', (_) async {
+      const slot = CustomFilterGlobal(6);
+      final plugin = host.loadEffect(bundlePath: bundle!, slot: slot);
+      debugPrint('CLAP editor: hasEditor ${plugin.hasEditor}');
+      expect(plugin.hasEditor, isTrue);
+      expect(plugin.isEditorOpen, isFalse);
+      plugin.drainEvents();
+
+      expect(plugin.openEditorWindow(title: 'CLAP editor test'), isTrue);
+      expect(plugin.isEditorOpen, isTrue);
+      // An open editor only comes to the front.
+      expect(plugin.openEditorWindow(title: 'CLAP editor test'), isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      plugin.closeEditorWindow();
+      expect(plugin.isEditorOpen, isFalse);
+      plugin.closeEditorWindow();
+
+      expect(plugin.openEditorWindow(), isTrue);
+      expect(plugin.isEditorOpen, isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      // A host close is not reported.
+      plugin.closeEditorWindow();
+      expect(
+        plugin.drainEvents().map((e) => e.type),
+        isNot(contains(ClapHostEventType.editorClosed)),
+      );
+
+      // Dispose closes an open editor.
+      expect(plugin.openEditorWindow(), isTrue);
+      plugin.dispose();
+      expect(plugin.isEditorOpen, isFalse);
+      expect(plugin.hasEditor, isFalse);
+      expect(plugin.openEditorWindow(), isFalse);
+      expect(slot.index, lessThan(0));
+    });
+
     // Last: it restarts the engine.
     testWidgets('a plugin from before a restart leaves the new slot alone', (
       _,
@@ -364,6 +400,78 @@ void main() {
       );
       expect(plugin.drainEvents(), isEmpty);
       plugin.dispose();
+      expect(slot.index, lessThan(0));
+    });
+
+    testWidgets('the editor follows the gui modes the plugin offers', (
+      _,
+    ) async {
+      final image = ffi.DynamicLibrary.open(
+        '$mockBundle/Contents/MacOS/MockClap',
+      );
+      final setGuiApis = image
+          .lookupFunction<ffi.Void Function(ffi.Int), void Function(int)>(
+            'mock_clap_set_gui_apis',
+          );
+      final guiLive = image.lookupFunction<ffi.Int Function(), int Function()>(
+        'mock_clap_gui_live',
+      );
+      final violations = image
+          .lookupFunction<ffi.Int Function(), int Function()>(
+            'mock_clap_violations',
+          );
+      final violationsBefore = violations();
+      const slot = CustomFilterGlobal(1);
+      try {
+        // No gui extension: no editor.
+        setGuiApis(0);
+        final plain = host.loadEffect(
+          bundlePath: mockBundle!,
+          slot: slot,
+          pluginId: 'mock.ext',
+        );
+        expect(plain.hasEditor, isFalse);
+        expect(plain.openEditorWindow(title: 'Mock'), isFalse);
+        expect(plain.isEditorOpen, isFalse);
+        plain
+          ..closeEditorWindow()
+          ..dispose();
+
+        // Embedded in a host window, then the plugin's own window.
+        for (final apis in [1, 2]) {
+          setGuiApis(apis);
+          final plugin = host.loadEffect(
+            bundlePath: mockBundle,
+            slot: slot,
+            pluginId: 'mock.ext',
+          );
+          expect(plugin.hasEditor, isTrue, reason: 'apis $apis');
+          plugin.drainEvents();
+          expect(plugin.openEditorWindow(title: 'Mock $apis'), isTrue);
+          expect(plugin.isEditorOpen, isTrue);
+          expect(guiLive(), 1);
+          expect(plugin.openEditorWindow(title: 'Mock $apis'), isTrue);
+          expect(guiLive(), 1);
+          plugin.closeEditorWindow();
+          expect(plugin.isEditorOpen, isFalse);
+          expect(guiLive(), 0);
+          expect(plugin.openEditorWindow(), isTrue);
+          expect(guiLive(), 1);
+          plugin.closeEditorWindow();
+          expect(
+            plugin.drainEvents().map((e) => e.type),
+            isNot(contains(ClapHostEventType.editorClosed)),
+          );
+          // Dispose destroys an open gui.
+          expect(plugin.openEditorWindow(), isTrue);
+          plugin.dispose();
+          expect(guiLive(), 0);
+          expect(plugin.isEditorOpen, isFalse);
+        }
+        expect(violations(), violationsBefore);
+      } finally {
+        setGuiApis(0);
+      }
       expect(slot.index, lessThan(0));
     });
   });

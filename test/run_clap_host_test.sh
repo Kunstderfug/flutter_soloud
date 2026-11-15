@@ -85,7 +85,7 @@ c++ -std=c++17 -bundle "${SANITIZER[@]}" \
 ln -s "$WORK/MockClap.clap" "$WORK/MockClapAlias.clap"
 
 c++ -std=c++17 -Wall -Wextra "${SANITIZER[@]}" \
-    -DSOLOUD_ENABLE_CLAP -DSOLOUD_CLAP_TEST_HOOKS \
+    -DSOLOUD_ENABLE_CLAP -DSOLOUD_CLAP_TEST_HOOKS -DSOLOUD_ENABLE_PLUGIN_UI \
     -I test -I src \
     -isystem "$CLAP_INCLUDE" \
     -o "$WORK/clap_host_test" \
@@ -94,6 +94,8 @@ c++ -std=c++17 -Wall -Wextra "${SANITIZER[@]}" \
     src/clap/clap_host.cpp \
     src/clap/clap_instance.cpp \
     src/clap/clap_module.cpp \
+    src/clap/clap_editor.cpp \
+    test/clap_fake_window.cpp \
     -framework CoreFoundation
 
 "$WORK/clap_host_test" "$WORK" "$@"

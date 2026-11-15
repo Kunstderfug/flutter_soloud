@@ -453,4 +453,48 @@ extern "C"
         return notImplemented;
 #endif
     }
+
+    FFI_PLUGIN_EXPORT int soloud_clapHasEditor(int pluginHandle)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().hasEditor(pluginHandle) ? 1 : 0;
+#else
+        (void)pluginHandle;
+        return 0;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapOpenEditor(
+        int pluginHandle,
+        const char *windowTitle)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().openEditor(pluginHandle,
+                                    windowTitle != nullptr ? windowTitle : "");
+#else
+        (void)pluginHandle;
+        (void)windowTitle;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapCloseEditor(int pluginHandle)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().closeEditor(pluginHandle);
+#else
+        (void)pluginHandle;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT int soloud_clapIsEditorOpen(int pluginHandle)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().isEditorOpen(pluginHandle) ? 1 : 0;
+#else
+        (void)pluginHandle;
+        return 0;
+#endif
+    }
 }

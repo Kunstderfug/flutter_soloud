@@ -2055,6 +2055,25 @@ extern "C"
       unsigned int *outFlags,
       int *outCount);
 
+  /// 1 when the plugin offers a cocoa gui (embedded or floating), else 0.
+  /// Any thread.
+  FFI_PLUGIN_EXPORT int soloud_clapHasEditor(int pluginHandle);
+
+  /// Opens the plugin's gui: embedded in a host window titled [windowTitle],
+  /// or the plugin's own floating window. An open editor comes to the front.
+  /// invalidParameter without a gui or for an unknown handle; unknownError
+  /// when the plugin fails or is busy. Waits for the main thread.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapOpenEditor(
+      int pluginHandle,
+      const char *windowTitle);
+
+  /// Closes and destroys the gui if open. No clapEventEditorClosed follows.
+  /// Waits for the main thread.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapCloseEditor(int pluginHandle);
+
+  /// 1 while the gui is on screen, else 0. Any thread.
+  FFI_PLUGIN_EXPORT int soloud_clapIsEditorOpen(int pluginHandle);
+
 #ifdef __cplusplus
 }
 #endif

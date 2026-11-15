@@ -113,6 +113,15 @@ namespace soloud_clap
                                  unsigned *outParamIds, double *outValues,
                                  unsigned *outFlags, int *outCount);
 
+        // --- Phase 4b: plugin editor -----------------------------------------
+        /// Any thread: whether the plugin offers a cocoa gui.
+        bool hasEditor(int handle);
+        /// Any thread: whether the editor is on screen.
+        bool isEditorOpen(int handle);
+        // Main hops. Opening an open editor brings it to the front.
+        PlayerErrors openEditor(int handle, const std::string &title);
+        PlayerErrors closeEditor(int handle);
+
         // --- introspection (tests) ------------------------------------------
         std::shared_ptr<ClapInstance> getInstance(int handle);
         size_t liveInstanceCount();

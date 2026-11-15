@@ -4518,6 +4518,42 @@ PlayerErrors soloud_clapDrainEvents(
   );
 }
 
+/// 1 when the plugin offers a cocoa gui (embedded or floating), else 0.
+/// Any thread.
+@ffi.Native<ffi.Int Function(ffi.Int)>()
+external int soloud_clapHasEditor(int pluginHandle);
+
+/// Opens the plugin's gui: embedded in a host window titled [windowTitle],
+/// or the plugin's own floating window. An open editor comes to the front.
+/// invalidParameter without a gui or for an unknown handle; unknownError
+/// when the plugin fails or is busy. Waits for the main thread.
+@ffi.Native<ffi.UnsignedInt Function(ffi.Int, ffi.Pointer<ffi.Char>)>(
+  symbol: 'soloud_clapOpenEditor',
+)
+external int _soloud_clapOpenEditor(
+  int pluginHandle,
+  ffi.Pointer<ffi.Char> windowTitle,
+);
+
+PlayerErrors soloud_clapOpenEditor(
+  int pluginHandle,
+  ffi.Pointer<ffi.Char> windowTitle,
+) => PlayerErrors.fromValue(_soloud_clapOpenEditor(pluginHandle, windowTitle));
+
+/// Closes and destroys the gui if open. No clapEventEditorClosed follows.
+/// Waits for the main thread.
+@ffi.Native<ffi.UnsignedInt Function(ffi.Int)>(
+  symbol: 'soloud_clapCloseEditor',
+)
+external int _soloud_clapCloseEditor(int pluginHandle);
+
+PlayerErrors soloud_clapCloseEditor(int pluginHandle) =>
+    PlayerErrors.fromValue(_soloud_clapCloseEditor(pluginHandle));
+
+/// 1 while the gui is on screen, else 0. Any thread.
+@ffi.Native<ffi.Int Function(ffi.Int)>()
+external int soloud_clapIsEditorOpen(int pluginHandle);
+
 typedef dartVoiceEndedCallback_tFunction =
     ffi.Void Function(ffi.Pointer<ffi.UnsignedInt>);
 typedef DartdartVoiceEndedCallback_tFunction =

@@ -510,6 +510,49 @@ class ClapEffectPlugin {
     return events;
   }
 
+  // --- native editor ---
+
+  /// Whether the plugin offers a native editor (a CLAP gui on macOS).
+  bool get hasEditor =>
+      !_disposed && ffigen.soloud_clapHasEditor(pluginHandle) != 0;
+
+  /// Whether the editor is on screen.
+  bool get isEditorOpen =>
+      !_disposed && ffigen.soloud_clapIsEditorOpen(pluginHandle) != 0;
+
+  /// Opens the native editor: embedded in a host window titled [title], or
+  /// in the plugin's own window when it only offers that. An open editor
+  /// comes to the front.
+  ///
+  /// Returns false without an editor, after [dispose], or when the plugin
+  /// fails to show it. A [ClapHostEventType.editorClosed] event follows when
+  /// the user or the plugin closes it.
+  bool openEditorWindow({String? title}) {
+    if (_disposed) {
+      return false;
+    }
+    final titlePtr = title != null
+        ? title.toNativeUtf8(allocator: calloc).cast<ffi.Char>()
+        : ffi.nullptr.cast<ffi.Char>();
+    try {
+      return ffigen.soloud_clapOpenEditor(pluginHandle, titlePtr) ==
+          ffigen.PlayerErrors.noError;
+    } finally {
+      if (titlePtr != ffi.nullptr) {
+        calloc.free(titlePtr);
+      }
+    }
+  }
+
+  /// Closes the editor if open. No [ClapHostEventType.editorClosed] event
+  /// follows.
+  void closeEditorWindow() {
+    if (_disposed) {
+      return;
+    }
+    ffigen.soloud_clapCloseEditor(pluginHandle);
+  }
+
   void _checkNotDisposed() {
     if (_disposed) {
       throw StateError('The CLAP plugin $pluginHandle was disposed.');

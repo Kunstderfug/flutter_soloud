@@ -195,7 +195,53 @@ namespace soloud_clap
         kNotifyLatencyChanged = 1u << 2,
         kNotifyParamsRescan = 1u << 3,
         kNotifyStateDirty = 1u << 4,
+        kNotifyEditorClosed = 1u << 5,
     };
+
+    /// Gui requests posted by the plugin (any thread), serviced on main by
+    /// the pump (plan Phase 4b).
+    enum GuiRequestBit : uint32_t
+    {
+        kGuiRequestResize = 1u << 0,
+        kGuiRequestHints = 1u << 1,
+        kGuiRequestShow = 1u << 2,
+        kGuiRequestHide = 1u << 3,
+        kGuiRequestClosed = 1u << 4,
+        kGuiRequestDestroyed = 1u << 5,
+        /// Host-internal: a destroy the user's close could not do because a
+        /// plugin call was in progress.
+        kGuiRequestDeferredDestroy = 1u << 6,
+    };
+
+    /// A plugin request_resize, ordered against every other one: its serial
+    /// in the high 32 bits, then the width and height in 16 bits each (0
+    /// for an edge that does not fit, which no editor accepts).
+    inline uint64_t packGuiResize(uint32_t serial, uint32_t width,
+                                  uint32_t height) noexcept
+    {
+        const uint64_t w = width <= 0xffffu ? width : 0u;
+        const uint64_t h = height <= 0xffffu ? height : 0u;
+        return (static_cast<uint64_t>(serial) << 32) | (w << 16) | h;
+    }
+    inline uint32_t guiResizeSerial(uint64_t packed) noexcept
+    {
+        return static_cast<uint32_t>(packed >> 32);
+    }
+    /// Whether serial [a] was issued after [b] (serials wrap).
+    inline bool guiResizeNewer(uint32_t a, uint32_t b) noexcept
+    {
+        return static_cast<int32_t>(a - b) > 0;
+    }
+    inline uint32_t guiResizeWidth(uint64_t packed) noexcept
+    {
+        return static_cast<uint32_t>((packed >> 16) & 0xffffu);
+    }
+    inline uint32_t guiResizeHeight(uint64_t packed) noexcept
+    {
+        return static_cast<uint32_t>(packed & 0xffffu);
+    }
+
+    class ClapEditor;
 
     class ClapInstance
     {
@@ -339,6 +385,44 @@ namespace soloud_clap
         bool hasParamsExtension() const noexcept { return mPluginParams != nullptr; }
         bool hasStateExtension() const noexcept { return mPluginState != nullptr; }
 
+        // --- Phase 4b: the gui ------------------------------------------------
+        /// Any thread: the plugin offers a cocoa gui (embedded or floating)
+        /// this build can host.
+        bool hasEditor() const noexcept
+        {
+            return mHasEditor.load(std::memory_order_acquire);
+        }
+        /// Any thread: the editor is on screen.
+        bool editorOpen() const noexcept
+        {
+            return mEditorVisible.load(std::memory_order_acquire);
+        }
+        /// Main, under the call guard: creates and shows the editor, or shows
+        /// a hidden one.
+        PlayerErrors openEditor(const std::string &title);
+        /// Main, under the call guard: destroys the editor (no event).
+        PlayerErrors closeEditor();
+        /// Any thread: the plugin posted gui requests for the pump.
+        bool editorServiceNeeded() const noexcept
+        {
+            return mGuiRequests.load(std::memory_order_acquire) != 0;
+        }
+        /// Main, under the call guard: applies the posted gui requests.
+        void serviceEditor();
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+        /// As if [serial] request_resize calls had been made, the last one
+        /// off main.
+        void testSetGuiResizeSerial(uint32_t serial) noexcept
+        {
+            mGuiResizeSerial.store(serial, std::memory_order_release);
+            mGuiRequestedSize.store(packGuiResize(serial, 0, 0),
+                                    std::memory_order_release);
+        }
+#endif
+        /// Main, in teardown before deactivate: destroys the gui and closes
+        /// its window.
+        void destroyEditor();
+
         // Main-hop operations; the caller resolved the instance and holds
         // the guard.
         PlayerErrors getParameterValue(clap_id id, double *outValue);
@@ -428,6 +512,18 @@ namespace soloud_clap
 
     private:
         class AudioRole;
+        friend class ClapEditor;
+
+        /// Main: plugin gui calls are allowed (the plugin is up and not
+        /// being torn down).
+        bool guiCallable() const noexcept;
+        void postGuiRequest(uint32_t bits) noexcept;
+        /// Any thread: stores [packed] (packGuiResize) unless a newer
+        /// request is stored already.
+        void storeNewestGuiResize(uint64_t packed) noexcept;
+        /// Main, from cacheExtensions(): validates the gui extension and
+        /// asks which cocoa modes it supports.
+        void cacheGuiExtension();
 
         void setLifecycle(Lifecycle state) noexcept
         {
@@ -495,6 +591,14 @@ namespace soloud_clap
             const clap_host_t *host, uint32_t flag);
         static void CLAP_ABI hostAudioPortsRescan(const clap_host_t *host,
                                                   uint32_t flags);
+        static void CLAP_ABI hostGuiResizeHintsChanged(const clap_host_t *host);
+        static bool CLAP_ABI hostGuiRequestResize(const clap_host_t *host,
+                                                  uint32_t width,
+                                                  uint32_t height);
+        static bool CLAP_ABI hostGuiRequestShow(const clap_host_t *host);
+        static bool CLAP_ABI hostGuiRequestHide(const clap_host_t *host);
+        static void CLAP_ABI hostGuiClosed(const clap_host_t *host,
+                                           bool wasDestroyed);
         static bool CLAP_ABI outTryPush(const clap_output_events_t *list,
                                         const clap_event_header_t *event);
         static ClapInstance *from(const clap_host_t *host) noexcept;
@@ -544,6 +648,26 @@ namespace soloud_clap
         const clap_plugin_latency_t *mPluginLatency = nullptr;
         const clap_plugin_timer_support_t *mPluginTimer = nullptr;
         bool mTimerExtResolved = false;
+#if defined(SOLOUD_ENABLE_PLUGIN_UI) && defined(__APPLE__)
+        const clap_plugin_gui_t *mPluginGui = nullptr;
+        bool mGuiEmbedded = false;
+        bool mGuiFloating = false;
+#endif
+
+        // --- gui (Phase 4b) -------------------------------------------------
+        std::atomic<bool> mHasEditor{false};
+        std::atomic<bool> mEditorVisible{false};
+        /// The gui exists and its window is not closing: what request_show
+        /// and request_hide can act on.
+        std::atomic<bool> mEditorCreated{false};
+        /// GuiRequestBit flags posted by the plugin (any thread).
+        std::atomic<uint32_t> mGuiRequests{0};
+        /// Serials for request_resize, on any thread.
+        std::atomic<uint32_t> mGuiResizeSerial{0};
+        /// The newest off-main request_resize (packGuiResize).
+        std::atomic<uint64_t> mGuiRequestedSize{0};
+        /// Main-only.
+        std::unique_ptr<ClapEditor> mEditor;
 
         // --- parameters -----------------------------------------------------
         /// Never held by DSP. Taken after mEditProducerMutex.

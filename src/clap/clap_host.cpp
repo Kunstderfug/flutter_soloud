@@ -481,6 +481,8 @@ namespace soloud_clap
         if (instance.plugin() != nullptr &&
             instance.lifecycle() != Lifecycle::destroyed)
         {
+            // The gui goes first, while the plugin is still whole (plan 4b).
+            instance.destroyEditor();
             instance.stopProcessingExclusive();
             if (instance.lifecycle() == Lifecycle::activated)
                 instance.deactivate();
@@ -665,6 +667,13 @@ namespace soloud_clap
                 InstanceCallGuard guard(*instance);
                 instance->fireTimers(nowNs());
             }
+            if (skip(*instance))
+                continue;
+            if (instance->editorServiceNeeded())
+            {
+                InstanceCallGuard guard(*instance);
+                instance->serviceEditor();
+            }
         }
     }
 
@@ -802,6 +811,35 @@ namespace soloud_clap
         *outCount = instance->drainEvents(capacity, outTypes, outParamIds,
                                           outValues, outFlags);
         return noError;
+    }
+
+    // --- Phase 4b: plugin editor ---------------------------------------------
+
+    bool ClapHostManager::hasEditor(int handle)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        return instance && instance->hasEditor();
+    }
+
+    bool ClapHostManager::isEditorOpen(int handle)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        return instance && instance->editorOpen();
+    }
+
+    PlayerErrors ClapHostManager::openEditor(int handle,
+                                             const std::string &title)
+    {
+        return mainHop(handle, [&](ClapInstance &instance) {
+            return instance.openEditor(title);
+        });
+    }
+
+    PlayerErrors ClapHostManager::closeEditor(int handle)
+    {
+        return mainHop(handle, [&](ClapInstance &instance) {
+            return instance.closeEditor();
+        });
     }
 
     void ClapHostManager::pumpTick(void *)

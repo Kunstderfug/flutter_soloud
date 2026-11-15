@@ -92,6 +92,18 @@ abstract class ClapEffectPlugin {
   /// Takes up to [maxEvents] of the plugin's pending events.
   List<ClapHostEvent> drainEvents({int maxEvents = 1024});
 
+  /// Whether the plugin offers a native editor.
+  bool get hasEditor;
+
+  /// Whether the editor is on screen.
+  bool get isEditorOpen;
+
+  /// Opens the native editor.
+  bool openEditorWindow({String? title});
+
+  /// Closes the editor if open.
+  void closeEditorWindow();
+
   /// Unloads the plugin.
   void dispose();
 }

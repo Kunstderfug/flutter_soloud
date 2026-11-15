@@ -4077,6 +4077,31 @@ external void soloud_vst3SetRestartComponentCallback(
 @ffi.Native<ffi.Void Function()>()
 external void soloud_vst3HostUnloadAll();
 
+/// Returns 1 if flutter_soloud was compiled with SOLOUD_ENABLE_CLAP (macOS
+/// only), or 0 otherwise.
+@ffi.Native<ffi.Int Function()>()
+external int soloud_clapIsSupported();
+
+/// Writes the CLAP version of the headers this host was built against, or
+/// 0.0.0 when CLAP hosting is not compiled in. Null outputs are skipped.
+@ffi.Native<
+  ffi.Void Function(
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.UnsignedInt>,
+  )
+>()
+external void soloud_clapGetHostClapVersion(
+  ffi.Pointer<ffi.UnsignedInt> outMajor,
+  ffi.Pointer<ffi.UnsignedInt> outMinor,
+  ffi.Pointer<ffi.UnsignedInt> outRevision,
+);
+
+/// Synchronously unloads all hosted CLAP plugins and releases their modules.
+/// Main thread only. A no-op when nothing is loaded.
+@ffi.Native<ffi.Void Function()>()
+external void soloud_clapHostUnloadAll();
+
 typedef dartVoiceEndedCallback_tFunction =
     ffi.Void Function(ffi.Pointer<ffi.UnsignedInt>);
 typedef DartdartVoiceEndedCallback_tFunction =

@@ -1,8 +1,8 @@
 /// Declarations of every FFI_PLUGIN_EXPORT entry point defined in
-/// `src/bindings.cpp`. This header is the single source of truth for the
-/// native ABI: `src/bindings.cpp` includes it so the definitions are checked
-/// against these declarations, and it is the ffigen entry point used to
-/// generate `lib/src/bindings/flutter_soloud_ffigen.dart`.
+/// `src/bindings.cpp` and `src/clap_bindings.cpp`. This header is the single
+/// source of truth for the native ABI: both files include it so the
+/// definitions are checked against these declarations, and it is the ffigen
+/// entry point used to generate `lib/src/bindings/flutter_soloud_ffigen.dart`.
 ///
 /// To regenerate the Dart bindings, go into the "flutter_soloud" dir from the
 /// root project dir and run:
@@ -1885,6 +1885,27 @@ extern "C"
 
   /// Synchronously unloads all hosted VST3 plugins and releases cached modules.
   FFI_PLUGIN_EXPORT void soloud_vst3HostUnloadAll(void);
+
+  // ---------------------------------------------------------------------------
+  // CLAP plugin hosting (src/clap_bindings.cpp). Declared on every platform;
+  // without SOLOUD_ENABLE_CLAP (the `enable_clap` user define, macOS only)
+  // the functions are inert stubs that initialise every output.
+  // ---------------------------------------------------------------------------
+
+  /// Returns 1 if flutter_soloud was compiled with SOLOUD_ENABLE_CLAP (macOS
+  /// only), or 0 otherwise.
+  FFI_PLUGIN_EXPORT int soloud_clapIsSupported(void);
+
+  /// Writes the CLAP version of the headers this host was built against, or
+  /// 0.0.0 when CLAP hosting is not compiled in. Null outputs are skipped.
+  FFI_PLUGIN_EXPORT void soloud_clapGetHostClapVersion(
+      unsigned int *outMajor,
+      unsigned int *outMinor,
+      unsigned int *outRevision);
+
+  /// Synchronously unloads all hosted CLAP plugins and releases their modules.
+  /// Main thread only. A no-op when nothing is loaded.
+  FFI_PLUGIN_EXPORT void soloud_clapHostUnloadAll(void);
 
 #ifdef __cplusplus
 }

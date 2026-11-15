@@ -117,28 +117,22 @@ void main(List<String> args) async {
       xiph = await XiphLink.forPrebuild(input);
     }
 
-    final isDesktop = os == OS.macOS || os == OS.windows || os == OS.linux;
-    // `enable_vst3` accepts a bool, or platform names (`macos`, `windows`,
-    // `linux`) as a list or comma-separated string, so an app can opt in on
-    // one desktop platform without changing its other desktop builds.
-    bool? parseVst3Platforms(Object? val) {
-      final names = switch (val) {
-        final List<Object?> list => list.map((e) => '$e'),
-        final String s when s.contains(',') || parseBool(s) == null =>
-          s.split(','),
-        _ => null,
-      };
-      if (names == null) return null;
-      return names.map((n) => n.trim().toLowerCase()).contains(os.name);
-    }
-
-    final vst3Define = input.userDefines['enable_vst3'];
-    final enableVst3 =
-        isDesktop &&
-        (parseBool(vst3Define) ??
-            parseVst3Platforms(vst3Define) ??
-            parseBool(Platform.environment['SOLOUD_ENABLE_VST3']) ??
-            false);
+    final enableVst3 = pluginFormatEnabled(
+      os: os,
+      supported: {OS.macOS, OS.windows, OS.linux},
+      define: input.userDefines['enable_vst3'],
+      environment: Platform.environment['SOLOUD_ENABLE_VST3'],
+    );
+    // CLAP hosting is macOS-only for now: `enable_clap` never turns it on for
+    // another platform, whatever the define says.
+    final enableClap = pluginFormatEnabled(
+      os: os,
+      supported: {OS.macOS},
+      define: input.userDefines['enable_clap'],
+      environment: Platform.environment['SOLOUD_ENABLE_CLAP'],
+    );
+    // Plugin editors on macOS are NSWindows hosting the plugin's NSView.
+    final linkAppKit = os == OS.macOS && (enableVst3 || enableClap);
     final vst3 = enableVst3
         ? await Vst3Link.forPrebuild(input)
         : Vst3Link.empty();
@@ -155,7 +149,8 @@ void main(List<String> args) async {
 
     print(
       '[flutter_soloud] Building on $platformDisplayName ($arch) with Xiph '
-      'libs [$xiphMode]${enableVst3 ? ', VST3 [prebuilt]' : ''}',
+      'libs [$xiphMode]${enableVst3 ? ', VST3 [prebuilt]' : ''}'
+      '${enableClap ? ', CLAP' : ''}',
     );
 
     String? vst3HelperPath;
@@ -279,6 +274,7 @@ void main(List<String> args) async {
       },
       if (noXiph) 'NO_XIPH_LIBS': null,
       if (enableVst3) 'SOLOUD_ENABLE_VST3': null,
+      if (enableClap) 'SOLOUD_ENABLE_CLAP': null,
       if (vst3HelperPath != null)
         'SOLOUD_VST3_HELPER_PATH': '"$vst3HelperPath"',
     };
@@ -331,6 +327,11 @@ void main(List<String> args) async {
         if (arch == Architecture.x64) ...['-msse2', '-msse3'],
       ],
       if (isApple && arch == Architecture.x64) '-msse4.1',
+      // Vendored CLAP headers, as system headers so their warnings stay out.
+      if (enableClap) ...[
+        '-isystem',
+        input.packageRoot.resolve(clapIncludeDir).toFilePath(),
+      ],
     ];
 
     final includes = [
@@ -369,6 +370,7 @@ void main(List<String> args) async {
           'src/native_decoder/os_decoder_apple.mm',
           'src/audiobuffer/aac_stream_decoder_apple.mm',
           if (enableVst3 && os == OS.macOS) 'src/vst3/vst3_editor_macos.mm',
+          if (enableClap) ...collectClapObjcSources(input.packageRoot),
         ],
         includes: includes,
         forcedIncludes: forcedIncludes,
@@ -401,7 +403,12 @@ void main(List<String> args) async {
       assetName: _assetName,
       language: Language.cpp,
       std: 'c++17',
-      sources: collectSources(input.packageRoot, os, enableVst3: enableVst3),
+      sources: collectSources(
+        input.packageRoot,
+        os,
+        enableVst3: enableVst3,
+        enableClap: enableClap,
+      ),
       includes: includes,
       forcedIncludes: forcedIncludes,
       defines: defines,
@@ -417,7 +424,7 @@ void main(List<String> args) async {
               'AudioToolbox',
               'AVFAudio',
               'CoreAudio',
-              if (enableVst3 && os == OS.macOS) ...['AppKit', 'QuartzCore'],
+              if (linkAppKit) ...['AppKit', 'QuartzCore'],
             ]
           : const [],
       libraries: [
@@ -457,11 +464,15 @@ void main(List<String> args) async {
     for (final dependency in vst3.dependencies) {
       output.dependencies.add(dependency);
     }
-    for (final src in collectSources(
-      input.packageRoot,
-      os,
-      enableVst3: enableVst3,
-    )) {
+    for (final src in [
+      ...collectSources(
+        input.packageRoot,
+        os,
+        enableVst3: enableVst3,
+        enableClap: enableClap,
+      ),
+      if (enableClap) ...collectClapObjcSources(input.packageRoot),
+    ]) {
       output.dependencies.add(input.packageRoot.resolve(src));
     }
   });
@@ -477,6 +488,7 @@ List<String> collectSources(
   Uri packageRoot,
   OS targetOS, {
   bool enableVst3 = false,
+  bool enableClap = false,
 }) {
   final rootPath = packageRoot.toFilePath().replaceAll(r'\', '/');
   final isApple = targetOS == OS.macOS || targetOS == OS.iOS;
@@ -543,6 +555,13 @@ List<String> collectSources(
       },
     );
   }
+  if (enableClap) {
+    addDir(
+      'clap/',
+      recursive: true,
+      exclude: (p) => p.contains('/third_party/'),
+    );
+  }
   // Each file compiles to nothing on platforms it doesn't serve.
   addDir('native_stream/');
   addDir('waveform/');
@@ -583,6 +602,64 @@ List<String> collectSources(
     addDir('soloud/src/backend/miniaudio/');
   }
 
+  return sources..sort();
+}
+
+/// Vendored CLAP headers (free-audio/clap, see its VERSION.md).
+const clapIncludeDir = 'src/clap/third_party/clap/include';
+
+/// Whether a plugin format is compiled in for [os].
+///
+/// [define] is the format's user define: a bool (or `true`/`false`/`1`/`0`),
+/// or platform names (`macos`, `windows`, `linux`) as a list or a
+/// comma-separated string. Without it, [environment] is read as a bool.
+/// Platforms outside [supported] are never enabled.
+bool pluginFormatEnabled({
+  required OS os,
+  required Set<OS> supported,
+  Object? define,
+  String? environment,
+}) {
+  if (!supported.contains(os)) return false;
+  bool? parseBool(Object? val) => switch (val) {
+    final bool b => b,
+    final String s when s.toLowerCase() == 'true' || s == '1' => true,
+    final String s when s.toLowerCase() == 'false' || s == '0' => false,
+    _ => null,
+  };
+  bool? parsePlatforms(Object? val) {
+    final names = switch (val) {
+      final List<Object?> list => list.map((e) => '$e'),
+      final String s when s.contains(',') || parseBool(s) == null =>
+        s.split(','),
+      _ => null,
+    };
+    if (names == null) return null;
+    return names.map((n) => n.trim().toLowerCase()).contains(os.name);
+  }
+
+  return parseBool(define) ??
+      parsePlatforms(define) ??
+      parseBool(environment) ??
+      false;
+}
+
+/// Objective-C++ sources of the CLAP host (macOS only), built by the ObjC
+/// builder because CBuilder's C++ mode forces `-x c++`.
+List<String> collectClapObjcSources(Uri packageRoot) {
+  final rootPath = packageRoot.toFilePath().replaceAll(r'\', '/');
+  final dir = Directory.fromUri(packageRoot.resolve('src/clap/'));
+  if (!dir.existsSync()) return const [];
+  final sources = <String>[];
+  for (final entity in dir.listSync(recursive: true)) {
+    if (entity is! File) continue;
+    final path = entity.path.replaceAll(r'\', '/');
+    if (!path.endsWith('.mm') || path.contains('/third_party/')) continue;
+    final relPath = path.startsWith(rootPath)
+        ? path.substring(rootPath.length)
+        : path;
+    sources.add(relPath.startsWith('/') ? relPath.substring(1) : relPath);
+  }
   return sources..sort();
 }
 

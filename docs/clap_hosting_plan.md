@@ -199,6 +199,34 @@ Round 1 ran at medium effort, so the remaining phases were reviewed again at HIG
 5. **The minimal Dart wrapper is a gate before the 4b live probe.** It exposes: support detection, scan/free, descriptor and plugin id, effect load onto `CustomFilterGlobal` with callback/userdata binding; idempotent dispose and host unload-all, including slot cleanup when binding fails; latency, state round-trip, parameter metadata/get/set and bounded native-event draining; and for the GUI probe `hasEditor`, open/close, `isEditorOpen` and a single editor-closed notification. These are the seams GPhil's backend uses (`lib/services/vst3/vst3_chain_backend.dart`); Phase 7 generalises GPhil's small plugin interface rather than adding a package-wide host abstraction. Restart/change events are CLAP-specific, not Steinberg flags. Parameter events stay gesture-aware plain values; slot automation semantics (plain vs normalized, stepped and zero-range parameters) are defined explicitly. No VST3-style parameter-value fallback when the plugin has no `state` extension.
 6. **The mock harness starts with Phase 2.** A standalone `.clap` mock bundle (vendored headers, `clap_entry`, CoreFoundation/AppKit; no Flutter or VST3 SDK) with a runner mirroring `test/run_vst3_host_test.sh`, including the sanitizer modes. Gates: lifecycle and thread assertions for Phase 2, extensions for Phase 3, GUI protocol for 4b. Added cases: paused-flush progression, restart topology changes, reentrant callback requests, hide/show, rejected host resize, and a scan while another instance of the same module processes (entry init/deinit must not overlap other calls into the module). Real sandboxed GPhil screenshots remain a separate gate.
 
+### 2026-11-15, Phase 3 design (Sol 6.1 at HIGH, two rounds, then Fable 5.2 arbitration)
+
+**Escalation rule (set by the project owner for all phases):** when Sol still disagrees after two review rounds, the dispute goes to Fable 5.2 at medium effort with both positions, the diff and the evidence. Its decision is adopted without asking the owner and is recorded here.
+
+1. **Round 1, REJECT (11 findings).** Revision 1 answered every finding:
+   - edits are tied to the cache generation;
+   - retained `REQUIRES_PROCESS` edits are bounded;
+   - work is taken before the call;
+   - DSP consumption is bounded;
+   - out-events are gesture-safe and have a resync handshake;
+   - lifecycle phases are explicit and rescans are latched;
+   - there is a guard protocol;
+   - timers can be registered from init;
+   - the idle heuristic is described honestly;
+   - one order contract applies to all of the above.
+2. **Round 2, REJECT (blockers B1–B5).**
+   - B1: the resync boundary.
+   - B2: immediate invalidation on `rescan(ALL)`.
+   - B3: notification starvation.
+   - B4: retained saturation.
+   - B5: timer teardown order.
+3. **Fable arbitration (binding).**
+   - **Out-ring boundary:** a lock-free resync boundary on free-running 64-bit ring positions, with a persistent consumer phase.
+   - **Reset rule:** the main thread issues the out reset only while it holds `mProcessMutex`.
+   - **Pending cache:** `rescan(ALL)` installs a pending sentinel under `mEditProducerMutex` → `mParamsMutex`. It is rebuilt at three defined points, and a rebuild is published only if the generation is unchanged (at most 3 attempts).
+   - **Contract while pending:** edits fail, the count is 0, and `resync(paramsReset)` is never delivered.
+   - **Required tests:** the arbitration also named the tests listed in the Phase 3 result below.
+
 ## Phase results
 
 ### Phase 0: VST3 editor UI verified (2026-11-15, Sol 6.1 ACCEPT in round 3)
@@ -231,3 +259,64 @@ No VST3 editor defects were found, so Phase 4a extracts the existing window beha
 - Tests: `test/run_clap_host_test.sh` (a mock `.clap` bundle and 24 harness tests, including the C ABI from a worker) passes in plain, ASan+UBSan and TSan builds. `test/run_engine_lifecycle_test.sh` (222 assertions, with CLAP compiled in and a dispose-versus-main-barrier deadlock test) and `test/run_vst3_host_test.sh` (114 assertions) pass in all three. The four-configuration hook matrix passes `test/clap_stub_test.dart`.
 - Mutation probes: re-reading the epoch on main, ignoring `IS_MAIN`, ignoring a failed scratch allocation, and shutting plugins down under the lifetime lock each fail their test.
 - Review: round 1 rejected the queued load surviving dispose, the cross-host dispose deadlock, ignored `IS_MAIN` flags, unhandled scratch OOM, and the untested successful C ABI. All five are fixed above. Round 2 accepted: it found no mixing window from the dispose reordering, because `Player::dispose()` stops the device and backend before the player is replaced and `init_deinit_mutex` is held through the VST3 unload. It also accepted the input-side policy. The deadlock test uses a main-thread shutdown stand-in, not a real VST3 editor.
+
+### Phase 3: host extensions (2026-11-15, Fable 5.2 arbitration ACCEPT after two Sol 6.1 rounds)
+
+**Host extensions advertised:**
+- `thread-check` and `log`. Audio-thread log messages are dropped and counted.
+- `params`: `rescan`, `clear` and `request_flush`.
+- `state`: `mark_dirty`.
+- `latency`: `changed`, legal only while being activated.
+- `timer-support`: at most 64 timers, clamped to the 16 ms pump.
+- `audio-ports`: truthful rescan flags.
+- `gui` stays null until 4b.
+
+**Plugin side:**
+- A parameter metadata cache, off the DSP path.
+- Host → plugin edits through a bounded SPSC queue (`src/clap/clap_spsc.h`). Edits are validated against the cache generation. `REQUIRES_PROCESS` edits are retained until processing resumes.
+- Flush servicing while paused or inactive.
+- State save/load, limited to 64 MiB.
+- Latency is published after each activation.
+- A plugin → host out ring that never leaves a gesture stuck open. An overflow or a parameter reset becomes a single `resync` event.
+
+**Notifications:**
+- Five are coalesced and drained in this fixed order: restartFailed, restarted, latencyChanged, paramsRescan, stateDirty.
+- `editorClosed` is reserved for 4b.
+- They are drained after the ring and its resync.
+
+**C ABI:** `soloud_clap{GetLatencySamples, GetParameterCount, GetParameterInfo, GetParameterValue, ParameterValueToText, ParameterTextToValue, SetParameterValue, GetState, SetState, DrainEvents}` and `ClapHostEventType` (C and Dart). Bindings are mirrored by hand, with inert stubs when CLAP is off.
+
+**Consumer contract for Phase 5:** a `resync(paramsReset)` means the list was settled when the event was acknowledged. A later `rescan(ALL)` can make it pending again before Dart re-queries, and another resync always follows. So Dart treats a pending list (count 0, or `unknownError` on set) after a reset as "wait for the next resync". While a reset is held behind a pending list, notifications such as `restartFailed` wait too. They are delivered after the resync.
+
+**Tests:**
+- `test/run_clap_host_test.sh` runs 56 harness tests against the mock bundle (new knobs for edits, flushes, out-events, state, latency, timers, port-query rescans and reentrant hooks). It passes in plain, ASan+UBSan and TSan builds, with zero lock-order violations asserted after every test.
+- The four-configuration hook matrix passes `test/clap_stub_test.dart`.
+- `dart analyze` shows only pre-existing infos.
+
+**Mutation probes (11), each failing its test:**
+- the drain's pending re-check removed;
+- the drain's acknowledgement taken outside `mParamsMutex`;
+- the reset flag dropped;
+- the settle-before-activate removed on load, or on restart, or its result ignored;
+- edits never treated as stale;
+- `REQUIRES_PROCESS` ignored;
+- audio-thread logs emitted;
+- the timer clamp removed.
+
+**Implementation review:**
+- **Round 1, Sol REJECT.**
+  - (1) A reset ABA: a second inactive `rescan(ALL)` on an already-reset word let the drain announce the reset while the list was pending.
+  - (2) A `rescan(ALL)` from inactive port queries was serviced only after activation, causing a restart cycle.
+  - Fix for (2): `settleParamsBeforeActivate()` rebuilds after `readPorts` and before activation, on load and on restart. A list that never settles fails the load (`fileLoadFailed`) or the restart (Failed, inited, recoverable).
+  - Fix for (1): a reset tag in the out-state word.
+- **Round 2, Sol REJECT.**
+  - The tag caught only a completed reset, not the gap between the pending store and the reset. An active `rescan(ALL)` never changes the word at all.
+  - Fix: the drain's pending check and its acknowledging CAS now run under `mParamsMutex`, the lock under which both pending transitions happen. That adds the edge `mDrainMutex` → `mParamsMutex`, and `mParamsMutex` stays a leaf lock.
+  - With that, the tag became redundant: no test detected its removal. It was removed.
+  - New coordinated tests pause the consumer inside the acknowledgement and main between the pending store and the reset, for both inactive and active, plus an active-rescan hold test.
+- **Fable arbitration, ACCEPT.**
+  - The guarantee holds for inactive and active `rescan(ALL)`. Both `mParamsPending` stores are under the lock, and an off-main `rescan` is rejected by the thread guard.
+  - The tag removal is right, and no reset can be lost.
+  - There is no deadlock or audio-thread impact: DSP never takes `mParamsMutex`.
+  - The tests exercise the real interleaving with bounded waits.
+  - Non-blocking notes: the consumer contract above; the pending sentinel is installed even for created or retired instances, as the arbitration's B2 specifies.

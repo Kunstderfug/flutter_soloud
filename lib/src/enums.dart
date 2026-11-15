@@ -744,3 +744,54 @@ enum LinuxAudioBackend {
     _ => auto,
   };
 }
+
+/// Event types the CLAP host reports for a loaded plugin.
+///
+/// WARNING: Keep these in sync with `ClapHostEventType` in `src/enums.h`.
+enum ClapHostEventType {
+  /// The plugin changed a parameter's plain value.
+  paramValue(1),
+
+  /// The user started a gesture on a parameter.
+  paramGestureBegin(2),
+
+  /// The user ended a gesture on a parameter.
+  paramGestureEnd(3),
+
+  /// Events were lost: re-read every parameter value.
+  resync(4),
+
+  /// The plugin rescanned its parameters (the CLAP rescan flags).
+  paramsRescan(5),
+
+  /// The plugin's latency changed.
+  latencyChanged(6),
+
+  /// The plugin restarted and is processing again.
+  restarted(7),
+
+  /// A requested restart failed: the plugin no longer processes.
+  restartFailed(8),
+
+  /// The plugin's state changed and is worth saving.
+  stateDirty(9),
+
+  /// The plugin's editor window was closed.
+  editorClosed(10);
+
+  const ClapHostEventType(this.value);
+
+  /// The integer value representing the enum in native code.
+  final int value;
+
+  /// Returns the [ClapHostEventType] for [value], or null for a type this
+  /// version does not know.
+  static ClapHostEventType? fromValue(int value) {
+    for (final type in values) {
+      if (type.value == value) {
+        return type;
+      }
+    }
+    return null;
+  }
+}

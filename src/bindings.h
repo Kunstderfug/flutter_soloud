@@ -1963,6 +1963,98 @@ extern "C"
   /// for a non-positive handle or when CLAP hosting is not compiled in.
   FFI_PLUGIN_EXPORT void *soloud_clapGetPluginUserData(int pluginHandle);
 
+  // --- parameters, state, latency, events (plan Phase 3) ----------------------
+  // Every output is initialised on every path. Strings are NUL-terminated and
+  // truncated to their buffer; a buffer length <= 0 skips that string. An
+  // unknown or unloaded handle gives invalidParameter (0 for the counts).
+  // "Main hop" calls run on, and wait for, the main thread: call them from a
+  // non-audio thread that holds no lock the main thread may need. A main hop
+  // returns unknownError when the instance is busy, that is, when it is
+  // called re-entrantly from inside one of the plugin's own calls.
+
+  /// The plugin's latency in frames, or 0 (no latency extension, unknown
+  /// handle). Any thread.
+  FFI_PLUGIN_EXPORT unsigned int soloud_clapGetLatencySamples(int pluginHandle);
+
+  /// The number of parameters, or 0 while the list is being rescanned (a
+  /// clapEventParamsRescan follows). Any thread.
+  FFI_PLUGIN_EXPORT int soloud_clapGetParameterCount(int pluginHandle);
+
+  /// Describes the parameter at [paramIndex] (0..count-1): its id, name,
+  /// module path, plain range, default and CLAP_PARAM_* flags. Any thread.
+  /// invalidParameter for an index out of range or while rescanning.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapGetParameterInfo(
+      int pluginHandle,
+      int paramIndex,
+      unsigned int *outParamId,
+      char *outName,
+      int nameLen,
+      char *outModule,
+      int moduleLen,
+      double *outMin,
+      double *outMax,
+      double *outDefault,
+      unsigned int *outFlags);
+
+  /// The plugin's current plain value of [paramId]. Main hop.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapGetParameterValue(
+      int pluginHandle,
+      unsigned int paramId,
+      double *outValue);
+
+  /// Formats [value] of [paramId] the plugin's way. Main hop.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapParameterValueToText(
+      int pluginHandle,
+      unsigned int paramId,
+      double value,
+      char *outText,
+      int textLen);
+
+  /// Parses [text] into a plain value of [paramId]. Main hop.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapParameterTextToValue(
+      int pluginHandle,
+      unsigned int paramId,
+      const char *text,
+      double *outValue);
+
+  /// Queues [plainValue] (clamped to the range) for [paramId]; the plugin
+  /// receives it with its next processed block, or a flush while it does not
+  /// process. Any non-audio thread; never waits for the main thread.
+  /// unknownError while the list is being rescanned or the queue is full.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapSetParameterValue(
+      int pluginHandle,
+      unsigned int paramId,
+      double plainValue);
+
+  /// Saves the plugin's state. On success [outData] is malloc'd: free it with
+  /// nativeFree(). An empty state gives null data and size 0. notImplemented
+  /// when the plugin has no state extension. Main hop.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapGetState(
+      int pluginHandle,
+      unsigned char **outData,
+      unsigned int *outSize);
+
+  /// Loads a state saved by soloud_clapGetState(). Parameter edits queued
+  /// before the call are dropped, and a clapEventParamsRescan (values, text)
+  /// follows. Main hop.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapSetState(
+      int pluginHandle,
+      const unsigned char *data,
+      unsigned int size);
+
+  /// Takes up to [capacity] pending events into the parallel arrays (types
+  /// from ClapHostEventType) and writes how many to [outCount]. Call it again
+  /// while it fills the arrays. Any non-audio thread, one at a time per
+  /// handle; never waits for the main thread.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapDrainEvents(
+      int pluginHandle,
+      int capacity,
+      int *outTypes,
+      unsigned int *outParamIds,
+      double *outValues,
+      unsigned int *outFlags,
+      int *outCount);
+
 #ifdef __cplusplus
 }
 #endif

@@ -327,4 +327,32 @@ typedef void (*dartVst3RestartComponentCallback_t)(
     int pluginHandle,
     int flags);
 
+/// Event types soloud_clapDrainEvents() reports.
+///
+/// WARNING: Keep these in sync with `HostEventType` in
+/// `src/clap/clap_instance.h` and `ClapHostEventType` in `lib/src/enums.dart`.
+typedef enum ClapHostEventType {
+  /// The plugin changed [paramId] to [value] (plain). Flag bit 0: dontRecord.
+  clapEventParamValue = 1,
+  /// The user started a gesture on [paramId].
+  clapEventParamGestureBegin = 2,
+  /// The user ended a gesture on [paramId].
+  clapEventParamGestureEnd = 3,
+  /// Events were lost. Flags: bit 0 the ring overflowed, bit 1 the parameter
+  /// list was reset. Re-read every parameter value.
+  clapEventResync = 4,
+  /// The plugin rescanned its parameters; flags are the CLAP rescan flags.
+  clapEventParamsRescan = 5,
+  /// soloud_clapGetLatencySamples() changed.
+  clapEventLatencyChanged = 6,
+  /// The plugin restarted (deactivate + activate) and is processing again.
+  clapEventRestarted = 7,
+  /// A requested restart failed: the plugin no longer processes.
+  clapEventRestartFailed = 8,
+  /// The plugin's state changed and is worth saving.
+  clapEventStateDirty = 9,
+  /// The plugin's editor window was closed (Phase 4b).
+  clapEventEditorClosed = 10,
+} ClapHostEventType_t;
+
 #endif // ENUMS_H

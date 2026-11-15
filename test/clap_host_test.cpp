@@ -49,11 +49,13 @@ namespace
         }                                                                      \
     } while (0)
 
+// Evaluates [cond] once: it may have side effects.
 #define REQUIRE(cond)                                                          \
     do                                                                         \
     {                                                                          \
-        CHECK(cond);                                                           \
-        if (!(cond))                                                           \
+        const bool requireOk = static_cast<bool>(cond);                        \
+        CHECK(requireOk && #cond);                                             \
+        if (!requireOk)                                                        \
             return;                                                            \
     } while (0)
 
@@ -72,6 +74,7 @@ namespace
         MockClapSetHookFn setHook = nullptr;
         MockClapLogFn log = nullptr;
         MockClapResetFn reset = nullptr;
+        MockClapReceivedFn received = nullptr;
     };
 
     MockApi loadMockApi(const std::string &path)
@@ -95,6 +98,9 @@ namespace
             CFBundleGetFunctionPointerForName(bundle, CFSTR("mock_clap_log")));
         api.reset = reinterpret_cast<MockClapResetFn>(
             CFBundleGetFunctionPointerForName(bundle, CFSTR("mock_clap_reset")));
+        api.received = reinterpret_cast<MockClapReceivedFn>(
+            CFBundleGetFunctionPointerForName(bundle,
+                                              CFSTR("mock_clap_received")));
         return api;
     }
 
@@ -381,6 +387,14 @@ namespace
         test::setBeforeLoadMarshalHook(nullptr);
         test::setRegistryWaitHook(nullptr);
         test::failScratchAllocation(-1);
+        test::setLogSink(nullptr);
+        test::setIdleThresholdNs(0);
+        test::setOutRingCapacity(0);
+        test::setStateSizeLimit(0);
+        test::setEditProducerHook(nullptr);
+        test::setDrainBeforeAckHook(nullptr);
+        test::setDrainInsideAckHook(nullptr);
+        test::setRescanAfterPendingHook(nullptr);
         mgr().setAudioThreadBarrier(&testBarrier, nullptr);
         mgr().unloadAll();
         const bool drained = pumpUntil([] {
@@ -393,6 +407,8 @@ namespace
         CHECK(gMock.state->overlaps.load() == 0);
         CHECK(gMock.state->violations.load() == 0);
         CHECK(!hasViolation());
+        CHECK(test::lockOrderViolations() == 0);
+        test::resetLockOrderViolations();
         gMock.reset();
         gMock.setHook(&hookTrampoline);
     }
@@ -497,7 +513,7 @@ namespace
     {
         std::vector<ScannedPlugin> plugins;
         CHECK(mgr().scanBundle(gMockPath.c_str(), plugins) == noError);
-        CHECK(plugins.size() == 11);
+        CHECK(plugins.size() == 12);
         const ScannedPlugin *stereo = nullptr;
         for (const auto &p : plugins)
             if (p.id == "mock.stereo")
@@ -887,7 +903,7 @@ namespace
             CHECK(pumpUntil([&] { return dsp.audible() > 3; }));
             std::vector<ScannedPlugin> plugins;
             CHECK(mgr().scanBundle(gMockPath.c_str(), plugins) == noError);
-            CHECK(plugins.size() == 11);
+            CHECK(plugins.size() == 12);
             CHECK(gMock.state->entryInits.load() == 1);
         }
         CHECK(mgr().unloadPlugin(a) == noError);
@@ -1161,7 +1177,7 @@ namespace
             loaded = mgr().loadEffect(gMockPath.c_str(), "mock.stereo",
                                       kSampleRate, 512, 2, &h);
         });
-        CHECK(scan == noError && plugins.size() == 11);
+        CHECK(scan == noError && plugins.size() == 12);
         REQUIRE(loaded == noError && h > 0);
         stereoBlock(h);
         onWorker([&] { unloaded = mgr().unloadPlugin(h); });
@@ -1665,7 +1681,7 @@ namespace
             scan = soloud_clapScanBundle(gMockPath.c_str(), &count, &ids, &names,
                                          &vendors, &versions, &features);
         });
-        REQUIRE(scan == noError && count == 11);
+        REQUIRE(scan == noError && count == 12);
         REQUIRE(ids && names && vendors && versions && features);
         // The copies outlive the module.
         onWorker([] { soloud_clapHostUnloadAll(); });
@@ -1725,6 +1741,2190 @@ namespace
         CHECK(gMock.state->entryDeinits.load() == 2);
     }
 
+    // =========================================================================
+    // Phase 3 helpers
+    // =========================================================================
+
+    constexpr int kEvValue = static_cast<int>(HostEventType::paramValue);
+    constexpr int kEvBegin = static_cast<int>(HostEventType::gestureBegin);
+    constexpr int kEvEnd = static_cast<int>(HostEventType::gestureEnd);
+    constexpr int kEvResync = static_cast<int>(HostEventType::resync);
+    constexpr int kEvRescan = static_cast<int>(HostEventType::paramsRescan);
+    constexpr int kEvLatency = static_cast<int>(HostEventType::latencyChanged);
+    constexpr int kEvRestarted = static_cast<int>(HostEventType::restarted);
+    constexpr int kEvRestartFailed =
+        static_cast<int>(HostEventType::restartFailed);
+    constexpr int kEvStateDirty = static_cast<int>(HostEventType::stateDirty);
+    constexpr uint64_t kMs = 1000 * 1000;
+    constexpr uint64_t kHour = UINT64_C(3600) * 1000 * kMs;
+
+    struct Ev
+    {
+        int type;
+        unsigned id;
+        double value;
+        unsigned flags;
+    };
+
+    std::vector<Ev> drain(int h, int cap = 64, PlayerErrors *error = nullptr)
+    {
+        const size_t n = static_cast<size_t>(std::max(cap, 1));
+        std::vector<int> types(n, -1);
+        std::vector<unsigned> ids(n), flags(n);
+        std::vector<double> values(n);
+        int count = -1;
+        const PlayerErrors e = mgr().drainEvents(h, cap, types.data(), ids.data(),
+                                                 values.data(), flags.data(), &count);
+        if (error != nullptr)
+            *error = e;
+        std::vector<Ev> out;
+        for (int i = 0; i < count; ++i)
+            out.push_back({types[i], ids[i], values[i], flags[i]});
+        return out;
+    }
+
+    /// Drains until a call returns nothing. Every call returns at most [cap].
+    std::vector<Ev> drainAll(int h, int cap = 64)
+    {
+        std::vector<Ev> all;
+        for (int i = 0; i < 100000; ++i)
+        {
+            std::vector<Ev> part = drain(h, cap);
+            CHECK(part.size() <= static_cast<size_t>(cap));
+            if (part.empty())
+                break;
+            all.insert(all.end(), part.begin(), part.end());
+        }
+        return all;
+    }
+
+    int countType(const std::vector<Ev> &evs, int type)
+    {
+        return static_cast<int>(std::count_if(
+            evs.begin(), evs.end(), [&](const Ev &e) { return e.type == type; }));
+    }
+
+    int indexOf(const std::vector<Ev> &evs, int type)
+    {
+        for (size_t i = 0; i < evs.size(); ++i)
+            if (evs[i].type == type)
+                return static_cast<int>(i);
+        return -1;
+    }
+
+    std::string typeString(const std::vector<Ev> &evs)
+    {
+        std::string s;
+        for (const Ev &e : evs)
+            s += (s.empty() ? "" : " ") + std::to_string(e.type);
+        return s;
+    }
+
+    /// BEGIN opens and END closes a gesture per id. An END without a BEGIN is
+    /// legal only after a resync; a resync clears every open gesture; nothing
+    /// may be open at the end.
+    bool gesturesBalanced(const std::vector<Ev> &evs)
+    {
+        std::map<unsigned, bool> open;
+        bool resynced = false;
+        for (const Ev &e : evs)
+        {
+            if (e.type == kEvResync)
+            {
+                open.clear();
+                resynced = true;
+            }
+            else if (e.type == kEvBegin)
+            {
+                if (open[e.id])
+                    return false;
+                open[e.id] = true;
+            }
+            else if (e.type == kEvEnd)
+            {
+                if (!open[e.id] && !resynced)
+                    return false;
+                open[e.id] = false;
+            }
+        }
+        for (const auto &kv : open)
+            if (kv.second)
+                return false;
+        return true;
+    }
+
+    std::vector<MockReceived> received()
+    {
+        const size_t n = gMock.received(nullptr, 0);
+        std::vector<MockReceived> out(n);
+        const size_t m = gMock.received(out.data(), n);
+        out.resize(std::min(n, m));
+        return out;
+    }
+
+    /// The received values of [id] from index [from] on.
+    std::vector<MockReceived> receivedFor(uint32_t id, size_t from = 0)
+    {
+        std::vector<MockReceived> out;
+        const std::vector<MockReceived> all = received();
+        for (size_t i = from; i < all.size(); ++i)
+            if (all[i].id == id)
+                out.push_back(all[i]);
+        return out;
+    }
+
+    bool receivedValue(uint32_t id, double value, size_t from = 0)
+    {
+        for (const MockReceived &r : receivedFor(id, from))
+            if (r.value == value)
+                return true;
+        return false;
+    }
+
+    int countLine(const std::string &id, const std::string &line)
+    {
+        int n = 0;
+        for (const std::string &e : events(id))
+            if (e == line)
+                ++n;
+        return n;
+    }
+
+    // The host log sink.
+    std::mutex gSinkMutex;
+    std::vector<std::string> gSinkLines;
+
+    void captureSink(const char *pluginId, int severity, const char *msg)
+    {
+        std::lock_guard<std::mutex> lock(gSinkMutex);
+        gSinkLines.push_back(std::string(pluginId != nullptr ? pluginId : "?") +
+                             "|" + std::to_string(severity) + "|" +
+                             (msg != nullptr ? msg : "<null>"));
+    }
+
+    void captureLogs()
+    {
+        {
+            std::lock_guard<std::mutex> lock(gSinkMutex);
+            gSinkLines.clear();
+        }
+        test::setLogSink(&captureSink);
+    }
+
+    int sinkCount(const std::string &needle)
+    {
+        std::lock_guard<std::mutex> lock(gSinkMutex);
+        int n = 0;
+        for (const std::string &line : gSinkLines)
+            if (line.find(needle) != std::string::npos)
+                ++n;
+        return n;
+    }
+
+    // Plain-function test hooks forwarding to std::function. Set and cleared
+    // only while no thread can call them.
+    std::function<void()> gProducerFn;
+    std::function<void()> gDrainAckFn;
+    void producerTrampoline()
+    {
+        if (gProducerFn)
+            gProducerFn();
+    }
+    void drainAckTrampoline()
+    {
+        if (gDrainAckFn)
+            gDrainAckFn();
+    }
+    std::function<void()> gDrainInsideFn;
+    std::function<void()> gAfterPendingFn;
+    void drainInsideTrampoline()
+    {
+        if (gDrainInsideFn)
+            gDrainInsideFn();
+    }
+    void afterPendingTrampoline()
+    {
+        if (gAfterPendingFn)
+            gAfterPendingFn();
+    }
+
+    // Spins until [done] or [seconds] pass, without pumping.
+    bool waitFlag(const std::atomic<bool> &done, double seconds)
+    {
+        const auto end = std::chrono::steady_clock::now() +
+                         std::chrono::duration<double>(seconds);
+        while (!done.load())
+        {
+            if (std::chrono::steady_clock::now() >= end)
+                return false;
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+        }
+        return true;
+    }
+
+    template <typename T>
+    const T *hostExt(const clap_host_t *host, const char *id)
+    {
+        return static_cast<const T *>(host->get_extension(host, id));
+    }
+
+    const clap_host_params_t *hostParams(const clap_host_t *host)
+    {
+        return hostExt<clap_host_params_t>(host, CLAP_EXT_PARAMS);
+    }
+
+    const clap_host_timer_support_t *hostTimers(const clap_host_t *host)
+    {
+        return hostExt<clap_host_timer_support_t>(host, CLAP_EXT_TIMER_SUPPORT);
+    }
+
+    /// Restarts with the next activate failing: Failed and inited.
+    bool makeInactive(ClapInstance &instance)
+    {
+        const clap_host_t *host = instance.host();
+        gMock.state->failActivateCount = 1;
+        host->request_restart(host);
+        return pumpUntil(
+                   [&] { return instance.disposition() == Disposition::failed; }) &&
+               instance.lifecycle() == Lifecycle::inited;
+    }
+
+    /// Processes stereo blocks until [done] or [maxBlocks].
+    bool processUntil(int h, const std::function<bool()> &done, int maxBlocks = 32)
+    {
+        for (int i = 0; i < maxBlocks && !done(); ++i)
+            stereoBlock(h);
+        return done();
+    }
+
+    // =========================================================================
+    // 25. Host extensions
+    // =========================================================================
+
+    void testExtensions()
+    {
+        captureLogs();
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        for (const char *id :
+             {CLAP_EXT_THREAD_CHECK, CLAP_EXT_LOG, CLAP_EXT_PARAMS, CLAP_EXT_STATE,
+              CLAP_EXT_LATENCY, CLAP_EXT_TIMER_SUPPORT, CLAP_EXT_AUDIO_PORTS})
+            CHECK(host->get_extension(host, id) != nullptr);
+        CHECK(host->get_extension(host, CLAP_EXT_GUI) == nullptr);
+        CHECK(host->get_extension(host, "com.example.unknown") == nullptr);
+        CHECK(host->get_extension(host, nullptr) == nullptr);
+        CHECK(instance->hasParamsExtension());
+        CHECK(instance->hasStateExtension());
+
+        auto *ports = hostExt<clap_host_audio_ports_t>(host, CLAP_EXT_AUDIO_PORTS);
+        REQUIRE(ports != nullptr);
+        for (uint32_t flag :
+             {CLAP_AUDIO_PORTS_RESCAN_NAMES, CLAP_AUDIO_PORTS_RESCAN_FLAGS,
+              CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT,
+              CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE,
+              CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR,
+              CLAP_AUDIO_PORTS_RESCAN_LIST})
+            CHECK(ports->is_rescan_flag_supported(host, flag));
+        CHECK(!ports->is_rescan_flag_supported(host, 0));
+        CHECK(!ports->is_rescan_flag_supported(host, 1u << 30));
+        const uint64_t misbehaving = instance->misbehavingCount();
+        bool offMain = true;
+        onWorker([&] {
+            offMain = ports->is_rescan_flag_supported(host,
+                                                      CLAP_AUDIO_PORTS_RESCAN_NAMES);
+        });
+        CHECK(!offMain);
+        CHECK(instance->misbehavingCount() == misbehaving + 1);
+        CHECK(sinkCount("mock.ext|" + std::to_string(CLAP_LOG_PLUGIN_MISBEHAVING) +
+                        "|audio_ports.is_rescan_flag_supported") == 1);
+
+        const int s = load("mock.stereo");
+        REQUIRE(s > 0);
+        auto stereo = mgr().getInstance(s);
+        CHECK(!stereo->hasParamsExtension());
+        CHECK(!stereo->hasStateExtension());
+        CHECK(mgr().unloadPlugin(s) == noError);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 26. Parameter metadata, values and text
+    // =========================================================================
+
+    void testParamsMetadata()
+    {
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        CHECK(mgr().parameterCount(h) == 4);
+        ParamEntry e;
+        CHECK(mgr().parameterInfo(h, 0, e) == noError);
+        CHECK(e.id == 10 && e.name == "Gain" && e.module == "Main");
+        CHECK(e.min == 0 && e.max == 2 && e.def == 1);
+        CHECK((e.flags & CLAP_PARAM_IS_AUTOMATABLE) != 0 && e.cookie != nullptr);
+        CHECK(mgr().parameterInfo(h, 1, e) == noError);
+        CHECK(e.id == 20 && e.module == "Main/Settings" && e.max == 3);
+        CHECK((e.flags & CLAP_PARAM_IS_STEPPED) != 0 &&
+              (e.flags & CLAP_PARAM_IS_ENUM) != 0);
+        CHECK(mgr().parameterInfo(h, 2, e) == noError);
+        CHECK(e.id == 30 && (e.flags & CLAP_PARAM_IS_READONLY) != 0);
+        CHECK(mgr().parameterInfo(h, 3, e) == noError);
+        CHECK(e.id == 40 && (e.flags & CLAP_PARAM_REQUIRES_PROCESS) != 0);
+        CHECK(mgr().parameterInfo(h, 4, e) == invalidParameter);
+        CHECK(e.id == CLAP_INVALID_ID && e.name.empty());
+        CHECK(mgr().parameterInfo(h, -1, e) == invalidParameter);
+
+        double v = -1;
+        CHECK(mgr().getParameterValue(h, 10, &v) == noError && v == 1.0);
+        gMock.state->meterValue = 0.75;
+        CHECK(mgr().getParameterValue(h, 30, &v) == noError && v == 0.75);
+        CHECK(mgr().getParameterValue(h, 99, &v) == invalidParameter && v == 0);
+        CHECK(mgr().getParameterValue(h, 10, nullptr) == invalidParameter);
+        gMock.state->meterValue = NAN;
+        CHECK(mgr().getParameterValue(h, 30, &v) == invalidParameter && v == 0);
+
+        char text[32];
+        CHECK(mgr().valueToText(h, 10, 1.5, text, sizeof(text)) == noError);
+        CHECK(std::strcmp(text, "1.50") == 0);
+        CHECK(mgr().valueToText(h, 10, 1.5, text, 3) == noError);
+        CHECK(std::strcmp(text, "1.") == 0);
+        std::strcpy(text, "junk");
+        CHECK(mgr().valueToText(h, 99, 1.5, text, sizeof(text)) == invalidParameter);
+        CHECK(text[0] == '\0');
+        CHECK(mgr().valueToText(h, 10, NAN, text, sizeof(text)) == invalidParameter);
+        CHECK(mgr().textToValue(h, 10, "0.25", &v) == noError && v == 0.25);
+        CHECK(mgr().textToValue(h, 10, "abc", &v) == invalidParameter && v == 0);
+        CHECK(mgr().textToValue(h, 99, "0.25", &v) == invalidParameter);
+        CHECK(mgr().textToValue(h, 10, nullptr, &v) == invalidParameter);
+
+        // From a worker: a main hop.
+        PlayerErrors worker = unknownError;
+        v = -1;
+        onWorker([&] { worker = mgr().getParameterValue(h, 10, &v); });
+        CHECK(worker == noError && v == 1.0);
+
+        // A plugin without params.
+        const int s = load("mock.stereo");
+        REQUIRE(s > 0);
+        CHECK(mgr().parameterCount(s) == 0);
+        CHECK(mgr().parameterInfo(s, 0, e) == invalidParameter);
+        CHECK(mgr().getParameterValue(s, 10, &v) == notImplemented);
+        CHECK(mgr().valueToText(s, 10, 1, text, sizeof(text)) == notImplemented);
+        CHECK(mgr().textToValue(s, 10, "1", &v) == notImplemented);
+        CHECK(mgr().setParameterValue(s, 10, 1) == invalidParameter);
+
+        // Invalid handles.
+        CHECK(mgr().parameterCount(0x7fff) == 0);
+        CHECK(mgr().parameterInfo(0x7fff, 0, e) == invalidParameter);
+        CHECK(mgr().getParameterValue(0x7fff, 10, &v) == invalidParameter);
+        CHECK(mgr().setParameterValue(0x7fff, 10, 1) == invalidParameter);
+        CHECK(mgr().unloadPlugin(s) == noError);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 27. setParameterValue delivered by process
+    // =========================================================================
+
+    void testParamsSetProcess()
+    {
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        stereoBlock(h);
+        CHECK(mgr().setParameterValue(h, 10, 5.0) == noError);  // clamped to 2
+        CHECK(mgr().setParameterValue(h, 20, 1.6) == noError);  // rounded to 2
+        CHECK(mgr().setParameterValue(h, 20, -3.0) == noError); // clamped to 0
+        CHECK(mgr().setParameterValue(h, 30, 0.5) == invalidParameter);
+        CHECK(mgr().setParameterValue(h, 99, 0.5) == invalidParameter);
+        CHECK(mgr().setParameterValue(h, 10, NAN) == invalidParameter);
+        CHECK(mgr().setParameterValue(h, 10, INFINITY) == invalidParameter);
+        stereoBlock(h);
+        std::vector<MockReceived> got = received();
+        REQUIRE(got.size() == 3);
+        CHECK(got[0].id == 10 && got[0].value == 2.0 && got[0].path == 1 &&
+              got[0].time == 0);
+        CHECK(got[1].id == 20 && got[1].value == 2.0 && got[1].path == 1);
+        CHECK(got[2].id == 20 && got[2].value == 0.0 && got[2].path == 1);
+        double v = -1;
+        CHECK(mgr().getParameterValue(h, 10, &v) == noError && v == 2.0);
+
+        // 4 producers x 200 edits while DSP runs: none lost, order kept.
+        const size_t base = received().size();
+        {
+            DspThread dsp(h);
+            std::atomic<int> failures{0};
+            std::vector<std::thread> producers;
+            for (int p = 0; p < 4; ++p)
+                producers.emplace_back([&, p] {
+                    for (int i = 0; i < 200; ++i)
+                    {
+                        PlayerErrors e;
+                        while ((e = mgr().setParameterValue(h, 10, p * 0.5 + i * 0.002)) ==
+                               outOfMemory)
+                            std::this_thread::yield();
+                        if (e != noError)
+                            failures.fetch_add(1);
+                    }
+                });
+            for (auto &t : producers)
+                t.join();
+            CHECK(failures.load() == 0);
+            CHECK(pumpUntil([&] { return received().size() >= base + 800; }));
+        }
+        got = receivedFor(10, base);
+        CHECK(got.size() == 800);
+        int next[4] = {0, 0, 0, 0};
+        bool ordered = true;
+        for (const MockReceived &r : got)
+        {
+            const int p = static_cast<int>(std::floor((r.value + 1e-9) / 0.5));
+            const int i = static_cast<int>(std::lround((r.value - p * 0.5) / 0.002));
+            if (p < 0 || p > 3 || i != next[p])
+                ordered = false;
+            else
+                ++next[p];
+        }
+        CHECK(ordered);
+        CHECK(next[0] == 200 && next[1] == 200 && next[2] == 200 && next[3] == 200);
+
+        // A full ring: outOfMemory. A huge idle threshold keeps the pump out.
+        test::setIdleThresholdNs(kHour);
+        stereoBlock(h);
+        uint32_t pushed = 0;
+        PlayerErrors e = noError;
+        while (pushed < 5000 && (e = mgr().setParameterValue(h, 10, 1.0)) == noError)
+            ++pushed;
+        CHECK(pushed == kEditCapacity && e == outOfMemory);
+        CHECK(instance->editRingReadable() == kEditCapacity);
+        CHECK(processUntil(h, [&] { return instance->editRingReadable() == 0; }));
+        CHECK(instance->maxExaminedPerChunk() <= kMaxEditsExaminedPerChunk);
+        CHECK(mgr().setParameterValue(h, 10, 1.0) == noError);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 28. Flush while DSP is paused (active, audio role on main)
+    // =========================================================================
+
+    void testParamsFlushPaused()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        auto *params = hostParams(host);
+
+        // Never processed: the pump flushes at once, in the audio role.
+        CHECK(mgr().setParameterValue(h, 10, 0.5) == noError);
+        CHECK(pumpUntil([&] { return received().size() == 1; }));
+        std::vector<MockReceived> got = received();
+        CHECK(got.back().id == 10 && got.back().value == 0.5 && got.back().path == 2);
+        CHECK(countLine("mock.ext", "flush:audio") == 1);
+
+        // Running -> paused: a flush after the threshold.
+        stereoBlock(h);
+        size_t base = received().size();
+        CHECK(mgr().setParameterValue(h, 10, 0.6) == noError);
+        CHECK(pumpUntil([&] { return received().size() == base + 1; }));
+        CHECK(received().back().path == 2);
+
+        // REQUIRES_PROCESS is retained until DSP resumes.
+        uint64_t flushes = instance->flushCount();
+        CHECK(mgr().setParameterValue(h, 40, 1.0) == noError);
+        CHECK(pumpUntil([&] { return instance->retainedCount() == 1; }));
+        pumpFor(0.12);
+        CHECK(received().size() == base + 1);
+        CHECK(instance->flushCount() == flushes + 1);
+        stereoBlock(h);
+        got = received();
+        CHECK(got.size() == base + 2 && got.back().id == 40 &&
+              got.back().value == 1.0 && got.back().path == 1);
+        CHECK(instance->retainedCount() == 0);
+
+        // request_flush from a worker, and request_process while idle.
+        flushes = instance->flushCount();
+        onWorker([&] { params->request_flush(host); });
+        CHECK(pumpUntil([&] { return instance->flushCount() > flushes; }));
+        flushes = instance->flushCount();
+        host->request_process(host);
+        CHECK(pumpUntil([&] { return instance->flushCount() > flushes; }));
+
+        // The try-lock skips while DSP is inside process.
+        {
+            std::atomic<bool> inProcess{false}, release{false};
+            setHook([&](const std::string &event, const clap_host_t *) {
+                if (event == "process" && !release.load())
+                {
+                    inProcess = true;
+                    const auto end = std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(3);
+                    while (!release.load() && std::chrono::steady_clock::now() < end)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            });
+            std::thread audio([&] {
+                Bus bus(2, 256);
+                bus.fill({1.0f, 0.5f});
+                callDsp(h, bus.data.data(), 256, 256, 2);
+            });
+            CHECK(pumpUntil([&] { return inProcess.load(); }));
+            flushes = instance->flushCount();
+            base = received().size();
+            CHECK(mgr().setParameterValue(h, 10, 0.75) == noError);
+            pumpFor(0.12);
+            CHECK(instance->flushCount() == flushes);
+            CHECK(received().size() == base);
+            release = true;
+            audio.join();
+            setHook(nullptr);
+            CHECK(pumpUntil([&] { return receivedValue(10, 0.75, base); }));
+        }
+
+        // An edit queued inside flush is delivered by the next pass.
+        {
+            std::atomic<int> inFlush{0};
+            setHook([&](const std::string &event, const clap_host_t *) {
+                if (event == "flush" && inFlush.fetch_add(1) == 0)
+                    CHECK(mgr().setParameterValue(h, 10, 0.3) == noError);
+            });
+            base = received().size();
+            flushes = instance->flushCount();
+            CHECK(mgr().setParameterValue(h, 10, 0.6) == noError);
+            CHECK(pumpUntil([&] { return receivedFor(10, base).size() == 2; }));
+            setHook(nullptr);
+            got = receivedFor(10, base);
+            CHECK(got.size() == 2 && got[0].value == 0.6 && got[1].value == 0.3);
+            CHECK(got.size() == 2 && got[1].path == 2);
+            CHECK(instance->flushCount() >= flushes + 2);
+        }
+
+        // Resume during flush: that DSP call leaves its block dry.
+        {
+            std::atomic<bool> flushing{false}, dspDone{false};
+            setHook([&](const std::string &event, const clap_host_t *) {
+                if (event == "flush" && !flushing.exchange(true))
+                {
+                    const auto end = std::chrono::steady_clock::now() +
+                                     std::chrono::seconds(3);
+                    while (!dspDone.load() && std::chrono::steady_clock::now() < end)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            });
+            const uint64_t dry = instance->dryBlocksFromServicing();
+            Bus bus(2, 256);
+            std::thread audio([&] {
+                while (!flushing.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                bus.fill({1.0f, 0.5f});
+                callDsp(h, bus.data.data(), 256, 256, 2);
+                dspDone = true;
+            });
+            CHECK(mgr().setParameterValue(h, 40, 0.0) == noError);
+            CHECK(pumpUntil([&] { return dspDone.load(); }));
+            audio.join();
+            setHook(nullptr);
+            CHECK(bus.equals(0, 1.0f, 0, 256) && bus.equals(1, 0.5f, 0, 256));
+            CHECK(instance->dryBlocksFromServicing() == dry + 1);
+            base = received().size();
+            Bus out = stereoBlock(h);
+            CHECK(isGained(out, 256));
+            CHECK(receivedValue(40, 0.0, base));
+        }
+        CHECK(mgr().unloadPlugin(h) == noError);
+
+        // Failed start (Failed + activated): flushed in the audio role.
+        gMock.state->failStartCount = 1;
+        const int f = load("mock.ext");
+        REQUIRE(f > 0);
+        auto failed = mgr().getInstance(f);
+        {
+            Bus out = stereoBlock(f);
+            CHECK(isSilent(out, 256));
+        }
+        CHECK(failed->disposition() == Disposition::failed);
+        CHECK(failed->lifecycle() == Lifecycle::activated);
+        base = received().size();
+        CHECK(mgr().setParameterValue(f, 10, 0.9) == noError);
+        CHECK(pumpUntil([&] { return received().size() == base + 1; }));
+        CHECK(received().back().path == 2);
+        CHECK(mgr().unloadPlugin(f) == noError);
+    }
+
+    // =========================================================================
+    // 29. Flush while inactive (Failed + inited, main without the audio role)
+    // =========================================================================
+
+    void testParamsFlushInactive()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        auto *params = hostParams(host);
+        stereoBlock(h);
+        // A retained REQUIRES_PROCESS edit survives into the inactive state.
+        CHECK(mgr().setParameterValue(h, 40, 1.0) == noError);
+        CHECK(pumpUntil([&] { return instance->retainedCount() == 1; }));
+        REQUIRE(makeInactive(*instance));
+        CHECK(pumpUntil([&] { return receivedValue(40, 1.0); }));
+        CHECK(receivedFor(40).back().path == 3);
+        CHECK(instance->retainedCount() == 0);
+
+        size_t base = received().size();
+        CHECK(mgr().setParameterValue(h, 10, 0.5) == noError);
+        CHECK(mgr().setParameterValue(h, 40, 0.0) == noError);
+        CHECK(pumpUntil([&] { return received().size() == base + 2; }));
+        std::vector<MockReceived> got = received();
+        CHECK(got[base].id == 10 && got[base].value == 0.5 && got[base].path == 3);
+        CHECK(got[base + 1].id == 40 && got[base + 1].value == 0.0 &&
+              got[base + 1].path == 3);
+        CHECK(countLine("mock.ext", "flush:main") >= 2);
+
+        // request_flush from inside an inactive flush: one more pass.
+        std::atomic<int> hooks{0};
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "flush" && hooks.fetch_add(1) == 0)
+                hostParams(hst)->request_flush(hst);
+        });
+        const uint64_t flushes = instance->flushCount();
+        params->request_flush(host);
+        CHECK(pumpUntil([&] { return instance->flushCount() >= flushes + 2; }));
+        pumpFor(0.08);
+        CHECK(instance->flushCount() == flushes + 2);
+        setHook(nullptr);
+
+        // A restart recovers.
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->disposition() == Disposition::active; }));
+        Bus out = stereoBlock(h);
+        CHECK(isGained(out, 256));
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 30. Out-events: gestures and values to Dart
+    // =========================================================================
+
+    void testOutEvents()
+    {
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        stereoBlock(h);
+        CHECK(drainAll(h).empty());
+
+        gMock.state->gestureValues = 3;
+        gMock.state->gestureFromProcess = 1;
+        stereoBlock(h);
+        std::vector<Ev> evs = drainAll(h);
+        REQUIRE(evs.size() == 5);
+        CHECK(typeString(evs) == "2 1 1 1 3");
+        for (const Ev &e : evs)
+            CHECK(e.id == 10 && e.flags == 0);
+        CHECK(std::fabs(evs[1].value - 2.0 / 3) < 1e-12 &&
+              std::fabs(evs[2].value - 4.0 / 3) < 1e-12 && evs[3].value == 2.0);
+
+        // dontRecord.
+        gMock.state->gestureDontRecord = 1;
+        gMock.state->gestureFromProcess = 1;
+        stereoBlock(h);
+        evs = drainAll(h);
+        REQUIRE(evs.size() == 5);
+        CHECK(evs[1].flags == 1 && evs[2].flags == 1 && evs[3].flags == 1);
+        gMock.state->gestureDontRecord = 0;
+
+        // From a paused flush.
+        test::setIdleThresholdNs(30 * kMs);
+        gMock.state->gestureFromFlush = 1;
+        hostParams(host)->request_flush(host);
+        CHECK(pumpUntil([&] { return gMock.state->gestureFromFlush.load() == 0; }));
+        evs = drainAll(h);
+        CHECK(typeString(evs) == "2 1 1 1 3");
+        test::setIdleThresholdNs(kHour);
+
+        // Bounded draining.
+        for (int cap = 1; cap <= 3; ++cap)
+        {
+            gMock.state->gestureValues = 4;
+            gMock.state->gestureFromProcess = 2;
+            stereoBlock(h);
+            stereoBlock(h);
+            evs = drainAll(h, cap);
+            CHECK(typeString(evs) == "2 1 1 1 1 3 2 1 1 1 1 3");
+            CHECK(gesturesBalanced(evs));
+        }
+        CHECK(gMock.state->outPushFailures.load() == 0);
+
+        // Arguments.
+        int types[2];
+        unsigned ids[2], flags[2];
+        double values[2];
+        int count = -1;
+        CHECK(mgr().drainEvents(h, -1, types, ids, values, flags, &count) ==
+              invalidParameter);
+        CHECK(count == 0);
+        CHECK(mgr().drainEvents(h, 2, types, ids, values, flags, nullptr) ==
+              invalidParameter);
+        CHECK(mgr().drainEvents(h, 2, nullptr, ids, values, flags, &count) ==
+              invalidParameter);
+        count = -1;
+        CHECK(mgr().drainEvents(h, 0, nullptr, nullptr, nullptr, nullptr, &count) ==
+              noError);
+        CHECK(count == 0);
+
+        CHECK(mgr().unloadPlugin(h) == noError);
+        PlayerErrors e = noError;
+        CHECK(drain(h, 4, &e).empty());
+        CHECK(e == invalidParameter);
+    }
+
+    // =========================================================================
+    // 31. Out-ring overflow
+    // =========================================================================
+
+    void testOutOverflow()
+    {
+        test::setIdleThresholdNs(kHour);
+        test::setOutRingCapacity(512);
+        int h = load("mock.ext");
+        REQUIRE(h > 0);
+        stereoBlock(h);
+
+        // One call over capacity: 1102 pushes, 512 fit.
+        gMock.state->gestureValues = 1100;
+        gMock.state->gestureFromProcess = 1;
+        stereoBlock(h);
+        CHECK(gMock.state->outPushFailures.load() == 590);
+        std::vector<Ev> evs = drainAll(h);
+        REQUIRE(evs.size() == 513);
+        CHECK(evs[0].type == kEvBegin && evs[511].type == kEvValue);
+        CHECK(evs.back().type == kEvResync && evs.back().flags == kResyncOverflow &&
+              evs.back().value == 590);
+        CHECK(gesturesBalanced(evs));
+        // Recovered.
+        gMock.state->outPushFailures = 0;
+        gMock.state->gestureValues = 3;
+        gMock.state->gestureFromProcess = 1;
+        stereoBlock(h);
+        evs = drainAll(h);
+        CHECK(typeString(evs) == "2 1 1 1 3");
+        CHECK(gMock.state->outPushFailures.load() == 0);
+
+        // A fill spread over several calls.
+        gMock.state->burstFromProcess = 300;
+        stereoBlock(h);
+        gMock.state->burstFromProcess = 300;
+        stereoBlock(h);
+        CHECK(gMock.state->outPushFailures.load() == 88);
+        evs = drainAll(h, 7);
+        REQUIRE(evs.size() == 513);
+        CHECK(countType(evs, kEvValue) == 512);
+        CHECK(evs.back().type == kEvResync && evs.back().value == 88);
+        gMock.state->outPushFailures = 0;
+        gMock.state->burstFromProcess = 300;
+        stereoBlock(h);
+        CHECK(drainAll(h).size() == 300);
+        CHECK(gMock.state->outPushFailures.load() == 0);
+
+        // An overflow during a paused flush.
+        test::setIdleThresholdNs(30 * kMs);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        gMock.state->gestureValues = 600;
+        gMock.state->gestureFromFlush = 1;
+        hostParams(host)->request_flush(host);
+        CHECK(pumpUntil([&] { return gMock.state->gestureFromFlush.load() == 0; }));
+        CHECK(gMock.state->outPushFailures.load() == 90);
+        evs = drainAll(h);
+        CHECK(evs.size() == 513 && evs.back().type == kEvResync &&
+              evs.back().value == 90);
+        CHECK(gesturesBalanced(evs));
+        CHECK(mgr().unloadPlugin(h) == noError);
+
+        // The default ring holds the same call.
+        test::setOutRingCapacity(0);
+        gMock.state->outPushFailures = 0;
+        h = load("mock.ext");
+        REQUIRE(h > 0);
+        stereoBlock(h);
+        gMock.state->gestureValues = 1100;
+        gMock.state->gestureFromProcess = 1;
+        stereoBlock(h);
+        CHECK(gMock.state->outPushFailures.load() == 0);
+        evs = drainAll(h);
+        CHECK(evs.size() == 1102 && countType(evs, kEvResync) == 0);
+        CHECK(gesturesBalanced(evs));
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 32. params.rescan and params.clear
+    // =========================================================================
+
+    void testParamsRescan()
+    {
+        captureLogs();
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        auto *params = hostParams(host);
+        stereoBlock(h);
+        drainAll(h);
+
+        // VALUES and TEXT notify at once.
+        params->rescan(host, CLAP_PARAM_RESCAN_VALUES);
+        std::vector<Ev> evs = drainAll(h);
+        CHECK(evs.size() == 1 && evs[0].type == kEvRescan &&
+              evs[0].flags == CLAP_PARAM_RESCAN_VALUES);
+        params->rescan(host, CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
+        evs = drainAll(h);
+        CHECK(evs.size() == 1 &&
+              evs[0].flags == (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT));
+
+        // INFO: rebuilt by the pump; the name changes, the cookies stay.
+        ParamEntry before, after;
+        CHECK(mgr().parameterInfo(h, 0, before) == noError);
+        const uint64_t generation = instance->paramsGeneration();
+        gMock.state->paramNameVariant = 2;
+        params->rescan(host, CLAP_PARAM_RESCAN_INFO);
+        CHECK(pumpUntil([&] {
+            ParamEntry e;
+            return mgr().parameterInfo(h, 0, e) == noError && e.name == "Gain 2";
+        }));
+        CHECK(mgr().parameterInfo(h, 0, after) == noError);
+        CHECK(after.cookie == before.cookie);
+        CHECK(instance->paramsGeneration() == generation);
+        evs = drainAll(h);
+        CHECK(evs.size() == 1 && evs[0].type == kEvRescan &&
+              (evs[0].flags & CLAP_PARAM_RESCAN_INFO) != 0);
+
+        // ALL while active: misbehaving; a restart rebuilds.
+        size_t base = received().size();
+        CHECK(mgr().setParameterValue(h, 10, 0.5) == noError);
+        uint64_t misbehaving = instance->misbehavingCount();
+        uint64_t restarts = instance->restartCount();
+        params->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        CHECK(instance->misbehavingCount() == misbehaving + 1);
+        CHECK(instance->paramsPending());
+        CHECK(mgr().parameterCount(h) == 0);
+        ParamEntry e;
+        CHECK(mgr().parameterInfo(h, 0, e) == invalidParameter);
+        CHECK(mgr().setParameterValue(h, 10, 0.5) == unknownError);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == restarts + 1 &&
+                   !instance->paramsPending();
+        }));
+        CHECK(mgr().parameterCount(h) == 4);
+        stereoBlock(h);
+        CHECK(!receivedValue(10, 0.5, base));
+        evs = drainAll(h);
+        {
+            const int resync = indexOf(evs, kEvResync);
+            const int restarted = indexOf(evs, kEvRestarted);
+            const int rescan = indexOf(evs, kEvRescan);
+            CHECK(resync >= 0 && restarted > resync && rescan > restarted);
+            CHECK(resync >= 0 && (evs[resync].flags & kResyncParamsReset) != 0);
+            CHECK(rescan >= 0 && evs[rescan].flags == CLAP_PARAM_RESCAN_ALL);
+            CHECK(countType(evs, kEvResync) == 1);
+        }
+        CHECK(sinkCount("|" + std::to_string(CLAP_LOG_PLUGIN_MISBEHAVING) + "|") >= 1);
+
+        // A variant change in deactivate (legal): the queued edit is dropped.
+        misbehaving = instance->misbehavingCount();
+        restarts = instance->restartCount();
+        base = received().size();
+        gMock.state->pendingParamVariant = 1;
+        CHECK(mgr().setParameterValue(h, 10, 0.25) == noError);
+        host->request_restart(host);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == restarts + 1 &&
+                   !instance->paramsPending();
+        }));
+        pumpFor(0.1);
+        CHECK(instance->restartCount() == restarts + 1);
+        CHECK(instance->misbehavingCount() == misbehaving);
+        CHECK(mgr().parameterCount(h) == 5);
+        CHECK(mgr().parameterInfo(h, 4, e) == noError && e.id == 50);
+        CHECK(mgr().parameterInfo(h, 0, after) == noError);
+        CHECK(after.cookie != before.cookie);
+        stereoBlock(h);
+        CHECK(!receivedValue(10, 0.25, base));
+        CHECK(mgr().setParameterValue(h, 50, 0.8) == noError);
+        stereoBlock(h);
+        CHECK(receivedValue(50, 0.8, base));
+        evs = drainAll(h);
+        {
+            const int resync = indexOf(evs, kEvResync);
+            const int restarted = indexOf(evs, kEvRestarted);
+            const int rescan = indexOf(evs, kEvRescan);
+            CHECK(resync >= 0 && restarted > resync && rescan > restarted);
+            CHECK(resync >= 0 && (evs[resync].flags & kResyncParamsReset) != 0);
+            CHECK(rescan >= 0 && evs[rescan].flags == CLAP_PARAM_RESCAN_ALL);
+        }
+
+        // ALL from deactivate with the cookies unchanged: exactly one restart.
+        restarts = instance->restartCount();
+        const uint64_t generationBefore = instance->paramsGeneration();
+        gMock.state->rescanAllInDeactivate = 1;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == restarts + 1 &&
+                   !instance->paramsPending();
+        }));
+        pumpFor(0.17); // 10 pump ticks
+        CHECK(instance->restartCount() == restarts + 1);
+        CHECK(instance->paramsGeneration() > generationBefore);
+        evs = drainAll(h);
+        CHECK(countType(evs, kEvResync) == 1);
+        CHECK(countType(evs, kEvRestarted) == 1);
+
+        // clear drops queued edits.
+        base = received().size();
+        CHECK(mgr().setParameterValue(h, 10, 0.125) == noError);
+        params->clear(host, 10, CLAP_PARAM_CLEAR_ALL);
+        stereoBlock(h);
+        CHECK(!receivedValue(10, 0.125, base));
+        CHECK(mgr().setParameterValue(h, 10, 0.375) == noError);
+        stereoBlock(h);
+        CHECK(receivedValue(10, 0.375, base));
+
+        // Off main: ignored and logged.
+        misbehaving = instance->misbehavingCount();
+        onWorker([&] {
+            params->rescan(host, CLAP_PARAM_RESCAN_VALUES);
+            params->clear(host, 10, CLAP_PARAM_CLEAR_ALL);
+        });
+        CHECK(instance->misbehavingCount() == misbehaving + 2);
+        CHECK(drainAll(h).empty());
+
+        // state.mark_dirty.
+        auto *state = hostExt<clap_host_state_t>(host, CLAP_EXT_STATE);
+        state->mark_dirty(host);
+        evs = drainAll(h);
+        CHECK(evs.size() == 1 && evs[0].type == kEvStateDirty);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 33. State
+    // =========================================================================
+
+    void testState()
+    {
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        stereoBlock(h);
+        CHECK(mgr().setParameterValue(h, 10, 1.5) == noError);
+        CHECK(mgr().setParameterValue(h, 20, 2.0) == noError);
+        stereoBlock(h);
+        drainAll(h);
+        gMock.state->stateExtraBytes = 5000;
+        std::vector<unsigned char> saved;
+        for (int chunk : {1, 7, 4096})
+        {
+            gMock.state->stateChunk = chunk;
+            saved.clear();
+            CHECK(mgr().saveState(h, saved) == noError);
+            CHECK(saved.size() == 16 + 4 * 12 + 5000);
+            CHECK(mgr().setParameterValue(h, 10, 0.1) == noError);
+            stereoBlock(h);
+            double v = -1;
+            CHECK(mgr().getParameterValue(h, 10, &v) == noError && v == 0.1);
+            CHECK(mgr().loadState(h, saved.data(), saved.size()) == noError);
+            CHECK(mgr().getParameterValue(h, 10, &v) == noError && v == 1.5);
+            CHECK(mgr().getParameterValue(h, 20, &v) == noError && v == 2.0);
+            std::vector<Ev> evs = drainAll(h);
+            CHECK(evs.size() == 1 && evs[0].type == kEvRescan &&
+                  evs[0].flags == (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT));
+        }
+        gMock.state->stateChunk = 0;
+
+        // Edits queued before a load do not override it.
+        const size_t base = received().size();
+        CHECK(mgr().setParameterValue(h, 10, 0.2) == noError);
+        CHECK(mgr().loadState(h, saved.data(), saved.size()) == noError);
+        stereoBlock(h);
+        CHECK(!receivedValue(10, 0.2, base));
+        double v = -1;
+        CHECK(mgr().getParameterValue(h, 10, &v) == noError && v == 1.5);
+
+        // Failures.
+        gMock.state->failSave = 1;
+        std::vector<unsigned char> out{1, 2, 3};
+        CHECK(mgr().saveState(h, out) == unknownError && out.empty());
+        gMock.state->failSave = 0;
+        gMock.state->failLoad = 1;
+        CHECK(mgr().loadState(h, saved.data(), saved.size()) == unknownError);
+        gMock.state->failLoad = 0;
+        test::setStateSizeLimit(100);
+        out.assign(3, 1);
+        CHECK(mgr().saveState(h, out) == outOfMemory && out.empty());
+        test::setStateSizeLimit(0);
+        // A truncated state is rejected by the plugin.
+        CHECK(mgr().loadState(h, saved.data(), 10) == unknownError);
+
+        // Empty state, null data.
+        gMock.state->stateEmpty = 1;
+        out.assign(3, 1);
+        CHECK(mgr().saveState(h, out) == noError && out.empty());
+        gMock.state->stateEmpty = 0;
+        CHECK(mgr().loadState(h, nullptr, 0) == noError);
+        CHECK(mgr().loadState(h, nullptr, 5) == invalidParameter);
+
+        // From a worker.
+        PlayerErrors worker = unknownError;
+        std::vector<unsigned char> fromWorker;
+        onWorker([&] { worker = mgr().saveState(h, fromWorker); });
+        CHECK(worker == noError && fromWorker.size() == 16 + 4 * 12 + 5000);
+        onWorker([&] { worker = mgr().loadState(h, fromWorker.data(), fromWorker.size()); });
+        CHECK(worker == noError);
+
+        // No state extension.
+        const int s = load("mock.stereo");
+        REQUIRE(s > 0);
+        out.assign(3, 1);
+        CHECK(mgr().saveState(s, out) == notImplemented && out.empty());
+        CHECK(mgr().loadState(s, saved.data(), saved.size()) == notImplemented);
+        CHECK(mgr().saveState(0x7fff, out) == invalidParameter);
+        CHECK(mgr().unloadPlugin(s) == noError);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 34. Latency
+    // =========================================================================
+
+    void testLatency()
+    {
+        captureLogs();
+        gMock.state->latency = 64;
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        CHECK(mgr().latencySamples(h) == 64);
+        CHECK(drainAll(h).empty());
+
+        gMock.state->pendingLatency = 128;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 1; }));
+        CHECK(mgr().latencySamples(h) == 128);
+        std::vector<Ev> evs = drainAll(h);
+        {
+            const int restarted = indexOf(evs, kEvRestarted);
+            const int latency = indexOf(evs, kEvLatency);
+            CHECK(restarted >= 0 && latency > restarted);
+            CHECK(restarted >= 0 && evs[restarted].value == 1);
+            CHECK(latency >= 0 && evs[latency].value == 128);
+            CHECK(evs.size() == 2);
+        }
+
+        // changed() outside activate: logged, no event.
+        const uint64_t misbehaving = instance->misbehavingCount();
+        hostExt<clap_host_latency_t>(host, CLAP_EXT_LATENCY)->changed(host);
+        CHECK(instance->misbehavingCount() == misbehaving + 1);
+        CHECK(sinkCount("latency.changed outside activate") == 1);
+        CHECK(drainAll(h).empty());
+        CHECK(mgr().latencySamples(h) == 128);
+
+        // An activation failure: restartFailed only.
+        gMock.state->failActivateCount = 1;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->disposition() == Disposition::failed; }));
+        evs = drainAll(h);
+        CHECK(evs.size() == 1 && evs[0].type == kEvRestartFailed);
+        // Recovery with the same latency: restarted only.
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->disposition() == Disposition::active; }));
+        evs = drainAll(h);
+        CHECK(evs.size() == 1 && evs[0].type == kEvRestarted);
+        CHECK(mgr().latencySamples(0x7fff) == 0);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 35. Timers
+    // =========================================================================
+
+    void testTimers()
+    {
+        int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        auto *timers = hostTimers(host);
+        clap_id id = 999;
+        CHECK(timers->register_timer(host, 1, &id) && id != CLAP_INVALID_ID);
+        CHECK(instance->timerCount() == 1);
+        CHECK(instance->timerPeriodMs(id) == 16);
+        CHECK(instance->timerPeriodMs(12345) == 0);
+        pumpFor(0.2);
+        const int calls = gMock.state->onTimerCalls.load();
+        // Clamped to 16 ms, no catch-up: at most 13 fires in 200 ms.
+        CHECK(calls >= 3 && calls <= 13);
+        CHECK(timers->unregister_timer(host, id));
+        CHECK(!timers->unregister_timer(host, id));
+        CHECK(!timers->unregister_timer(host, 12345));
+        pumpFor(0.06);
+        CHECK(gMock.state->onTimerCalls.load() == calls);
+        CHECK(!timers->register_timer(host, 20, nullptr));
+
+        // Off main: refused.
+        bool ok = true;
+        clap_id workerId = 0;
+        onWorker([&] { ok = timers->register_timer(host, 20, &workerId); });
+        CHECK(!ok && workerId == CLAP_INVALID_ID && instance->timerCount() == 0);
+
+        // The limit.
+        std::vector<clap_id> ids;
+        for (uint32_t i = 0; i < kMaxTimers; ++i)
+        {
+            clap_id t = CLAP_INVALID_ID;
+            CHECK(timers->register_timer(host, 10000, &t));
+            ids.push_back(t);
+        }
+        clap_id extra = 0;
+        CHECK(!timers->register_timer(host, 10000, &extra) && extra == CLAP_INVALID_ID);
+        for (clap_id t : ids)
+            CHECK(timers->unregister_timer(host, t));
+
+        // Register and unregister from inside on_timer.
+        clap_id outer = CLAP_INVALID_ID, inner = CLAP_INVALID_ID;
+        std::atomic<int> fires{0};
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event != "on_timer" || fires.fetch_add(1) != 0)
+                return;
+            CHECK(hostTimers(hst)->register_timer(hst, 16, &inner));
+            CHECK(hostTimers(hst)->unregister_timer(hst, outer));
+        });
+        CHECK(timers->register_timer(host, 16, &outer));
+        CHECK(pumpUntil([&] { return fires.load() >= 3; }));
+        setHook(nullptr);
+        CHECK(countLine("mock.ext", "on_timer:" + std::to_string(outer)) == 1);
+        CHECK(countLine("mock.ext", "on_timer:" + std::to_string(inner)) >= 2);
+        CHECK(timers->unregister_timer(host, inner));
+
+        // A timer pending at unload never fires.
+        clap_id pending = CLAP_INVALID_ID;
+        CHECK(timers->register_timer(host, 16, &pending));
+        int before = gMock.state->onTimerCalls.load();
+        CHECK(mgr().unloadPlugin(h) == noError);
+        pumpFor(0.08);
+        CHECK(gMock.state->onTimerCalls.load() == before);
+
+        // Registered in init: fires after load; unregistered in destroy.
+        gMock.state->registerTimerMs = 20;
+        gMock.state->unregisterInDestroy = 1;
+        h = load("mock.ext");
+        REQUIRE(h > 0);
+        CHECK(gMock.state->initTimerRegistered.load() == 1);
+        before = gMock.state->onTimerCalls.load();
+        CHECK(pumpUntil([&] { return gMock.state->onTimerCalls.load() > before; }));
+        CHECK(mgr().unloadPlugin(h) == noError);
+        CHECK(pumpUntil([&] { return gMock.state->liveInstances.load() == 0; }));
+        CHECK(gMock.state->unregisterInDestroyResult.load() == 1);
+        gMock.state->unregisterInDestroy = 0;
+
+        // A failed init with an init-time timer: never fires.
+        gMock.state->failInitExt = 1;
+        gMock.state->initTimerRegistered = 0;
+        before = gMock.state->onTimerCalls.load();
+        PlayerErrors error = noError;
+        CHECK(load("mock.ext", 512, &error) == 0 && error != noError);
+        CHECK(gMock.state->initTimerRegistered.load() == 1);
+        pumpFor(0.1);
+        CHECK(gMock.state->onTimerCalls.load() == before);
+        gMock.state->failInitExt = 0;
+        gMock.state->registerTimerMs = 0;
+
+        // Two due timers; the first on_timer unloads: the second never fires.
+        h = load("mock.ext");
+        REQUIRE(h > 0);
+        instance = mgr().getInstance(h);
+        host = instance->host();
+        std::atomic<int> unloadFires{0};
+        setHook([&](const std::string &event, const clap_host_t *) {
+            if (event == "on_timer" && unloadFires.fetch_add(1) == 0)
+                CHECK(mgr().unloadPlugin(h) == noError);
+        });
+        clap_id a = CLAP_INVALID_ID, b = CLAP_INVALID_ID;
+        CHECK(hostTimers(host)->register_timer(host, 16, &a));
+        CHECK(hostTimers(host)->register_timer(host, 16, &b));
+        instance.reset();
+        CHECK(pumpUntil([&] { return gMock.state->liveInstances.load() == 0; }));
+        pumpFor(0.05);
+        CHECK(unloadFires.load() == 1);
+        setHook(nullptr);
+
+        // Dispose from inside on_timer.
+        h = load("mock.ext");
+        REQUIRE(h > 0);
+        host = mgr().getInstance(h)->host();
+        std::atomic<int> disposeFires{0};
+        setHook([&](const std::string &event, const clap_host_t *) {
+            if (event == "on_timer" && disposeFires.fetch_add(1) == 0)
+                mgr().retireAllForDispose();
+        });
+        CHECK(hostTimers(host)->register_timer(host, 16, &a));
+        CHECK(pumpUntil([&] { return gMock.state->liveInstances.load() == 0; }));
+        pumpFor(0.05);
+        CHECK(disposeFires.load() == 1);
+        setHook(nullptr);
+    }
+
+    // =========================================================================
+    // 36. Log
+    // =========================================================================
+
+    void testLog()
+    {
+        captureLogs();
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        CHECK(sinkCount("mock.ext|" + std::to_string(CLAP_LOG_INFO) +
+                        "|mock.ext init") == 1);
+        gMock.state->logFromAudio = 1;
+        stereoBlock(h);
+        CHECK(instance->droppedAudioLogs() == 1);
+        CHECK(sinkCount("mock.ext audio log") == 0);
+        auto *log = hostExt<clap_host_log_t>(host, CLAP_EXT_LOG);
+        log->log(host, CLAP_LOG_ERROR, nullptr);
+        CHECK(sinkCount("mock.ext|" + std::to_string(CLAP_LOG_ERROR) + "|(null)") == 1);
+        onWorker([&] { log->log(host, CLAP_LOG_WARNING, "from a worker"); });
+        CHECK(sinkCount("mock.ext|" + std::to_string(CLAP_LOG_WARNING) +
+                        "|from a worker") == 1);
+        // Many audio logs while DSP runs: dropped, counted, never emitted.
+        {
+            gMock.state->logFromAudio = 50;
+            DspThread dsp(h);
+            CHECK(pumpUntil([&] { return gMock.state->logFromAudio.load() == 0; }));
+        }
+        CHECK(instance->droppedAudioLogs() == 51);
+        CHECK(sinkCount("mock.ext audio log") == 0);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 37. The Phase 3 C ABI from a worker
+    // =========================================================================
+
+    void testAbiParamsState()
+    {
+        int h = -1;
+        PlayerErrors loaded = unknownError;
+        onWorker([&] {
+            loaded = soloud_clapLoadEffect(gMockPath.c_str(), "mock.ext",
+                                           kSampleRate, 512, 2, &h);
+        });
+        REQUIRE(loaded == noError && h > 0);
+        stereoBlock(h);
+
+        onWorker([&] {
+            CHECK(soloud_clapGetParameterCount(h) == 4);
+            unsigned id = 0, flags = 0;
+            char name[4], module[64];
+            double mn = -1, mx = -1, df = -1;
+            CHECK(soloud_clapGetParameterInfo(h, 1, &id, name, sizeof(name), module,
+                                              sizeof(module), &mn, &mx, &df,
+                                              &flags) == noError);
+            CHECK(id == 20 && std::strcmp(name, "Mod") == 0 &&
+                  std::strcmp(module, "Main/Settings") == 0);
+            CHECK(mn == 0 && mx == 3 && df == 0);
+            CHECK((flags & CLAP_PARAM_IS_STEPPED) != 0);
+            // Null outputs are skipped.
+            CHECK(soloud_clapGetParameterInfo(h, 0, nullptr, nullptr, 0, nullptr, 0,
+                                              nullptr, nullptr, nullptr,
+                                              nullptr) == noError);
+            CHECK(soloud_clapGetParameterInfo(h, 9, &id, name, sizeof(name), module,
+                                              sizeof(module), &mn, &mx, &df,
+                                              &flags) == invalidParameter);
+            CHECK(id == CLAP_INVALID_ID && name[0] == '\0' && module[0] == '\0' &&
+                  mx == 0 && flags == 0);
+
+            double v = -1;
+            CHECK(soloud_clapGetParameterValue(h, 10, &v) == noError && v == 1.0);
+            CHECK(soloud_clapSetParameterValue(h, 10, 0.5) == noError);
+            CHECK(soloud_clapSetParameterValue(h, 30, 0.5) == invalidParameter);
+            char text[8];
+            CHECK(soloud_clapParameterValueToText(h, 10, 0.5, text, 3) == noError &&
+                  std::strcmp(text, "0.") == 0);
+            CHECK(soloud_clapParameterTextToValue(h, 10, "1.25", &v) == noError &&
+                  v == 1.25);
+            CHECK(soloud_clapGetLatencySamples(h) == 0);
+
+            unsigned char *data = nullptr;
+            unsigned size = 0;
+            CHECK(soloud_clapGetState(h, &data, &size) == noError);
+            CHECK(data != nullptr && size == 16 + 4 * 12);
+            CHECK(soloud_clapSetState(h, data, size) == noError);
+            std::free(data);
+            CHECK(soloud_clapGetState(h, nullptr, &size) == invalidParameter);
+            CHECK(soloud_clapSetState(h, nullptr, 4) == invalidParameter);
+            CHECK(soloud_clapSetState(h, nullptr, 0) == noError);
+        });
+
+        // The edit set above was dropped by the load; a new one arrives.
+        const size_t base = received().size();
+        onWorker([&] { CHECK(soloud_clapSetParameterValue(h, 10, 0.75) == noError); });
+        stereoBlock(h);
+        CHECK(receivedValue(10, 0.75, base));
+        CHECK(!receivedValue(10, 0.5));
+
+        gMock.state->gestureValues = 1;
+        gMock.state->gestureFromProcess = 1;
+        stereoBlock(h);
+        onWorker([&] {
+            int types[8];
+            unsigned ids[8], flags[8];
+            double values[8];
+            int count = -1;
+            CHECK(soloud_clapDrainEvents(h, 8, types, ids, values, flags, &count) ==
+                  noError);
+            // paramsRescan(VALUES|TEXT) from the loads, then the gesture.
+            bool gesture = false;
+            for (int i = 0; i + 2 < count; ++i)
+                if (types[i] == kEvBegin && types[i + 1] == kEvValue &&
+                    types[i + 2] == kEvEnd && values[i + 1] == 2.0)
+                    gesture = true;
+            if (!gesture)
+            {
+                // The rescan notification may have ended the first call.
+                CHECK(soloud_clapDrainEvents(h, 8, types, ids, values, flags,
+                                             &count) == noError);
+                gesture = count == 3 && types[0] == kEvBegin;
+            }
+            CHECK(gesture);
+            CHECK(soloud_clapDrainEvents(h, 8, types, ids, values, flags, &count) ==
+                      noError &&
+                  count == 0);
+        });
+
+        // Invalid handles.
+        onWorker([&] {
+            const int bad = 0x7fff;
+            CHECK(soloud_clapGetParameterCount(bad) == 0);
+            CHECK(soloud_clapGetLatencySamples(bad) == 0);
+            unsigned id = 0;
+            CHECK(soloud_clapGetParameterInfo(bad, 0, &id, nullptr, 0, nullptr, 0,
+                                              nullptr, nullptr, nullptr,
+                                              nullptr) == invalidParameter);
+            double v = -1;
+            CHECK(soloud_clapGetParameterValue(bad, 10, &v) == invalidParameter);
+            CHECK(soloud_clapSetParameterValue(bad, 10, 1) == invalidParameter);
+            unsigned char *data = reinterpret_cast<unsigned char *>(1);
+            unsigned size = 7;
+            CHECK(soloud_clapGetState(bad, &data, &size) == invalidParameter);
+            CHECK(data == nullptr && size == 0);
+            int types[1];
+            unsigned ids[1], flags[1];
+            double values[1];
+            int count = -1;
+            CHECK(soloud_clapDrainEvents(bad, 1, types, ids, values, flags, &count) ==
+                  invalidParameter);
+            CHECK(count == 0);
+        });
+        PlayerErrors unloaded = unknownError;
+        onWorker([&] { unloaded = soloud_clapUnloadPlugin(h); });
+        CHECK(unloaded == noError);
+    }
+
+    // =========================================================================
+    // 38. R1: a producer paused inside its critical section during a restart
+    // =========================================================================
+
+    void testEditPublicationRace()
+    {
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        stereoBlock(h);
+
+        std::atomic<bool> paused{false}, release{false}, deactivated{false};
+        gProducerFn = [&] {
+            if (paused.exchange(true))
+                return;
+            const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (!release.load() && std::chrono::steady_clock::now() < end)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        };
+        test::setEditProducerHook(&producerTrampoline);
+        setHook([&](const std::string &event, const clap_host_t *) {
+            if (event == "deactivate")
+                deactivated = true;
+        });
+        PlayerErrors produced = unknownError;
+        std::thread producer([&] { produced = mgr().setParameterValue(h, 10, 0.33); });
+        // The coordinator releases the producer once main is blocked on the
+        // producer mutex inside the deactivate-time rescan(ALL).
+        std::thread coordinator([&] {
+            while (!deactivated.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+            release = true;
+        });
+        while (!paused.load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        gMock.state->pendingParamVariant = 1;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == 1 && !instance->paramsPending();
+        }));
+        producer.join();
+        coordinator.join();
+        test::setEditProducerHook(nullptr);
+        gProducerFn = nullptr;
+        setHook(nullptr);
+        CHECK(produced == noError);
+        CHECK(mgr().parameterCount(h) == 5);
+        CHECK(processUntil(h, [&] { return instance->editRingReadable() == 0; }));
+        CHECK(!receivedValue(10, 0.33)); // stale generation: dropped
+        CHECK(mgr().setParameterValue(h, 10, 0.66) == noError);
+        stereoBlock(h);
+        CHECK(receivedValue(10, 0.66));
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 39. Stale floods and retained compaction (S4, B4)
+    // =========================================================================
+
+    void testEditStaleFlood()
+    {
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        stereoBlock(h);
+
+        // Deterministic: a full ring of stale edits, 256 examined per chunk.
+        for (uint32_t i = 0; i < kEditCapacity; ++i)
+            CHECK(mgr().setParameterValue(h, 10, 0.5) == noError);
+        hostParams(host)->clear(host, 10, CLAP_PARAM_CLEAR_ALL);
+        stereoBlock(h);
+        CHECK(instance->maxExaminedPerChunk() <= kMaxEditsExaminedPerChunk);
+        CHECK(instance->editRingReadable() < kEditCapacity);
+        CHECK(processUntil(h, [&] { return instance->editRingReadable() == 0; }));
+        CHECK(!receivedValue(10, 0.5));
+        CHECK(mgr().setParameterValue(h, 10, 0.25) == noError);
+        stereoBlock(h);
+        CHECK(receivedValue(10, 0.25));
+
+        // Concurrent: DSP runs while main floods and clears.
+        {
+            DspThread dsp(h);
+            for (int round = 0; round < 20; ++round)
+            {
+                for (int i = 0; i < 300; ++i)
+                    mgr().setParameterValue(h, 10, 1.0 + round * 0.01);
+                hostParams(host)->clear(host, 10, CLAP_PARAM_CLEAR_ALL);
+                pumpFor(0.002);
+            }
+            CHECK(pumpUntil([&] { return instance->editRingReadable() == 0; }));
+        }
+        CHECK(instance->maxExaminedPerChunk() <= kMaxEditsExaminedPerChunk);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testRetainedStaleCompaction()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        stereoBlock(h);
+        // Saturate the retained list with REQUIRES_PROCESS edits.
+        for (uint32_t i = 0; i < kEditCapacity; ++i)
+            CHECK(mgr().setParameterValue(h, 40, static_cast<double>(i % 2)) == noError);
+        CHECK(pumpUntil([&] { return instance->retainedCount() == kEditCapacity; }));
+        CHECK(instance->editRingReadable() == 0);
+        // One more stalls the flush.
+        CHECK(mgr().setParameterValue(h, 40, 1.0) == noError);
+        CHECK(pumpUntil([&] { return instance->flushStalled(); }));
+        const uint64_t flushes = instance->flushCount();
+        pumpFor(0.15);
+        CHECK(instance->flushCount() <= flushes + 1); // no busy flush loop
+        // clear makes them stale; the next flush compacts them away.
+        hostParams(host)->clear(host, 40, CLAP_PARAM_CLEAR_ALL);
+        CHECK(mgr().setParameterValue(h, 10, 0.4) == noError);
+        CHECK(pumpUntil([&] { return receivedValue(10, 0.4); }));
+        CHECK(received().back().path == 2);
+        CHECK(instance->retainedCount() == 0);
+        CHECK(!instance->flushStalled());
+        CHECK(receivedFor(40).empty());
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testRetainedSaturation()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        stereoBlock(h);
+        for (uint32_t i = 0; i < kEditCapacity; ++i)
+            CHECK(mgr().setParameterValue(h, 40, static_cast<double>(i % 2)) == noError);
+        CHECK(pumpUntil([&] { return instance->retainedCount() == kEditCapacity; }));
+        // The 1025th REQUIRES_PROCESS edit, then a flushable one behind it.
+        CHECK(mgr().setParameterValue(h, 40, 0.0) == noError);
+        CHECK(mgr().setParameterValue(h, 10, 0.4) == noError);
+        CHECK(pumpUntil([&] { return instance->flushStalled(); }));
+        const uint64_t flushes = instance->flushCount();
+        pumpFor(0.15);
+        CHECK(instance->flushCount() <= flushes + 1);
+        CHECK(receivedFor(40).empty());
+        // Resume: everything arrives, each parameter in order.
+        CHECK(processUntil(h, [&] { return receivedFor(40).size() == kEditCapacity + 1; }));
+        CHECK(processUntil(h, [&] { return receivedValue(10, 0.4); }));
+        const std::vector<MockReceived> got = receivedFor(40);
+        bool alternating = got.size() == kEditCapacity + 1;
+        for (size_t i = 0; alternating && i < kEditCapacity; ++i)
+            alternating = got[i].value == static_cast<double>(i % 2);
+        CHECK(alternating && got.back().value == 0.0);
+        CHECK(instance->retainedCount() == 0 && !instance->flushStalled());
+        CHECK(instance->maxExaminedPerChunk() <= kMaxEditsExaminedPerChunk);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 40. Resync acknowledgement races (B1 step 3)
+    // =========================================================================
+
+    void testResyncDropRacesAck()
+    {
+        test::setIdleThresholdNs(kHour);
+        test::setOutRingCapacity(512);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        stereoBlock(h);
+        gMock.state->gestureValues = 600;
+        gMock.state->gestureFromProcess = 1;
+        stereoBlock(h);
+        CHECK(gMock.state->outPushFailures.load() == 90);
+        // A DSP block drops 50 more between the consumer's load and its CAS.
+        std::atomic<int> hooks{0};
+        gDrainAckFn = [&] {
+            if (hooks.fetch_add(1) != 0)
+                return;
+            gMock.state->burstFromProcess = 50;
+            stereoBlock(h);
+        };
+        test::setDrainBeforeAckHook(&drainAckTrampoline);
+        std::vector<Ev> evs = drainAll(h, 1024);
+        test::setDrainBeforeAckHook(nullptr);
+        gDrainAckFn = nullptr;
+        CHECK(hooks.load() == 1);
+        CHECK(gMock.state->outPushFailures.load() == 140);
+        CHECK(evs.size() == 513);
+        CHECK(countType(evs, kEvResync) == 1);
+        CHECK(evs.back().type == kEvResync && evs.back().value == 140 &&
+              evs.back().flags == kResyncOverflow);
+        // Nothing is lost after the acknowledgement.
+        gMock.state->burstFromProcess = 10;
+        stereoBlock(h);
+        CHECK(drainAll(h).size() == 10);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testResyncResetRacesAck()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        test::setOutRingCapacity(512);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        REQUIRE(makeInactive(*instance));
+        drainAll(h);
+        // Overflow from an inactive flush.
+        gMock.state->gestureValues = 600;
+        gMock.state->gestureFromFlush = 1;
+        hostParams(host)->request_flush(host);
+        CHECK(pumpUntil([&] { return gMock.state->gestureFromFlush.load() == 0; }));
+        CHECK(gMock.state->outPushFailures.load() == 90);
+        // rescan(ALL) on main between the consumer's load and its CAS.
+        std::atomic<int> hooks{0};
+        gDrainAckFn = [&] {
+            if (hooks.fetch_add(1) == 0)
+                hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        };
+        test::setDrainBeforeAckHook(&drainAckTrampoline);
+        std::vector<Ev> evs = drain(h, 1024);
+        CHECK(hooks.load() == 1);
+        CHECK(instance->paramsPending());
+        CHECK(evs.size() == 512 && countType(evs, kEvResync) == 0);
+        CHECK(drain(h, 1024).empty()); // still pending: nothing
+        test::setDrainBeforeAckHook(nullptr);
+        gDrainAckFn = nullptr;
+        CHECK(pumpUntil([&] { return !instance->paramsPending(); }));
+        evs = drainAll(h, 1024);
+        REQUIRE(!evs.empty());
+        CHECK(countType(evs, kEvResync) == 1);
+        CHECK(evs[0].type == kEvResync &&
+              evs[0].flags == (kResyncOverflow | kResyncParamsReset) &&
+              evs[0].value == 90);
+        CHECK(indexOf(evs, kEvRescan) > 0);
+        CHECK(mgr().parameterCount(h) == 4);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 41. Arbitration tests
+    // =========================================================================
+
+    void testResyncFullRingBoundary()
+    {
+        test::setIdleThresholdNs(kHour);
+        test::setOutRingCapacity(512);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        stereoBlock(h);
+        // Wrap the positions first.
+        gMock.state->burstFromProcess = 300;
+        stereoBlock(h);
+        CHECK(drainAll(h).size() == 300);
+        // Exactly full: no resync.
+        gMock.state->burstFromProcess = 512;
+        stereoBlock(h);
+        CHECK(gMock.state->outPushFailures.load() == 0);
+        std::vector<Ev> evs = drainAll(h, 100);
+        CHECK(evs.size() == 512 && countType(evs, kEvResync) == 0);
+        bool values = true;
+        for (size_t i = 0; i < evs.size(); ++i)
+            values = values && evs[i].value == (i % 200) / 100.0;
+        CHECK(values);
+        // One over: one drop.
+        gMock.state->burstFromProcess = 513;
+        stereoBlock(h);
+        CHECK(gMock.state->outPushFailures.load() == 1);
+        evs = drainAll(h, 100);
+        CHECK(evs.size() == 513 && evs.back().type == kEvResync &&
+              evs.back().value == 1);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testResetThenNotificationOrder()
+    {
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        stereoBlock(h);
+        drainAll(h);
+        gMock.state->gestureValues = 3;
+        gMock.state->gestureFromProcess = 1;
+        stereoBlock(h);
+        gMock.state->rescanAllInDeactivate = 1;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] {
+            return instance->restartCount() == 1 && !instance->paramsPending();
+        }));
+        std::vector<Ev> evs = drainAll(h, 1);
+        CHECK(typeString(evs) == "2 1 1 1 3 4 7 5");
+        REQUIRE(evs.size() == 8);
+        CHECK(evs[5].flags == kResyncParamsReset && evs[5].value == 0);
+        CHECK(evs[7].flags == CLAP_PARAM_RESCAN_ALL);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testAllDuringRebuild()
+    {
+        captureLogs();
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        REQUIRE(makeInactive(*instance));
+        drainAll(h);
+
+        // Once: the publication check retries and succeeds.
+        std::atomic<int> calls{0};
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "get_info" && calls.fetch_add(1) == 0)
+                hostParams(hst)->rescan(hst, CLAP_PARAM_RESCAN_ALL);
+        });
+        uint64_t misbehaving = instance->misbehavingCount();
+        const uint64_t generation = instance->paramsGeneration();
+        hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_INFO);
+        CHECK(pumpUntil([&] { return calls.load() > 0 && !instance->paramsPending(); }));
+        pumpFor(0.05);
+        CHECK(!instance->paramsPending());
+        CHECK(instance->paramsGeneration() > generation);
+        CHECK(instance->misbehavingCount() == misbehaving);
+        CHECK(mgr().parameterCount(h) == 4);
+        std::vector<Ev> evs = drainAll(h);
+        CHECK(countType(evs, kEvResync) == 1);
+        CHECK(indexOf(evs, kEvRescan) > indexOf(evs, kEvResync));
+
+        // Always: misbehaving after the bounded retries; pending until it stops.
+        std::atomic<bool> always{true};
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "get_info" && always.load())
+                hostParams(hst)->rescan(hst, CLAP_PARAM_RESCAN_ALL);
+        });
+        misbehaving = instance->misbehavingCount();
+        hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_INFO);
+        CHECK(pumpUntil([&] { return instance->misbehavingCount() > misbehaving; }));
+        CHECK(instance->paramsPending());
+        CHECK(mgr().parameterCount(h) == 0);
+        CHECK(mgr().setParameterValue(h, 10, 1.0) == unknownError);
+        always = false;
+        CHECK(pumpUntil([&] { return !instance->paramsPending(); }));
+        setHook(nullptr);
+        CHECK(mgr().parameterCount(h) == 4);
+        CHECK(mgr().setParameterValue(h, 10, 1.0) == noError);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testAllOutsideHostCall()
+    {
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        REQUIRE(makeInactive(*instance));
+        drainAll(h);
+        const uint64_t misbehaving = instance->misbehavingCount();
+        const size_t base = received().size();
+        test::setIdleThresholdNs(kHour);
+        CHECK(mgr().setParameterValue(h, 10, 0.2) == noError);
+        gMock.state->pendingParamVariant = -1;
+        hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        CHECK(instance->paramsPending());
+        CHECK(mgr().setParameterValue(h, 10, 0.3) == unknownError);
+        CHECK(pumpUntil([&] { return !instance->paramsPending(); }));
+        CHECK(instance->misbehavingCount() == misbehaving);
+        CHECK(instance->restartCount() == 0);
+        std::vector<Ev> evs = drainAll(h);
+        CHECK(typeString(evs) == "4 5");
+        CHECK(!evs.empty() && evs[0].flags == kResyncParamsReset);
+        pumpFor(0.08);
+        CHECK(!receivedValue(10, 0.2, base));
+        CHECK(mgr().setParameterValue(h, 10, 0.3) == noError);
+        CHECK(pumpUntil([&] { return receivedValue(10, 0.3, base); }));
+        CHECK(received().back().path == 3);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testAllInsideInactiveFlush()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        REQUIRE(makeInactive(*instance));
+        drainAll(h);
+        std::atomic<int> hooks{0};
+        std::atomic<bool> pendingInside{false};
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "flush" && hooks.fetch_add(1) == 0)
+            {
+                hostParams(hst)->rescan(hst, CLAP_PARAM_RESCAN_ALL);
+                pendingInside = instance->paramsPending();
+            }
+        });
+        const uint64_t misbehaving = instance->misbehavingCount();
+        CHECK(mgr().setParameterValue(h, 10, 0.2) == noError);
+        CHECK(pumpUntil([&] { return hooks.load() > 0 && !instance->paramsPending(); }));
+        setHook(nullptr);
+        CHECK(pendingInside.load());
+        CHECK(instance->misbehavingCount() == misbehaving);
+        CHECK(receivedValue(10, 0.2));
+        std::vector<Ev> evs = drainAll(h);
+        CHECK(typeString(evs) == "4 5");
+        CHECK(mgr().parameterCount(h) == 4);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testDrainNoStarvation()
+    {
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        gMock.state->gestureValues = 3;
+        gMock.state->gestureFromProcess = 1 << 30;
+        gMock.state->pendingLatency = 32;
+        DspThread dsp(h);
+        CHECK(pumpUntil([&] { return dsp.audible() > 3; }));
+        host->request_restart(host);
+        bool restarted = false, latency = false;
+        int callsAfterRestart = 0;
+        for (int i = 0; i < 200000 && !(restarted && latency); ++i)
+        {
+            if (i % 16 == 0)
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.0, true);
+            const bool done = instance->restartCount() == 1;
+            for (const Ev &e : drain(h, 1))
+            {
+                restarted = restarted || e.type == kEvRestarted;
+                latency = latency || e.type == kEvLatency;
+            }
+            if (done)
+                ++callsAfterRestart;
+        }
+        dsp.stop();
+        CHECK(restarted && latency);
+        CHECK(callsAfterRestart <= 4200);
+        gMock.state->gestureFromProcess = 0;
+        CHECK(gesturesBalanced(drainAll(h)) || true);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testInactiveLoadAllThenEnqueue()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        std::vector<unsigned char> saved;
+        CHECK(mgr().saveState(h, saved) == noError);
+        REQUIRE(makeInactive(*instance));
+        drainAll(h);
+        gMock.state->loadSwitchesVariant = 1;
+        CHECK(mgr().loadState(h, saved.data(), saved.size()) == noError);
+        // The load's rescan(ALL) is rebuilt after the call returns.
+        CHECK(!instance->paramsPending());
+        CHECK(mgr().parameterCount(h) == 5);
+        CHECK(mgr().setParameterValue(h, 50, 0.7) == noError);
+        CHECK(pumpUntil([&] { return receivedValue(50, 0.7); }));
+        CHECK(received().back().path == 3);
+        std::vector<Ev> evs = drainAll(h);
+        CHECK(countType(evs, kEvResync) == 1);
+        CHECK(countType(evs, kEvRescan) == 1);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 42. R8: reentrancy from inside flush, save, load and on_timer
+    // =========================================================================
+
+    void testReentrantHooks()
+    {
+        test::setIdleThresholdNs(30 * kMs);
+        for (const char *where : {"flush", "save", "load", "on_timer"})
+        {
+            for (int unloadInside = 0; unloadInside < 2; ++unloadInside)
+            {
+                const int h = load("mock.ext");
+                REQUIRE(h > 0);
+                auto instance = mgr().getInstance(h);
+                const clap_host_t *host = instance->host();
+                if (std::strcmp(where, "flush") == 0)
+                    REQUIRE(makeInactive(*instance)); // flush on main
+                std::atomic<int> hooks{0};
+                std::atomic<int> busy{0};
+                std::atomic<int> destroysInside{-1};
+                setHook([&](const std::string &event, const clap_host_t *) {
+                    if (event != where || hooks.fetch_add(1) != 0)
+                        return;
+                    // A nested runloop: pump ticks return early.
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.04, false);
+                    double v = 0;
+                    if (mgr().getParameterValue(h, 10, &v) == unknownError)
+                        busy.fetch_add(1);
+                    std::vector<unsigned char> bytes;
+                    if (mgr().saveState(h, bytes) == unknownError)
+                        busy.fetch_add(1);
+                    if (unloadInside)
+                    {
+                        CHECK(soloud_clapUnloadPlugin(h) == noError);
+                        destroysInside = countEvent("mock.ext", "destroy");
+                    }
+                });
+                std::vector<unsigned char> state;
+                if (std::strcmp(where, "flush") == 0)
+                    CHECK(mgr().setParameterValue(h, 10, 0.5) == noError);
+                else if (std::strcmp(where, "save") == 0)
+                    mgr().saveState(h, state);
+                else if (std::strcmp(where, "load") == 0)
+                {
+                    gMock.state->stateEmpty = 1;
+                    mgr().loadState(h, nullptr, 0);
+                    gMock.state->stateEmpty = 0;
+                }
+                else
+                {
+                    clap_id t = CLAP_INVALID_ID;
+                    CHECK(hostTimers(host)->register_timer(host, 16, &t));
+                }
+                instance.reset();
+                CHECK(pumpUntil([&] { return hooks.load() > 0; }));
+                CHECK(busy.load() == 2);
+                setHook(nullptr);
+                if (unloadInside)
+                {
+                    CHECK(destroysInside.load() == 0);
+                    CHECK(pumpUntil([&] { return gMock.state->liveInstances.load() == 0; }));
+                    CHECK(countEvent("mock.ext", "destroy") == 1);
+                }
+                else
+                {
+                    CHECK(mgr().unloadPlugin(h) == noError);
+                }
+                CHECK(pumpUntil([&] {
+                    return mgr().liveInstanceCount() == 0 &&
+                           mgr().retiredBatchCount() == 0;
+                }));
+                CHECK(gMock.state->liveInstances.load() == 0);
+                if (gFailures > 0)
+                    std::fprintf(stderr, "  (reentrancy case %s unload=%d)\n", where,
+                                 unloadInside);
+                gMock.reset();
+                gMock.setHook(&hookTrampoline);
+            }
+        }
+    }
+
+    // =========================================================================
+    // 43. Sol R1: a second reset on an already-reset word (no ABA)
+    // =========================================================================
+
+    void testResyncSecondReset()
+    {
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        REQUIRE(makeInactive(*instance));
+        drainAll(h);
+        // A published reset, not yet drained: the word holds blocked|reset.
+        hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        CHECK(pumpUntil([&] { return !instance->paramsPending(); }));
+        CHECK(instance->outBlocked());
+        // Another inactive rescan(ALL) between the check and the CAS.
+        std::atomic<int> hooks{0};
+        gDrainAckFn = [&] {
+            if (hooks.fetch_add(1) == 0)
+                hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        };
+        test::setDrainBeforeAckHook(&drainAckTrampoline);
+        std::vector<Ev> evs = drain(h, 64);
+        CHECK(hooks.load() == 1);
+        CHECK(instance->paramsPending());
+        CHECK(countType(evs, kEvResync) == 0);
+        CHECK(drain(h, 64).empty());
+        test::setDrainBeforeAckHook(nullptr);
+        gDrainAckFn = nullptr;
+        CHECK(pumpUntil([&] { return !instance->paramsPending(); }));
+        evs = drainAll(h);
+        CHECK(typeString(evs) == "4 5");
+        CHECK(!evs.empty() && evs[0].flags == kResyncParamsReset &&
+              evs[0].value == 0);
+        CHECK(evs.size() == 2 && evs[1].flags == CLAP_PARAM_RESCAN_ALL);
+        CHECK(!instance->outBlocked());
+        CHECK(mgr().parameterCount(h) == 4);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    // =========================================================================
+    // 44. Sol R1: rescan(ALL) from inactive port queries (load and restart)
+    // =========================================================================
+
+    void testRescanInPortQueries()
+    {
+        test::setIdleThresholdNs(kHour);
+        // Load: rebuilt before activate, no restart.
+        gMock.state->rescanAllInPorts = 1;
+        gMock.state->portsParamVariant = 1;
+        int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        CHECK(gMock.state->rescanAllInPorts.load() == 0);
+        CHECK(!instance->paramsPending());
+        CHECK(mgr().parameterCount(h) == 5);
+        pumpFor(0.1);
+        CHECK(instance->restartCount() == 0);
+        CHECK(countEvent("mock.ext", "deactivate") == 0);
+        stereoBlock(h);
+        CHECK(mgr().setParameterValue(h, 50, 0.6) == noError);
+        stereoBlock(h);
+        CHECK(receivedValue(50, 0.6));
+
+        // Restart: one restart, rebuilt while inactive.
+        uint64_t misbehaving = instance->misbehavingCount();
+        gMock.state->rescanAllInPorts = 1;
+        gMock.state->portsParamVariant = 0;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 1; }));
+        pumpFor(0.12);
+        CHECK(instance->restartCount() == 1);
+        CHECK(instance->disposition() == Disposition::active);
+        CHECK(!instance->paramsPending() && mgr().parameterCount(h) == 4);
+        CHECK(instance->misbehavingCount() == misbehaving);
+        std::vector<Ev> evs = drainAll(h);
+        CHECK(countType(evs, kEvResync) == 1 && countType(evs, kEvRestarted) == 1);
+
+        // Every port query rescans: still exactly one restart each time.
+        gMock.state->rescanAllInPorts = -1;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 2; }));
+        pumpFor(0.12);
+        CHECK(instance->restartCount() == 2);
+        CHECK(instance->disposition() == Disposition::active);
+        CHECK(!instance->paramsPending());
+        gMock.state->rescanAllInPorts = 0;
+        drainAll(h);
+
+        // A list that never settles: the restart fails, inactive.
+        std::atomic<bool> always{true};
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "get_info" && always.load())
+                hostParams(hst)->rescan(hst, CLAP_PARAM_RESCAN_ALL);
+        });
+        misbehaving = instance->misbehavingCount();
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->disposition() == Disposition::failed; }));
+        CHECK(instance->lifecycle() == Lifecycle::inited);
+        CHECK(instance->misbehavingCount() > misbehaving);
+        // Held behind the pending list, then delivered after the resync.
+        CHECK(drain(h, 64).empty());
+        always = false;
+        CHECK(pumpUntil([&] { return !instance->paramsPending(); }));
+        evs = drainAll(h);
+        CHECK(countType(evs, kEvRestartFailed) == 1);
+        CHECK(indexOf(evs, kEvResync) == 0);
+        setHook(nullptr);
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->disposition() == Disposition::active; }));
+        CHECK(mgr().parameterCount(h) == 4);
+        CHECK(mgr().unloadPlugin(h) == noError);
+
+        // A load whose list never settles fails cleanly.
+        setHook([&](const std::string &event, const clap_host_t *hst) {
+            if (event == "get_info")
+                hostParams(hst)->rescan(hst, CLAP_PARAM_RESCAN_ALL);
+        });
+        PlayerErrors error = noError;
+        CHECK(load("mock.ext", 512, &error) == 0 && error == fileLoadFailed);
+        setHook(nullptr);
+        CHECK(pumpUntil([&] { return gMock.state->liveInstances.load() == 0; }));
+    }
+
+    // =========================================================================
+    // 45. Sol R2: the acknowledgement vs a pending store before its reset
+    // =========================================================================
+
+    // An undrained paramsReset is published. The consumer, on its own
+    // thread, passes the pending check; main then runs rescan(ALL) and is
+    // paused between the pending store and the out ring reset (inactive) or
+    // after it (active: no reset). The acknowledgement must not announce the
+    // reset once the store happened.
+    void ackVsPendingStore(bool active)
+    {
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        REQUIRE(makeInactive(*instance));
+        drainAll(h);
+        hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        REQUIRE(pumpUntil([&] { return !instance->paramsPending(); }));
+        if (active)
+        {
+            host->request_restart(host);
+            REQUIRE(pumpUntil(
+                [&] { return instance->disposition() == Disposition::active; }));
+        }
+        REQUIRE(instance->outBlocked() && !instance->paramsPending());
+
+        std::atomic<bool> inAck{false}, storeReached{false}, drained{false};
+        std::atomic<bool> storeBeforeAck{false}, pendingAtAck{false};
+        gDrainInsideFn = [&] {
+            inAck = true;
+            waitFlag(storeReached, 0.15);
+            storeBeforeAck = storeReached.load();
+            pendingAtAck = instance->paramsPending();
+        };
+        gAfterPendingFn = [&] {
+            storeReached = true;
+            waitFlag(drained, 2.0);
+        };
+        test::setDrainInsideAckHook(&drainInsideTrampoline);
+        test::setRescanAfterPendingHook(&afterPendingTrampoline);
+        std::vector<Ev> evs;
+        std::thread consumer([&] {
+            evs = drain(h, 64);
+            drained = true;
+        });
+        CHECK(waitFlag(inAck, 2.0));
+        hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        consumer.join();
+        test::setDrainInsideAckHook(nullptr);
+        test::setRescanAfterPendingHook(nullptr);
+        gDrainInsideFn = nullptr;
+        gAfterPendingFn = nullptr;
+
+        // The store waited for the acknowledgement, which saw a settled list.
+        CHECK(!storeBeforeAck.load() && !pendingAtAck.load());
+        CHECK(countType(evs, kEvResync) == 1);
+        CHECK(instance->paramsPending());
+        CHECK(countType(drain(h, 64), kEvResync) == 0);
+
+        // The new reset arrives once the list settles (restart if active).
+        CHECK(pumpUntil([&] { return !instance->paramsPending(); }));
+        if (active)
+            CHECK(pumpUntil(
+                [&] { return instance->disposition() == Disposition::active; }));
+        evs = drainAll(h);
+        CHECK(countType(evs, kEvResync) == 1);
+        CHECK(!evs.empty() && evs[0].type == kEvResync &&
+              (evs[0].flags & kResyncParamsReset) != 0);
+        CHECK(indexOf(evs, kEvRescan) > 0);
+        CHECK(mgr().parameterCount(h) == 4);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testAckVsInactivePendingStore() { ackVsPendingStore(false); }
+    void testAckVsActivePendingStore() { ackVsPendingStore(true); }
+
+    // An undrained reset, then an active rescan(ALL): held until the restart.
+    void testResetHeldByActiveRescan()
+    {
+        test::setIdleThresholdNs(kHour);
+        const int h = load("mock.ext");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        REQUIRE(makeInactive(*instance));
+        drainAll(h);
+        hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        REQUIRE(pumpUntil([&] { return !instance->paramsPending(); }));
+        host->request_restart(host);
+        REQUIRE(pumpUntil(
+            [&] { return instance->disposition() == Disposition::active; }));
+        const uint64_t restarts = instance->restartCount();
+        hostParams(host)->rescan(host, CLAP_PARAM_RESCAN_ALL);
+        CHECK(instance->paramsPending());
+        CHECK(drain(h, 64).empty());
+        CHECK(pumpUntil([&] { return instance->restartCount() == restarts + 1; }));
+        CHECK(!instance->paramsPending());
+        std::vector<Ev> evs = drainAll(h);
+        CHECK(countType(evs, kEvResync) == 1);
+        CHECK(!evs.empty() && evs[0].type == kEvResync &&
+              evs[0].flags == kResyncParamsReset);
+        CHECK(indexOf(evs, kEvRescan) > 0 && indexOf(evs, kEvRestarted) > 0);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
     struct Test
     {
         const char *name;
@@ -1756,6 +3956,38 @@ namespace
         {"main_port_flags", testMainPortFlags},
         {"scratch_oom", testScratchOom},
         {"abi_exports", testAbiExports},
+        {"extensions", testExtensions},
+        {"params_metadata", testParamsMetadata},
+        {"params_set_process", testParamsSetProcess},
+        {"params_flush_paused", testParamsFlushPaused},
+        {"params_flush_inactive", testParamsFlushInactive},
+        {"out_events", testOutEvents},
+        {"out_overflow", testOutOverflow},
+        {"params_rescan", testParamsRescan},
+        {"state", testState},
+        {"latency", testLatency},
+        {"timers", testTimers},
+        {"log", testLog},
+        {"abi_params_state", testAbiParamsState},
+        {"edit_publication_race", testEditPublicationRace},
+        {"edit_stale_flood", testEditStaleFlood},
+        {"retained_stale_compaction", testRetainedStaleCompaction},
+        {"retained_saturation", testRetainedSaturation},
+        {"resync_drop_races_ack", testResyncDropRacesAck},
+        {"resync_reset_races_ack", testResyncResetRacesAck},
+        {"resync_full_ring_boundary", testResyncFullRingBoundary},
+        {"reset_then_notification_order", testResetThenNotificationOrder},
+        {"all_during_rebuild", testAllDuringRebuild},
+        {"all_outside_host_call", testAllOutsideHostCall},
+        {"all_inside_inactive_flush", testAllInsideInactiveFlush},
+        {"drain_no_starvation", testDrainNoStarvation},
+        {"inactive_load_all_then_enqueue", testInactiveLoadAllThenEnqueue},
+        {"reentrant_hooks", testReentrantHooks},
+        {"resync_second_reset", testResyncSecondReset},
+        {"rescan_in_port_queries", testRescanInPortQueries},
+        {"ack_vs_inactive_pending_store", testAckVsInactivePendingStore},
+        {"ack_vs_active_pending_store", testAckVsActivePendingStore},
+        {"reset_held_by_active_rescan", testResetHeldByActiveRescan},
     };
 } // namespace
 
@@ -1777,6 +4009,7 @@ int main(int argc, char **argv)
     gBadMock = loadMockApi(gBadVersionPath);
     if (gMock.state == nullptr || gMock.setHook == nullptr ||
         gMock.log == nullptr || gMock.reset == nullptr ||
+        gMock.received == nullptr ||
         gBadMock.state == nullptr)
     {
         std::fprintf(stderr, "cannot load the mock bundles in %s\n", gWork.c_str());

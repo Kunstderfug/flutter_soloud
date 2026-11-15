@@ -44,12 +44,84 @@ struct MockClapState
     /// is reported without CLAP_AUDIO_PORT_IS_MAIN: bit 0 the input side,
     /// bit 1 the output side. Read on every ports query.
     std::atomic<int> unflaggedMainPorts{0};
+
+    // --- mock.ext (Phase 3) ----------------------------------------------
+    /// The parameter set (0: ids 10-40, 1: adds id 50, new cookies) the next
+    /// deactivate() switches to; it then calls params.rescan(ALL). -1 none.
+    std::atomic<int> pendingParamVariant{-1};
+    /// deactivate() calls params.rescan(ALL) with the cookies unchanged.
+    std::atomic<int> rescanAllInDeactivate{0};
+    /// The next N inactive audio_ports.count(input) calls of mock.ext call
+    /// params.rescan(ALL) (-1: every call), first switching to
+    /// [portsParamVariant] when it is >= 0.
+    std::atomic<int> rescanAllInPorts{0};
+    std::atomic<int> portsParamVariant{-1};
+    /// state.load switches to this variant and calls params.rescan(ALL).
+    /// -1 keeps the variant.
+    std::atomic<int> loadSwitchesVariant{-1};
+    /// Appended to the name of id 10 when non-zero ("Gain 2").
+    std::atomic<int> paramNameVariant{0};
+    /// The value get_value reports for the read-only meter (id 30).
+    std::atomic<double> meterValue{0.0};
+    /// Process calls left that each emit BEGIN, gestureValues x VALUE, END on
+    /// id 10. The same from flush.
+    std::atomic<int> gestureFromProcess{0};
+    std::atomic<int> gestureFromFlush{0};
+    std::atomic<int> gestureValues{1};
+    std::atomic<int> gestureDontRecord{0};
+    /// The next process call emits this many VALUE events on id 10.
+    std::atomic<int> burstFromProcess{0};
+    /// out_events.try_push calls that returned false.
+    std::atomic<int> outPushFailures{0};
+    std::atomic<int> outPushes{0};
+    /// state: write/read chunk size (0: all at once), failures, extra bytes,
+    /// an empty saved state.
+    std::atomic<int> stateChunk{0};
+    std::atomic<int> failSave{0};
+    std::atomic<int> failLoad{0};
+    std::atomic<int> stateExtraBytes{0};
+    std::atomic<int> stateEmpty{0};
+    std::atomic<int> saves{0};
+    std::atomic<int> loads{0};
+    /// latency.get value, and a value activate() applies and announces with
+    /// latency.changed() (-1: none).
+    std::atomic<int> latency{0};
+    std::atomic<int> pendingLatency{-1};
+    /// init() registers a timer of this period (0: none); the result.
+    std::atomic<int> registerTimerMs{0};
+    std::atomic<int> initTimerRegistered{0};
+    std::atomic<uint32_t> initTimerId{CLAP_INVALID_ID};
+    std::atomic<int> onTimerCalls{0};
+    /// destroy() unregisters initTimerId; the result (1 true, 0 false, -1
+    /// not tried).
+    std::atomic<int> unregisterInDestroy{0};
+    std::atomic<int> unregisterInDestroyResult{-1};
+    /// Process calls left that each log a warning from the audio thread.
+    std::atomic<int> logFromAudio{0};
+    std::atomic<int> flushCalls{0};
+    /// mock.ext init() returns false after its timer and log work.
+    std::atomic<int> failInitExt{0};
+    /// The next N start_processing() calls fail.
+    std::atomic<int> failStartCount{0};
+};
+
+/// One parameter value the mock received (process or flush).
+struct MockReceived
+{
+    uint32_t id;
+    double value;
+    /// 1 process, 2 active flush (audio role), 3 inactive flush (main).
+    int path;
+    /// The event's time within its block.
+    uint32_t time;
 };
 
 /// Called synchronously from inside a mock callback, on the calling thread,
 /// with the event name ("entry_init", "entry_deinit", "create", "init",
-/// "activate", "deactivate", "start", "stop", "destroy", "on_main") and the
-/// instance's host (null for entry events). Runs before the mock returns.
+/// "activate", "deactivate", "start", "stop", "destroy", "on_main"; for
+/// mock.ext also "process", "flush", "save", "load", "on_timer",
+/// "get_value", "get_info") and the instance's host (null for entry events). Runs before
+/// the mock returns.
 typedef void (*MockClapHook)(const char *event, const char *pluginId,
                              const clap_host_t *host);
 
@@ -62,4 +134,7 @@ extern "C"
     typedef size_t (*MockClapLogFn)(char *buffer, size_t capacity);
     /// Clears the log, the counters except entry init state, and the knobs.
     typedef void (*MockClapResetFn)();
+    /// Copies up to [capacity] received parameter values, oldest first, and
+    /// returns the total received since the last reset.
+    typedef size_t (*MockClapReceivedFn)(MockReceived *out, size_t capacity);
 }

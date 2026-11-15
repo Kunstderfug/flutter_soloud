@@ -4,6 +4,7 @@
 // outputs and returns notImplemented.
 #include "bindings.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +42,15 @@ namespace
         // engine's barrier before anything can be unloaded or restarted.
         m.setAudioThreadBarrier(&soloud_pluginAudioThreadBarrier, nullptr);
         return m;
+    }
+
+    void copyString(const std::string &s, char *out, int len)
+    {
+        if (out == nullptr || len <= 0)
+            return;
+        const size_t n = std::min(s.size(), static_cast<size_t>(len - 1));
+        std::memcpy(out, s.data(), n);
+        out[n] = '\0';
     }
 
     char *duplicate(const std::string &s)
@@ -221,6 +231,226 @@ extern "C"
 #else
         (void)pluginHandle;
         return nullptr;
+#endif
+    }
+
+    // --- parameters, state, latency, events --------------------------------
+
+    FFI_PLUGIN_EXPORT unsigned int soloud_clapGetLatencySamples(int pluginHandle)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().latencySamples(pluginHandle);
+#else
+        (void)pluginHandle;
+        return 0;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT int soloud_clapGetParameterCount(int pluginHandle)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().parameterCount(pluginHandle);
+#else
+        (void)pluginHandle;
+        return 0;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapGetParameterInfo(
+        int pluginHandle,
+        int paramIndex,
+        unsigned int *outParamId,
+        char *outName,
+        int nameLen,
+        char *outModule,
+        int moduleLen,
+        double *outMin,
+        double *outMax,
+        double *outDefault,
+        unsigned int *outFlags)
+    {
+        if (outParamId != nullptr)
+            *outParamId = 0xFFFFFFFFu; // CLAP_INVALID_ID
+        if (outName != nullptr && nameLen > 0)
+            outName[0] = '\0';
+        if (outModule != nullptr && moduleLen > 0)
+            outModule[0] = '\0';
+        for (double *out : {outMin, outMax, outDefault})
+        {
+            if (out != nullptr)
+                *out = 0;
+        }
+        if (outFlags != nullptr)
+            *outFlags = 0;
+#ifdef SOLOUD_ENABLE_CLAP
+        soloud_clap::ParamEntry entry;
+        const PlayerErrors error =
+            manager().parameterInfo(pluginHandle, paramIndex, entry);
+        if (error != noError)
+            return error;
+        if (outParamId != nullptr)
+            *outParamId = entry.id;
+        copyString(entry.name, outName, nameLen);
+        copyString(entry.module, outModule, moduleLen);
+        if (outMin != nullptr)
+            *outMin = entry.min;
+        if (outMax != nullptr)
+            *outMax = entry.max;
+        if (outDefault != nullptr)
+            *outDefault = entry.def;
+        if (outFlags != nullptr)
+            *outFlags = entry.flags;
+        return noError;
+#else
+        (void)pluginHandle;
+        (void)paramIndex;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapGetParameterValue(
+        int pluginHandle,
+        unsigned int paramId,
+        double *outValue)
+    {
+        if (outValue != nullptr)
+            *outValue = 0;
+#ifdef SOLOUD_ENABLE_CLAP
+        if (outValue == nullptr)
+            return invalidParameter;
+        return manager().getParameterValue(pluginHandle, paramId, outValue);
+#else
+        (void)pluginHandle;
+        (void)paramId;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapParameterValueToText(
+        int pluginHandle,
+        unsigned int paramId,
+        double value,
+        char *outText,
+        int textLen)
+    {
+        if (outText != nullptr && textLen > 0)
+            outText[0] = '\0';
+#ifdef SOLOUD_ENABLE_CLAP
+        if (outText == nullptr || textLen <= 0)
+            return invalidParameter;
+        return manager().valueToText(pluginHandle, paramId, value, outText,
+                                     textLen);
+#else
+        (void)pluginHandle;
+        (void)paramId;
+        (void)value;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapParameterTextToValue(
+        int pluginHandle,
+        unsigned int paramId,
+        const char *text,
+        double *outValue)
+    {
+        if (outValue != nullptr)
+            *outValue = 0;
+#ifdef SOLOUD_ENABLE_CLAP
+        if (text == nullptr || outValue == nullptr)
+            return invalidParameter;
+        return manager().textToValue(pluginHandle, paramId, text, outValue);
+#else
+        (void)pluginHandle;
+        (void)paramId;
+        (void)text;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapSetParameterValue(
+        int pluginHandle,
+        unsigned int paramId,
+        double plainValue)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().setParameterValue(pluginHandle, paramId, plainValue);
+#else
+        (void)pluginHandle;
+        (void)paramId;
+        (void)plainValue;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapGetState(
+        int pluginHandle,
+        unsigned char **outData,
+        unsigned int *outSize)
+    {
+        if (outData != nullptr)
+            *outData = nullptr;
+        if (outSize != nullptr)
+            *outSize = 0;
+#ifdef SOLOUD_ENABLE_CLAP
+        if (outData == nullptr || outSize == nullptr)
+            return invalidParameter;
+        std::vector<unsigned char> bytes;
+        const PlayerErrors error = manager().saveState(pluginHandle, bytes);
+        if (error != noError || bytes.empty())
+            return error;
+        // The state limit (64 MiB) keeps the size inside unsigned int.
+        auto *buffer = static_cast<unsigned char *>(std::malloc(bytes.size()));
+        if (buffer == nullptr)
+            return outOfMemory;
+        std::memcpy(buffer, bytes.data(), bytes.size());
+        *outData = buffer;
+        *outSize = static_cast<unsigned int>(bytes.size());
+        return noError;
+#else
+        (void)pluginHandle;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapSetState(
+        int pluginHandle,
+        const unsigned char *data,
+        unsigned int size)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().loadState(pluginHandle, data, size);
+#else
+        (void)pluginHandle;
+        (void)data;
+        (void)size;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapDrainEvents(
+        int pluginHandle,
+        int capacity,
+        int *outTypes,
+        unsigned int *outParamIds,
+        double *outValues,
+        unsigned int *outFlags,
+        int *outCount)
+    {
+        if (outCount != nullptr)
+            *outCount = 0;
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().drainEvents(pluginHandle, capacity, outTypes,
+                                     outParamIds, outValues, outFlags,
+                                     outCount);
+#else
+        (void)pluginHandle;
+        (void)capacity;
+        (void)outTypes;
+        (void)outParamIds;
+        (void)outValues;
+        (void)outFlags;
+        return notImplemented;
 #endif
     }
 }

@@ -4243,6 +4243,281 @@ external ffi.Pointer<ffi.Void> soloud_clapGetFilterCallbackPtr();
 @ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.Int)>()
 external ffi.Pointer<ffi.Void> soloud_clapGetPluginUserData(int pluginHandle);
 
+/// The plugin's latency in frames, or 0 (no latency extension, unknown
+/// handle). Any thread.
+@ffi.Native<ffi.UnsignedInt Function(ffi.Int)>()
+external int soloud_clapGetLatencySamples(int pluginHandle);
+
+/// The number of parameters, or 0 while the list is being rescanned (a
+/// clapEventParamsRescan follows). Any thread.
+@ffi.Native<ffi.Int Function(ffi.Int)>()
+external int soloud_clapGetParameterCount(int pluginHandle);
+
+/// Describes the parameter at [paramIndex] (0..count-1): its id, name,
+/// module path, plain range, default and CLAP_PARAM_* flags. Any thread.
+/// invalidParameter for an index out of range or while rescanning.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Int,
+    ffi.Int,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.Char>,
+    ffi.Int,
+    ffi.Pointer<ffi.Char>,
+    ffi.Int,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.UnsignedInt>,
+  )
+>(symbol: 'soloud_clapGetParameterInfo')
+external int _soloud_clapGetParameterInfo(
+  int pluginHandle,
+  int paramIndex,
+  ffi.Pointer<ffi.UnsignedInt> outParamId,
+  ffi.Pointer<ffi.Char> outName,
+  int nameLen,
+  ffi.Pointer<ffi.Char> outModule,
+  int moduleLen,
+  ffi.Pointer<ffi.Double> outMin,
+  ffi.Pointer<ffi.Double> outMax,
+  ffi.Pointer<ffi.Double> outDefault,
+  ffi.Pointer<ffi.UnsignedInt> outFlags,
+);
+
+PlayerErrors soloud_clapGetParameterInfo(
+  int pluginHandle,
+  int paramIndex,
+  ffi.Pointer<ffi.UnsignedInt> outParamId,
+  ffi.Pointer<ffi.Char> outName,
+  int nameLen,
+  ffi.Pointer<ffi.Char> outModule,
+  int moduleLen,
+  ffi.Pointer<ffi.Double> outMin,
+  ffi.Pointer<ffi.Double> outMax,
+  ffi.Pointer<ffi.Double> outDefault,
+  ffi.Pointer<ffi.UnsignedInt> outFlags,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapGetParameterInfo(
+      pluginHandle,
+      paramIndex,
+      outParamId,
+      outName,
+      nameLen,
+      outModule,
+      moduleLen,
+      outMin,
+      outMax,
+      outDefault,
+      outFlags,
+    ),
+  );
+}
+
+/// The plugin's current plain value of [paramId]. Main hop.
+@ffi.Native<
+  ffi.UnsignedInt Function(ffi.Int, ffi.UnsignedInt, ffi.Pointer<ffi.Double>)
+>(symbol: 'soloud_clapGetParameterValue')
+external int _soloud_clapGetParameterValue(
+  int pluginHandle,
+  int paramId,
+  ffi.Pointer<ffi.Double> outValue,
+);
+
+PlayerErrors soloud_clapGetParameterValue(
+  int pluginHandle,
+  int paramId,
+  ffi.Pointer<ffi.Double> outValue,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapGetParameterValue(pluginHandle, paramId, outValue),
+  );
+}
+
+/// Formats [value] of [paramId] the plugin's way. Main hop.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Int,
+    ffi.UnsignedInt,
+    ffi.Double,
+    ffi.Pointer<ffi.Char>,
+    ffi.Int,
+  )
+>(symbol: 'soloud_clapParameterValueToText')
+external int _soloud_clapParameterValueToText(
+  int pluginHandle,
+  int paramId,
+  double value,
+  ffi.Pointer<ffi.Char> outText,
+  int textLen,
+);
+
+PlayerErrors soloud_clapParameterValueToText(
+  int pluginHandle,
+  int paramId,
+  double value,
+  ffi.Pointer<ffi.Char> outText,
+  int textLen,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapParameterValueToText(
+      pluginHandle,
+      paramId,
+      value,
+      outText,
+      textLen,
+    ),
+  );
+}
+
+/// Parses [text] into a plain value of [paramId]. Main hop.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Int,
+    ffi.UnsignedInt,
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Double>,
+  )
+>(symbol: 'soloud_clapParameterTextToValue')
+external int _soloud_clapParameterTextToValue(
+  int pluginHandle,
+  int paramId,
+  ffi.Pointer<ffi.Char> text,
+  ffi.Pointer<ffi.Double> outValue,
+);
+
+PlayerErrors soloud_clapParameterTextToValue(
+  int pluginHandle,
+  int paramId,
+  ffi.Pointer<ffi.Char> text,
+  ffi.Pointer<ffi.Double> outValue,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapParameterTextToValue(pluginHandle, paramId, text, outValue),
+  );
+}
+
+/// Queues [plainValue] (clamped to the range) for [paramId]; the plugin
+/// receives it with its next processed block, or a flush while it does not
+/// process. Any non-audio thread; never waits for the main thread.
+/// unknownError while the list is being rescanned or the queue is full.
+@ffi.Native<ffi.UnsignedInt Function(ffi.Int, ffi.UnsignedInt, ffi.Double)>(
+  symbol: 'soloud_clapSetParameterValue',
+)
+external int _soloud_clapSetParameterValue(
+  int pluginHandle,
+  int paramId,
+  double plainValue,
+);
+
+PlayerErrors soloud_clapSetParameterValue(
+  int pluginHandle,
+  int paramId,
+  double plainValue,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapSetParameterValue(pluginHandle, paramId, plainValue),
+  );
+}
+
+/// Saves the plugin's state. On success [outData] is malloc'd: free it with
+/// nativeFree(). An empty state gives null data and size 0. notImplemented
+/// when the plugin has no state extension. Main hop.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Int,
+    ffi.Pointer<ffi.Pointer<ffi.UnsignedChar>>,
+    ffi.Pointer<ffi.UnsignedInt>,
+  )
+>(symbol: 'soloud_clapGetState')
+external int _soloud_clapGetState(
+  int pluginHandle,
+  ffi.Pointer<ffi.Pointer<ffi.UnsignedChar>> outData,
+  ffi.Pointer<ffi.UnsignedInt> outSize,
+);
+
+PlayerErrors soloud_clapGetState(
+  int pluginHandle,
+  ffi.Pointer<ffi.Pointer<ffi.UnsignedChar>> outData,
+  ffi.Pointer<ffi.UnsignedInt> outSize,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapGetState(pluginHandle, outData, outSize),
+  );
+}
+
+/// Loads a state saved by soloud_clapGetState(). Parameter edits queued
+/// before the call are dropped, and a clapEventParamsRescan (values, text)
+/// follows. Main hop.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Int,
+    ffi.Pointer<ffi.UnsignedChar>,
+    ffi.UnsignedInt,
+  )
+>(symbol: 'soloud_clapSetState')
+external int _soloud_clapSetState(
+  int pluginHandle,
+  ffi.Pointer<ffi.UnsignedChar> data,
+  int size,
+);
+
+PlayerErrors soloud_clapSetState(
+  int pluginHandle,
+  ffi.Pointer<ffi.UnsignedChar> data,
+  int size,
+) {
+  return PlayerErrors.fromValue(_soloud_clapSetState(pluginHandle, data, size));
+}
+
+/// Takes up to [capacity] pending events into the parallel arrays (types
+/// from ClapHostEventType) and writes how many to [outCount]. Call it again
+/// while it fills the arrays. Any non-audio thread, one at a time per
+/// handle; never waits for the main thread.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Int,
+    ffi.Int,
+    ffi.Pointer<ffi.Int>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.Double>,
+    ffi.Pointer<ffi.UnsignedInt>,
+    ffi.Pointer<ffi.Int>,
+  )
+>(symbol: 'soloud_clapDrainEvents')
+external int _soloud_clapDrainEvents(
+  int pluginHandle,
+  int capacity,
+  ffi.Pointer<ffi.Int> outTypes,
+  ffi.Pointer<ffi.UnsignedInt> outParamIds,
+  ffi.Pointer<ffi.Double> outValues,
+  ffi.Pointer<ffi.UnsignedInt> outFlags,
+  ffi.Pointer<ffi.Int> outCount,
+);
+
+PlayerErrors soloud_clapDrainEvents(
+  int pluginHandle,
+  int capacity,
+  ffi.Pointer<ffi.Int> outTypes,
+  ffi.Pointer<ffi.UnsignedInt> outParamIds,
+  ffi.Pointer<ffi.Double> outValues,
+  ffi.Pointer<ffi.UnsignedInt> outFlags,
+  ffi.Pointer<ffi.Int> outCount,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapDrainEvents(
+      pluginHandle,
+      capacity,
+      outTypes,
+      outParamIds,
+      outValues,
+      outFlags,
+      outCount,
+    ),
+  );
+}
+
 typedef dartVoiceEndedCallback_tFunction =
     ffi.Void Function(ffi.Pointer<ffi.UnsignedInt>);
 typedef DartdartVoiceEndedCallback_tFunction =

@@ -288,6 +288,11 @@ namespace soloud_clap
             return fail(fileLoadFailed);
         if (!instance->init())
             return fail(fileLoadFailed);
+        instance->cacheExtensions();
+        if (epochChanged(epoch))
+            return fail(unknownError);
+        // Inactive: the parameter list, and any rescan latched by init.
+        instance->rebuildParams();
         if (epochChanged(epoch))
             return fail(unknownError);
         PortLayout layout;
@@ -296,10 +301,18 @@ namespace soloud_clap
             return fail(fileLoadFailed);
         if (epochChanged(epoch))
             return fail(unknownError);
+        // A rescan(ALL) from the port queries: rebuilt while inactive.
+        if (!instance->settleParamsBeforeActivate())
+            return fail(fileLoadFailed);
+        if (epochChanged(epoch))
+            return fail(unknownError);
         if (!instance->installLayout(layout))
             return fail(outOfMemory);
         if (!instance->activate())
             return fail(fileLoadFailed);
+        // Dart reads the getter after load: no latencyChanged here.
+        instance->publishLatency(false);
+        instance->afterPluginCall();
         if (epochChanged(epoch))
             return fail(unknownError);
 
@@ -328,6 +341,8 @@ namespace soloud_clap
                     if (mModuleCache.find(cacheKey) == mModuleCache.end())
                         mModuleCache.emplace(cacheKey, std::move(cacheRef));
                     instance->mLifecycleBusy = false;
+                    // Timers registered during init fire from now on (R9).
+                    instance->enableTimers();
                     mTable[slot].store(instance.get(), std::memory_order_release);
                 }
             }
@@ -459,6 +474,8 @@ namespace soloud_clap
     {
         // Never aborts: continues from the recorded state to Destroyed.
         instance.mLifecycleBusy = true;
+        // Timers off and rescans bump only, from here on (plan S6).
+        instance.beginTeardown();
         instance.mRestartRequested.store(false, std::memory_order_release);
         instance.mCallbackRequested.store(false, std::memory_order_release);
         if (instance.plugin() != nullptr &&
@@ -467,8 +484,10 @@ namespace soloud_clap
             instance.stopProcessingExclusive();
             if (instance.lifecycle() == Lifecycle::activated)
                 instance.deactivate();
+            // Registrations survive into destroy(): unregister answers true.
             instance.destroy();
         }
+        instance.clearTimers();
         instance.mLifecycleBusy = false;
         instance.releaseModule();
     }
@@ -549,6 +568,15 @@ namespace soloud_clap
             if (retired())
                 return;
         }
+        // Deactivated: rebuild the parameter list (a pending rescan(ALL)
+        // included) before anything below can fail-return (plan B2).
+        instance.rebuildParams();
+        if (retired())
+            return;
+        auto failRestart = [&] {
+            instance.transition(Disposition::servicing, Disposition::failed);
+            instance.notify(kNotifyRestartFailed);
+        };
         PortLayout layout;
         std::string reason;
         const bool routable = instance.readPorts(layout, reason);
@@ -556,20 +584,37 @@ namespace soloud_clap
             return;
         if (!routable)
         {
-            instance.transition(Disposition::servicing, Disposition::failed);
+            failRestart();
+            return;
+        }
+        // A rescan(ALL) from the port queries is rebuilt while inactive. A
+        // list that keeps changing stays inactive (Failed + inited), where
+        // the pump's rebuild step keeps servicing it.
+        const bool settled = instance.settleParamsBeforeActivate();
+        if (retired())
+            return;
+        if (!settled)
+        {
+            failRestart();
             return;
         }
         // Out of memory: the old configuration stays, processing stays off.
         if (!instance.installLayout(layout) || !instance.activate())
         {
-            instance.transition(Disposition::servicing, Disposition::failed);
+            failRestart();
             return;
         }
+        // The cached value is published before its notification.
+        instance.publishLatency(true);
+        instance.afterPluginCall();
         if (retired())
             return;
         if (instance.transition(Disposition::servicing, Disposition::active) ||
             instance.transition(Disposition::failed, Disposition::active))
+        {
             instance.bumpRestartCount();
+            instance.notify(kNotifyRestarted);
+        }
     }
 
     void ClapHostManager::servicePendingBody()
@@ -581,25 +626,182 @@ namespace soloud_clap
             for (auto &entry : mInstances)
                 snapshot.push_back(entry.second);
         }
+        auto skip = [](ClapInstance &instance) {
+            return instance.mLifecycleBusy ||
+                   instance.disposition() == Disposition::retired;
+        };
         for (auto &instance : snapshot)
         {
-            if (instance->mLifecycleBusy ||
-                instance->disposition() == Disposition::retired)
+            if (skip(*instance))
                 continue;
             if (instance->mRestartRequested.exchange(false,
                                                      std::memory_order_acq_rel))
                 restart(*instance);
-            if (instance->mLifecycleBusy ||
-                instance->disposition() == Disposition::retired)
+            if (skip(*instance))
                 continue;
             if (instance->mCallbackRequested.exchange(false,
                                                       std::memory_order_acq_rel))
             {
-                instance->mLifecycleBusy = true;
+                InstanceCallGuard guard(*instance);
                 instance->onMainThread();
-                instance->mLifecycleBusy = false;
+                instance->afterPluginCall();
+            }
+            if (skip(*instance))
+                continue;
+            if (instance->rebuildStepNeeded())
+            {
+                InstanceCallGuard guard(*instance);
+                instance->afterPluginCall();
+            }
+            if (skip(*instance))
+                continue;
+            {
+                InstanceCallGuard guard(*instance);
+                instance->serviceFlush(nowNs());
+            }
+            if (skip(*instance))
+                continue;
+            {
+                InstanceCallGuard guard(*instance);
+                instance->fireTimers(nowNs());
             }
         }
+    }
+
+    // --- Phase 3: parameters, state, latency, events -------------------------
+
+    template <typename Fn>
+    PlayerErrors ClapHostManager::mainHop(int handle, Fn &&fn)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        if (!instance)
+            return invalidParameter;
+        PlayerErrors result = unknownError;
+        runOnMain([&] {
+            if (!instance->callable())
+            {
+                result = invalidParameter;
+                return;
+            }
+            InstanceCallGuard guard(*instance);
+            if (!guard.acquired())
+            {
+                result = unknownError; // Busy: a re-entrant call.
+                return;
+            }
+            result = fn(*instance);
+        });
+        return result;
+    }
+
+    uint32_t ClapHostManager::latencySamples(int handle)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        return instance ? instance->latency() : 0;
+    }
+
+    int ClapHostManager::parameterCount(int handle)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        if (!instance)
+            return 0;
+        std::shared_ptr<const ParamCache> cache = instance->params();
+        return cache->pending ? 0 : static_cast<int>(cache->entries.size());
+    }
+
+    PlayerErrors ClapHostManager::parameterInfo(int handle, int index,
+                                                ParamEntry &out)
+    {
+        out = ParamEntry();
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        if (!instance)
+            return invalidParameter;
+        std::shared_ptr<const ParamCache> cache = instance->params();
+        if (cache->pending || index < 0 ||
+            static_cast<size_t>(index) >= cache->entries.size())
+            return invalidParameter;
+        out = cache->entries[static_cast<size_t>(index)];
+        return noError;
+    }
+
+    PlayerErrors ClapHostManager::setParameterValue(int handle, clap_id id,
+                                                    double value)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        if (!instance)
+            return invalidParameter;
+        return instance->setParameterValue(id, value);
+    }
+
+    PlayerErrors ClapHostManager::getParameterValue(int handle, clap_id id,
+                                                    double *outValue)
+    {
+        if (outValue != nullptr)
+            *outValue = 0;
+        return mainHop(handle, [&](ClapInstance &instance) {
+            return instance.getParameterValue(id, outValue);
+        });
+    }
+
+    PlayerErrors ClapHostManager::valueToText(int handle, clap_id id,
+                                              double value, char *outText,
+                                              int textLen)
+    {
+        if (outText != nullptr && textLen > 0)
+            outText[0] = '\0';
+        return mainHop(handle, [&](ClapInstance &instance) {
+            return instance.valueToText(id, value, outText, textLen);
+        });
+    }
+
+    PlayerErrors ClapHostManager::textToValue(int handle, clap_id id,
+                                              const char *text, double *outValue)
+    {
+        if (outValue != nullptr)
+            *outValue = 0;
+        return mainHop(handle, [&](ClapInstance &instance) {
+            return instance.textToValue(id, text, outValue);
+        });
+    }
+
+    PlayerErrors ClapHostManager::saveState(int handle,
+                                            std::vector<unsigned char> &out)
+    {
+        out.clear();
+        return mainHop(handle, [&](ClapInstance &instance) {
+            return instance.saveState(out);
+        });
+    }
+
+    PlayerErrors ClapHostManager::loadState(int handle,
+                                            const unsigned char *data,
+                                            size_t size)
+    {
+        if (data == nullptr && size > 0)
+            return invalidParameter;
+        return mainHop(handle, [&](ClapInstance &instance) {
+            return instance.loadState(data, size);
+        });
+    }
+
+    PlayerErrors ClapHostManager::drainEvents(int handle, int capacity,
+                                              int *outTypes,
+                                              unsigned *outParamIds,
+                                              double *outValues,
+                                              unsigned *outFlags, int *outCount)
+    {
+        if (outCount != nullptr)
+            *outCount = 0;
+        if (outCount == nullptr || capacity < 0 ||
+            (capacity > 0 && (outTypes == nullptr || outParamIds == nullptr ||
+                              outValues == nullptr || outFlags == nullptr)))
+            return invalidParameter;
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        if (!instance)
+            return invalidParameter;
+        *outCount = instance->drainEvents(capacity, outTypes, outParamIds,
+                                          outValues, outFlags);
+        return noError;
     }
 
     void ClapHostManager::pumpTick(void *)

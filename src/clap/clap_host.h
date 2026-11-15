@@ -9,8 +9,10 @@
 //   atomic Disposition. Unloading clears the table, marks the instance Retired
 //   and queues it in a retirement batch; the batch is torn down on main only
 //   after the audio barrier has run (or the device is known to be stopped).
-// - A 16 ms main-queue timer (the pump) services request_restart and
-//   request_callback and drains retirement batches while anything is live.
+// - A 16 ms main-queue timer (the pump) services, per instance and in order:
+//   request_restart, request_callback, a pending parameter rebuild, the
+//   flush service and the plugin's timers; then it drains retirement batches.
+//   It runs while anything is live (Phase 3 adds the last three steps).
 #pragma once
 
 #ifdef SOLOUD_ENABLE_CLAP
@@ -86,6 +88,31 @@ namespace soloud_clap
         /// Lock-free, for DSP: null for an unknown or stale handle.
         ClapInstance *getInstanceAudioThread(int handle) noexcept;
 
+        // --- Phase 3: parameters, state, latency, events ---------------------
+        // Any thread unless noted. An unknown or unloaded handle gives
+        // invalidParameter (0 for the counts). Main hops return unknownError
+        // when the instance is busy: called re-entrantly from inside one of its
+        // own plugin calls.
+        uint32_t latencySamples(int handle);
+        /// 0 while the list is being rescanned.
+        int parameterCount(int handle);
+        PlayerErrors parameterInfo(int handle, int index, ParamEntry &out);
+        /// Any non-audio thread; never waits for main.
+        PlayerErrors setParameterValue(int handle, clap_id id, double value);
+        // Main hops.
+        PlayerErrors getParameterValue(int handle, clap_id id, double *outValue);
+        PlayerErrors valueToText(int handle, clap_id id, double value,
+                                 char *outText, int textLen);
+        PlayerErrors textToValue(int handle, clap_id id, const char *text,
+                                 double *outValue);
+        PlayerErrors saveState(int handle, std::vector<unsigned char> &out);
+        PlayerErrors loadState(int handle, const unsigned char *data,
+                               size_t size);
+        /// Any non-audio thread; never waits for main.
+        PlayerErrors drainEvents(int handle, int capacity, int *outTypes,
+                                 unsigned *outParamIds, double *outValues,
+                                 unsigned *outFlags, int *outCount);
+
         // --- introspection (tests) ------------------------------------------
         std::shared_ptr<ClapInstance> getInstance(int handle);
         size_t liveInstanceCount();
@@ -129,6 +156,10 @@ namespace soloud_clap
                             std::vector<ModuleRef> modules);
 
         bool epochChanged(uint64_t epoch);
+        /// Resolves [handle] and runs [fn] on main under the instance's call
+        /// guard (plan R8).
+        template <typename Fn>
+        PlayerErrors mainHop(int handle, Fn &&fn);
         void restart(ClapInstance &instance);
         static void teardown(ClapInstance &instance);
         void runBarrier();

@@ -5,7 +5,12 @@
 #include <pthread.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <new>
 
 namespace soloud_clap
 {
@@ -28,6 +33,189 @@ namespace soloud_clap
         std::atomic<int> gScratchFailCountdown{-1};
 #endif
 
+        using LogSink = void (*)(const char *, int, const char *);
+
+        const char *severityName(int severity)
+        {
+            switch (severity)
+            {
+            case CLAP_LOG_DEBUG:
+                return "debug";
+            case CLAP_LOG_INFO:
+                return "info";
+            case CLAP_LOG_WARNING:
+                return "warning";
+            case CLAP_LOG_ERROR:
+                return "error";
+            case CLAP_LOG_FATAL:
+                return "fatal";
+            case CLAP_LOG_HOST_MISBEHAVING:
+                return "host misbehaving";
+            case CLAP_LOG_PLUGIN_MISBEHAVING:
+                return "plugin misbehaving";
+            default:
+                return "log";
+            }
+        }
+
+        void stderrSink(const char *pluginId, int severity, const char *msg)
+        {
+            std::fprintf(stderr, "[CLAP %s] %s: %s\n", pluginId,
+                         severityName(severity), msg);
+        }
+
+        // Defaults; test hooks replace them.
+        std::atomic<LogSink> gLogSink{nullptr};
+        std::atomic<uint64_t> gIdleNs{kDefaultIdleNs};
+        std::atomic<uint32_t> gOutRingCapacity{kOutRingCapacity};
+        std::atomic<uint64_t> gStateLimit{kDefaultStateLimit};
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+        std::atomic<void (*)()> gEditProducerHook{nullptr};
+        std::atomic<void (*)()> gDrainBeforeAckHook{nullptr};
+        std::atomic<void (*)()> gDrainInsideAckHook{nullptr};
+        std::atomic<void (*)()> gRescanAfterPendingHook{nullptr};
+#endif
+        std::atomic<uint64_t> gLockOrderViolations{0};
+
+        void emitLog(const char *pluginId, int severity, const char *msg)
+        {
+            LogSink sink = gLogSink.load(std::memory_order_acquire);
+            (sink != nullptr ? sink : &stderrSink)(pluginId, severity, msg);
+        }
+
+        // Plan B2 lock order: no plugin call while this thread holds
+        // mEditProducerMutex or mParamsMutex. GuardedLock counts them.
+        thread_local int tGuardedLockDepth = 0;
+
+        class GuardedLock
+        {
+        public:
+            explicit GuardedLock(std::mutex &mutex) : mLock(mutex)
+            {
+                ++tGuardedLockDepth;
+            }
+            ~GuardedLock() { --tGuardedLockDepth; }
+            GuardedLock(const GuardedLock &) = delete;
+            GuardedLock &operator=(const GuardedLock &) = delete;
+
+        private:
+            std::unique_lock<std::mutex> mLock;
+        };
+
+        /// At every plugin call site.
+        inline void checkPluginCall() noexcept
+        {
+            if (tGuardedLockDepth > 0)
+                gLockOrderViolations.fetch_add(1, std::memory_order_acq_rel);
+        }
+
+        // mOutState layout (plan B1).
+        constexpr uint64_t kOutBlocked = 1ull << 63;
+        constexpr uint64_t kOutReasonOverflow = 1ull << 62;
+        constexpr uint64_t kOutReasonReset = 1ull << 61;
+        constexpr uint64_t kOutCountMask = 0xffffffffull;
+
+        uint64_t withDrop(uint64_t word) noexcept
+        {
+            return (word & kOutCountMask) < kOutCountMask ? word + 1 : word;
+        }
+
+        constexpr uint32_t kSupportedPortRescans =
+            CLAP_AUDIO_PORTS_RESCAN_NAMES | CLAP_AUDIO_PORTS_RESCAN_FLAGS |
+            CLAP_AUDIO_PORTS_RESCAN_CHANNEL_COUNT |
+            CLAP_AUDIO_PORTS_RESCAN_PORT_TYPE |
+            CLAP_AUDIO_PORTS_RESCAN_IN_PLACE_PAIR |
+            CLAP_AUDIO_PORTS_RESCAN_LIST;
+
+        /// The flags RESCAN_INFO may change without a generation bump.
+        constexpr uint32_t kNonCriticalParamFlags =
+            CLAP_PARAM_IS_PERIODIC | CLAP_PARAM_IS_HIDDEN;
+
+        std::string boundedString(const char *s, size_t capacity)
+        {
+            size_t n = 0;
+            while (n < capacity && s[n] != '\0')
+                ++n;
+            return std::string(s, n);
+        }
+
+        const std::shared_ptr<const ParamCache> &pendingCache()
+        {
+            static const std::shared_ptr<const ParamCache> kPending = [] {
+                auto cache = std::make_shared<ParamCache>();
+                cache->pending = true;
+                return std::shared_ptr<const ParamCache>(std::move(cache));
+            }();
+            return kPending;
+        }
+
+        struct OstreamContext
+        {
+            std::vector<unsigned char> *buffer;
+            uint64_t limit;
+            bool overLimit;
+        };
+
+        int64_t CLAP_ABI ostreamWrite(const clap_ostream_t *stream,
+                                      const void *data, uint64_t size)
+        {
+            auto *ctx = static_cast<OstreamContext *>(stream->ctx);
+            if (size == 0)
+                return 0;
+            if (data == nullptr)
+                return -1;
+            if (size > ctx->limit - ctx->buffer->size())
+            {
+                ctx->overLimit = true;
+                return -1;
+            }
+            const auto *bytes = static_cast<const unsigned char *>(data);
+            try
+            {
+                ctx->buffer->insert(ctx->buffer->end(), bytes, bytes + size);
+            }
+            catch (const std::bad_alloc &)
+            {
+                ctx->overLimit = true;
+                return -1;
+            }
+            return static_cast<int64_t>(size);
+        }
+
+        struct IstreamContext
+        {
+            const unsigned char *data;
+            size_t size;
+            size_t pos;
+        };
+
+        int64_t CLAP_ABI istreamRead(const clap_istream_t *stream, void *buffer,
+                                     uint64_t size)
+        {
+            auto *ctx = static_cast<IstreamContext *>(stream->ctx);
+            if (size == 0 || ctx->pos >= ctx->size)
+                return 0;
+            if (buffer == nullptr)
+                return -1;
+            const size_t n = static_cast<size_t>(
+                std::min<uint64_t>(size, ctx->size - ctx->pos));
+            std::memcpy(buffer, ctx->data + ctx->pos, n);
+            ctx->pos += n;
+            return static_cast<int64_t>(n);
+        }
+
+        void copyTruncated(const char *src, char *dst, int dstLen)
+        {
+            if (dst == nullptr || dstLen <= 0)
+                return;
+            const size_t cap = static_cast<size_t>(dstLen) - 1;
+            size_t n = 0;
+            while (n < cap && src[n] != '\0')
+                ++n;
+            std::memcpy(dst, src, n);
+            dst[n] = '\0';
+        }
+
         soloud_simd::AlignedFloatPtr allocateScratch(size_t count)
         {
 #ifdef SOLOUD_CLAP_TEST_HOOKS
@@ -49,7 +237,56 @@ namespace soloud_clap
         gScratchFailCountdown.store(nth < 0 ? -1 : nth,
                                     std::memory_order_release);
     }
+    void test::setLogSink(void (*sink)(const char *, int, const char *))
+    {
+        gLogSink.store(sink, std::memory_order_release);
+    }
+    void test::setIdleThresholdNs(uint64_t ns)
+    {
+        gIdleNs.store(ns == 0 ? kDefaultIdleNs : ns, std::memory_order_release);
+    }
+    void test::setOutRingCapacity(uint32_t capacity)
+    {
+        gOutRingCapacity.store(capacity == 0 ? kOutRingCapacity : capacity,
+                               std::memory_order_release);
+    }
+    void test::setStateSizeLimit(uint64_t bytes)
+    {
+        gStateLimit.store(bytes == 0 ? kDefaultStateLimit : bytes,
+                          std::memory_order_release);
+    }
+    void test::setEditProducerHook(void (*hook)())
+    {
+        gEditProducerHook.store(hook, std::memory_order_release);
+    }
+    void test::setDrainBeforeAckHook(void (*hook)())
+    {
+        gDrainBeforeAckHook.store(hook, std::memory_order_release);
+    }
+    void test::setDrainInsideAckHook(void (*hook)())
+    {
+        gDrainInsideAckHook.store(hook, std::memory_order_release);
+    }
+    void test::setRescanAfterPendingHook(void (*hook)())
+    {
+        gRescanAfterPendingHook.store(hook, std::memory_order_release);
+    }
+    uint64_t test::lockOrderViolations()
+    {
+        return gLockOrderViolations.load(std::memory_order_acquire);
+    }
+    void test::resetLockOrderViolations()
+    {
+        gLockOrderViolations.store(0, std::memory_order_release);
+    }
 #endif
+
+    int64_t nowNs() noexcept
+    {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    }
 
     uint32_t PortLayout::totalInputChannels() const { return sum(inputChannels); }
     uint32_t PortLayout::totalOutputChannels() const
@@ -79,11 +316,34 @@ namespace soloud_clap
         ClapInstance &mInstance;
     };
 
+    /// Main-only: records the plugin call in progress (plan R7).
+    class ClapInstance::CallPhaseScope
+    {
+    public:
+        CallPhaseScope(ClapInstance &instance, CallPhase phase)
+            : mInstance(instance), mPrevious(instance.mPhase)
+        {
+            mInstance.mPhase = phase;
+        }
+        ~CallPhaseScope() { mInstance.mPhase = mPrevious; }
+        CallPhaseScope(const CallPhaseScope &) = delete;
+        CallPhaseScope &operator=(const CallPhaseScope &) = delete;
+
+    private:
+        ClapInstance &mInstance;
+        const CallPhase mPrevious;
+    };
+
     ClapInstance::ClapInstance(ModuleRef module, std::string pluginId,
                                double sampleRate, uint32_t maxBlockSize)
         : mModule(std::move(module)), mPluginId(std::move(pluginId)),
-          mSampleRate(sampleRate), mMaxBlockSize(maxBlockSize)
+          mSampleRate(sampleRate), mMaxBlockSize(maxBlockSize),
+          mOutRing(gOutRingCapacity.load(std::memory_order_acquire))
     {
+        mRetained.reset(new Edit[kEditCapacity]);
+        mParamsCache = pendingCache();
+        mOutEvents.ctx = this;
+        mOutEvents.try_push = &ClapInstance::outTryPush;
         mHost.clap_version = CLAP_VERSION;
         mHost.host_data = this;
         mHost.name = kHostName;
@@ -122,6 +382,7 @@ namespace soloud_clap
         const clap_plugin_factory_t *factory = mModule.factory();
         if (factory == nullptr)
             return false;
+        checkPluginCall();
         const clap_plugin_t *plugin =
             factory->create_plugin(factory, &mHost, mPluginId.c_str());
         if (plugin == nullptr)
@@ -143,6 +404,8 @@ namespace soloud_clap
 
     bool ClapInstance::init()
     {
+        CallPhaseScope phase(*this, CallPhase::initing);
+        checkPluginCall();
         if (!mPlugin->init(mPlugin))
             return false;
         setLifecycle(Lifecycle::inited);
@@ -151,6 +414,8 @@ namespace soloud_clap
 
     bool ClapInstance::activate()
     {
+        CallPhaseScope phase(*this, CallPhase::activating);
+        checkPluginCall();
         if (!mPlugin->activate(mPlugin, mSampleRate, 1, mMaxBlockSize))
             return false;
         setLifecycle(Lifecycle::activated);
@@ -159,22 +424,33 @@ namespace soloud_clap
 
     void ClapInstance::deactivate()
     {
-        mPlugin->deactivate(mPlugin);
+        {
+            CallPhaseScope phase(*this, CallPhase::deactivating);
+            checkPluginCall();
+            mPlugin->deactivate(mPlugin);
+        }
         setLifecycle(Lifecycle::inited);
+        mFlushStalled = false;
     }
 
     void ClapInstance::destroy()
     {
         const clap_plugin_t *plugin = mPlugin;
+        checkPluginCall();
         mPlugin->destroy(plugin);
         setLifecycle(Lifecycle::destroyed);
     }
 
-    void ClapInstance::onMainThread() { mPlugin->on_main_thread(mPlugin); }
+    void ClapInstance::onMainThread()
+    {
+        checkPluginCall();
+        mPlugin->on_main_thread(mPlugin);
+    }
 
     bool ClapInstance::readPorts(PortLayout &outLayout, std::string &outError)
     {
         outLayout = PortLayout();
+        checkPluginCall();
         const auto *ports = static_cast<const clap_plugin_audio_ports_t *>(
             mPlugin->get_extension(mPlugin, CLAP_EXT_AUDIO_PORTS));
         if (ports == nullptr || ports->count == nullptr || ports->get == nullptr)
@@ -305,9 +581,14 @@ namespace soloud_clap
         std::lock_guard<std::mutex> lock(mProcessMutex);
         if (!mStarted)
             return;
-        AudioRole role(*this);
-        mPlugin->stop_processing(mPlugin);
+        mMainHoldsProcessMutex = true;
+        {
+            AudioRole role(*this);
+            checkPluginCall();
+            mPlugin->stop_processing(mPlugin);
+        }
         mStarted = false;
+        mMainHoldsProcessMutex = false;
     }
 
     // --- DSP ---------------------------------------------------------------
@@ -338,7 +619,11 @@ namespace soloud_clap
 
         std::unique_lock<std::mutex> lock(mProcessMutex, std::try_to_lock);
         if (!lock.owns_lock())
-            return; // Exclusive servicing in progress: a dry block.
+        {
+            // Exclusive servicing in progress: a dry block.
+            mDryBlocksFromServicing.fetch_add(1, std::memory_order_acq_rel);
+            return;
+        }
         d = disposition();
         if (d == Disposition::failed)
         {
@@ -352,6 +637,7 @@ namespace soloud_clap
         soloud_simd::ScopedFlushDenormals flushDenormals;
         if (!mStarted)
         {
+            checkPluginCall();
             if (!mPlugin->start_processing(mPlugin))
             {
                 // Muted until a restart succeeds (plan Phase 2, F5).
@@ -406,7 +692,7 @@ namespace soloud_clap
         }
 
         mInputEvents.clear();
-        mOutputEvents.clear();
+        consumeEditsDsp();
 
         clap_process_t process{};
         process.steady_time = mSteadyTime;
@@ -419,11 +705,15 @@ namespace soloud_clap
         process.audio_outputs_count =
             static_cast<uint32_t>(mOutputBuffers.size());
         process.in_events = mInputEvents.vtable();
-        process.out_events = mOutputEvents.vtable();
+        process.out_events = &mOutEvents;
 
-        // A process call answers any pending request_process (plan F7).
+        // A process call answers any pending request_process (plan F7) and
+        // request_flush (plan Phase 3, §3.3).
+        mFlushRequested.store(false, std::memory_order_release);
         mProcessRequested.store(false, std::memory_order_release);
+        checkPluginCall();
         const clap_process_status status = mPlugin->process(mPlugin, &process);
+        mLastProcessNs.store(nowNs(), std::memory_order_release);
         mLastSteadyTime.store(mSteadyTime, std::memory_order_release);
         mSteadyTime += frames;
 
@@ -478,10 +768,39 @@ namespace soloud_clap
         };
         if (from(host) == nullptr || id == nullptr)
             return nullptr;
+        static const clap_host_log_t kLog = {&ClapInstance::hostLog};
+        static const clap_host_params_t kParams = {
+            &ClapInstance::hostParamsRescan,
+            &ClapInstance::hostParamsClear,
+            &ClapInstance::hostParamsRequestFlush,
+        };
+        static const clap_host_state_t kState = {
+            &ClapInstance::hostStateMarkDirty};
+        static const clap_host_latency_t kLatency = {
+            &ClapInstance::hostLatencyChanged};
+        static const clap_host_timer_support_t kTimer = {
+            &ClapInstance::hostRegisterTimer,
+            &ClapInstance::hostUnregisterTimer,
+        };
+        static const clap_host_audio_ports_t kAudioPorts = {
+            &ClapInstance::hostAudioPortsIsRescanFlagSupported,
+            &ClapInstance::hostAudioPortsRescan,
+        };
         if (std::strcmp(id, CLAP_EXT_THREAD_CHECK) == 0)
             return &kThreadCheck;
-        // Phase 3 adds log, params, state, latency, gui, timer-support and
-        // audio-ports.
+        if (std::strcmp(id, CLAP_EXT_LOG) == 0)
+            return &kLog;
+        if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)
+            return &kParams;
+        if (std::strcmp(id, CLAP_EXT_STATE) == 0)
+            return &kState;
+        if (std::strcmp(id, CLAP_EXT_LATENCY) == 0)
+            return &kLatency;
+        if (std::strcmp(id, CLAP_EXT_TIMER_SUPPORT) == 0)
+            return &kTimer;
+        if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0)
+            return &kAudioPorts;
+        // gui is Phase 4b.
         return nullptr;
     }
 
@@ -492,8 +811,8 @@ namespace soloud_clap
     }
 
     // v1 calls process() on every eligible block, so a request only stays
-    // pending (and counted) until the next process() call. While DSP is not
-    // running it stays pending; Phase 3's flush servicing consumes it.
+    // pending (and counted) until the next process() call. While processing
+    // is not guaranteed, the pump's flush service answers it (plan §3.4).
     void CLAP_ABI ClapInstance::hostRequestProcess(const clap_host_t *host)
     {
         if (ClapInstance *self = from(host))
@@ -509,15 +828,1215 @@ namespace soloud_clap
             self->mCallbackRequested.store(true, std::memory_order_release);
     }
 
-    bool CLAP_ABI ClapInstance::hostIsMainThread(const clap_host_t *)
+    // While main holds an instance's audio role (an exclusive stop or an
+    // active flush), it is that instance's audio thread, not its main thread.
+    bool CLAP_ABI ClapInstance::hostIsMainThread(const clap_host_t *host)
     {
-        return pthread_main_np() != 0;
+        const ClapInstance *self = from(host);
+        return pthread_main_np() != 0 &&
+               !(self != nullptr && self->isAudioThread());
     }
 
     bool CLAP_ABI ClapInstance::hostIsAudioThread(const clap_host_t *host)
     {
         const ClapInstance *self = from(host);
         return self != nullptr && self->isAudioThread();
+    }
+
+    // --- Phase 3: legality helpers -----------------------------------------
+
+    void ClapInstance::logMisbehaving(const char *what) noexcept
+    {
+        mMisbehavingCount.fetch_add(1, std::memory_order_acq_rel);
+        if (!isAudioThread())
+            emitLog(mPluginId.c_str(), CLAP_LOG_PLUGIN_MISBEHAVING, what);
+    }
+
+    bool ClapInstance::mainCallbackAllowed(const char *what) noexcept
+    {
+        // Plan B2: a [main-thread] callback from the thread holding this
+        // instance's audio role is rejected even when that thread is main.
+        if (pthread_main_np() != 0 && !isAudioThread())
+            return true;
+        logMisbehaving(what);
+        return false;
+    }
+
+    bool ClapInstance::inactiveForRescan() const noexcept
+    {
+        if (mPhase == CallPhase::initing || mPhase == CallPhase::deactivating)
+            return true;
+        return lifecycle() == Lifecycle::inited &&
+               mPhase != CallPhase::activating;
+    }
+
+    bool ClapInstance::callable() const noexcept
+    {
+        const Lifecycle l = lifecycle();
+        return mPlugin != nullptr &&
+               (l == Lifecycle::inited || l == Lifecycle::activated) &&
+               disposition() != Disposition::retired && !mTearingDown;
+    }
+
+    void ClapInstance::beginTeardown() noexcept
+    {
+        mTimersEnabled = false;
+        mTearingDown = true;
+    }
+
+    // --- Phase 3: plugin extensions ----------------------------------------
+
+    void ClapInstance::resolveTimerExtension()
+    {
+        if (mTimerExtResolved)
+            return;
+        mTimerExtResolved = true;
+        checkPluginCall();
+        const auto *timer = static_cast<const clap_plugin_timer_support_t *>(
+            mPlugin->get_extension(mPlugin, CLAP_EXT_TIMER_SUPPORT));
+        if (timer == nullptr)
+            return;
+        if (timer->on_timer == nullptr)
+        {
+            logMisbehaving("incomplete timer-support extension");
+            return;
+        }
+        mPluginTimer = timer;
+    }
+
+    void ClapInstance::cacheExtensions()
+    {
+        checkPluginCall();
+        const auto *params = static_cast<const clap_plugin_params_t *>(
+            mPlugin->get_extension(mPlugin, CLAP_EXT_PARAMS));
+        if (params != nullptr)
+        {
+            if (params->count != nullptr && params->get_info != nullptr &&
+                params->get_value != nullptr &&
+                params->value_to_text != nullptr &&
+                params->text_to_value != nullptr && params->flush != nullptr)
+                mPluginParams = params;
+            else
+                logMisbehaving("incomplete params extension");
+        }
+        checkPluginCall();
+        const auto *state = static_cast<const clap_plugin_state_t *>(
+            mPlugin->get_extension(mPlugin, CLAP_EXT_STATE));
+        if (state != nullptr)
+        {
+            if (state->save != nullptr && state->load != nullptr)
+                mPluginState = state;
+            else
+                logMisbehaving("incomplete state extension");
+        }
+        checkPluginCall();
+        const auto *latency = static_cast<const clap_plugin_latency_t *>(
+            mPlugin->get_extension(mPlugin, CLAP_EXT_LATENCY));
+        if (latency != nullptr)
+        {
+            if (latency->get != nullptr)
+                mPluginLatency = latency;
+            else
+                logMisbehaving("incomplete latency extension");
+        }
+        resolveTimerExtension();
+    }
+
+    // --- Phase 3: parameter cache ------------------------------------------
+
+    std::shared_ptr<const ParamCache> ClapInstance::params() const
+    {
+        std::lock_guard<std::mutex> lock(mParamsMutex);
+        return mParamsCache;
+    }
+
+    std::shared_ptr<ParamCache> ClapInstance::buildParamCache()
+    {
+        auto cache = std::make_shared<ParamCache>();
+        if (mPluginParams == nullptr)
+            return cache;
+        checkPluginCall();
+        uint32_t count = mPluginParams->count(mPlugin);
+        if (count > kMaxParams)
+        {
+            logMisbehaving("too many parameters; the list is truncated");
+            count = kMaxParams;
+        }
+        cache->entries.reserve(count);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            clap_param_info_t info{};
+            info.id = CLAP_INVALID_ID;
+            checkPluginCall();
+            if (!mPluginParams->get_info(mPlugin, i, &info))
+            {
+                logMisbehaving("params.get_info failed for an index below count");
+                continue;
+            }
+            if (info.id == CLAP_INVALID_ID || !std::isfinite(info.min_value) ||
+                !std::isfinite(info.max_value) ||
+                !std::isfinite(info.default_value) ||
+                info.min_value > info.max_value)
+            {
+                logMisbehaving("invalid parameter info skipped");
+                continue;
+            }
+            if (cache->byId.count(info.id) != 0)
+            {
+                logMisbehaving("duplicate parameter id skipped");
+                continue;
+            }
+            ParamEntry entry;
+            entry.id = info.id;
+            entry.flags = info.flags;
+            entry.cookie = info.cookie;
+            entry.name = boundedString(info.name, CLAP_NAME_SIZE);
+            entry.module = boundedString(info.module, CLAP_PATH_SIZE);
+            entry.min = info.min_value;
+            entry.max = info.max_value;
+            entry.def =
+                std::min(std::max(info.default_value, info.min_value),
+                         info.max_value);
+            cache->byId.emplace(entry.id, cache->entries.size());
+            cache->entries.push_back(std::move(entry));
+        }
+        return cache;
+    }
+
+    bool ClapInstance::criticalChange(const ParamCache &from,
+                                      const ParamCache &to) const
+    {
+        if (from.entries.size() != to.entries.size())
+            return true;
+        for (const ParamEntry &entry : to.entries)
+        {
+            const ParamEntry *old = from.find(entry.id);
+            if (old == nullptr || old->cookie != entry.cookie ||
+                old->min != entry.min || old->max != entry.max ||
+                (old->flags & ~kNonCriticalParamFlags) !=
+                    (entry.flags & ~kNonCriticalParamFlags))
+                return true;
+        }
+        return false;
+    }
+
+    namespace
+    {
+        /// Whether any field Dart shows differs (names, modules, defaults,
+        /// non-critical flags), given the same id set.
+        bool infoDiffers(const ParamCache &from, const ParamCache &to)
+        {
+            for (const ParamEntry &entry : to.entries)
+            {
+                const ParamEntry *old = from.find(entry.id);
+                if (old == nullptr || old->name != entry.name ||
+                    old->module != entry.module || old->def != entry.def ||
+                    old->flags != entry.flags)
+                    return true;
+            }
+            return false;
+        }
+    } // namespace
+
+    void ClapInstance::outResetLocked() noexcept
+    {
+        mOutState.fetch_or(kOutBlocked | kOutReasonReset,
+                           std::memory_order_acq_rel);
+    }
+
+    void ClapInstance::issueOutReset()
+    {
+        if (mMainHoldsProcessMutex)
+        {
+            outResetLocked();
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mProcessMutex);
+        outResetLocked();
+    }
+
+    void ClapInstance::rebuildParams()
+    {
+        constexpr int kMaxAttempts = 3;
+        for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+        {
+            // Never rebuilt in place while active with a pending cache: the
+            // restart's rebuild, between deactivate and activate, does it.
+            if (lifecycle() == Lifecycle::activated &&
+                mParamsPending.load(std::memory_order_acquire))
+            {
+                mRestartRequested.store(true, std::memory_order_release);
+                return;
+            }
+            const uint32_t flags =
+                mLatchedRescan.exchange(0, std::memory_order_acq_rel);
+            const uint64_t generation =
+                mParamsGeneration.load(std::memory_order_acquire);
+            const bool pending = mParamsPending.load(std::memory_order_acquire);
+
+            // Plugin calls, outside every lock. A rescan(ALL) from inside
+            // them bumps the generation, which the check below detects.
+            std::shared_ptr<ParamCache> cache = buildParamCache();
+
+            const bool critical =
+                mLastRealCache != nullptr && criticalChange(*mLastRealCache, *cache);
+            const bool bump = (pending && mLastRealCache != nullptr) || critical;
+            const bool infoChanged = mLastRealCache != nullptr && !critical &&
+                                     infoDiffers(*mLastRealCache, *cache);
+
+            // A bump resets the out ring, under mProcessMutex (plan B1).
+            std::unique_lock<std::mutex> processLock(mProcessMutex,
+                                                     std::defer_lock);
+            if (bump && !mMainHoldsProcessMutex)
+                processLock.lock();
+            bool published = false;
+            {
+                GuardedLock producer(mEditProducerMutex);
+                GuardedLock paramsLock(mParamsMutex);
+                if (mParamsGeneration.load(std::memory_order_acquire) == generation)
+                {
+                    if (!pending && critical)
+                    {
+                        cache->generation = generation + 1;
+                        mParamsGeneration.store(generation + 1,
+                                                std::memory_order_release);
+                        mEditEpoch.fetch_add(1, std::memory_order_acq_rel);
+                    }
+                    else
+                    {
+                        // A pending cache was bumped by the rescan(ALL).
+                        cache->generation = generation;
+                    }
+                    mParamsCache = cache;
+                    mParamsPending.store(false, std::memory_order_release);
+                    if (bump)
+                        outResetLocked();
+                    published = true;
+                }
+            }
+            if (processLock.owns_lock())
+                processLock.unlock();
+            if (published)
+            {
+                mLastRealCache = cache;
+                if (bump)
+                    notifyParamsRescan(CLAP_PARAM_RESCAN_ALL);
+                else if ((flags & CLAP_PARAM_RESCAN_INFO) != 0 || infoChanged)
+                    notifyParamsRescan(CLAP_PARAM_RESCAN_INFO);
+                return;
+            }
+            // Discarded: keep the flags for the retry or the next safe point.
+            mLatchedRescan.fetch_or(flags, std::memory_order_acq_rel);
+        }
+        logMisbehaving("the parameter list kept changing during a rebuild");
+        if (lifecycle() == Lifecycle::activated)
+            mRestartRequested.store(true, std::memory_order_release);
+    }
+
+    bool ClapInstance::settleParamsBeforeActivate()
+    {
+        if (mParamsPending.load(std::memory_order_acquire) ||
+            mLatchedRescan.load(std::memory_order_acquire) != 0)
+            rebuildParams();
+        return !mParamsPending.load(std::memory_order_acquire);
+    }
+
+    void ClapInstance::afterPluginCall()
+    {
+        if (disposition() == Disposition::retired || mTearingDown)
+            return;
+        const Lifecycle l = lifecycle();
+        if (l != Lifecycle::inited && l != Lifecycle::activated)
+            return;
+        const bool pending = mParamsPending.load(std::memory_order_acquire);
+        const bool latched =
+            mLatchedRescan.load(std::memory_order_acquire) != 0;
+        if (!pending && !latched)
+            return;
+        if (l == Lifecycle::activated && pending)
+        {
+            mRestartRequested.store(true, std::memory_order_release);
+            return;
+        }
+        rebuildParams();
+    }
+
+    bool ClapInstance::rebuildStepNeeded() const noexcept
+    {
+        if (disposition() == Disposition::retired || mTearingDown)
+            return false;
+        const Lifecycle l = lifecycle();
+        if (l != Lifecycle::inited && l != Lifecycle::activated)
+            return false;
+        return mParamsPending.load(std::memory_order_acquire) ||
+               mLatchedRescan.load(std::memory_order_acquire) != 0;
+    }
+
+    void ClapInstance::handleRescanAll()
+    {
+        {
+            GuardedLock producer(mEditProducerMutex);
+            GuardedLock paramsLock(mParamsMutex);
+            mParamsGeneration.fetch_add(1, std::memory_order_acq_rel);
+            mEditEpoch.fetch_add(1, std::memory_order_acq_rel);
+            mParamsCache = pendingCache();
+            mParamsPending.store(true, std::memory_order_release);
+        }
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+        if (auto hook = gRescanAfterPendingHook.load(std::memory_order_acquire))
+            hook();
+#endif
+        if (lifecycle() == Lifecycle::created ||
+            disposition() == Disposition::retired || mTearingDown)
+            return;
+        if (inactiveForRescan())
+        {
+            issueOutReset();
+            return;
+        }
+        // Illegal while active: the restart's publication resets the ring.
+        logMisbehaving("params.rescan(ALL) while the plugin is active");
+        mRestartRequested.store(true, std::memory_order_release);
+    }
+
+    void ClapInstance::publishLatency(bool notifyChange)
+    {
+        uint32_t value = 0;
+        if (mPluginLatency != nullptr)
+        {
+            checkPluginCall();
+            value = mPluginLatency->get(mPlugin);
+        }
+        const uint32_t old = mLatency.exchange(value, std::memory_order_acq_rel);
+        if (notifyChange && old != value)
+            notify(kNotifyLatencyChanged);
+    }
+
+    void ClapInstance::notify(uint32_t bits) noexcept
+    {
+        mNotifyFlags.fetch_or(bits, std::memory_order_acq_rel);
+    }
+
+    void ClapInstance::notifyParamsRescan(uint32_t clapFlags) noexcept
+    {
+        // The flags first: a drain that sees the bit also sees them.
+        mRescanNotifyFlags.fetch_or(clapFlags, std::memory_order_acq_rel);
+        notify(kNotifyParamsRescan);
+    }
+
+    // --- Phase 3: host -> plugin edits -------------------------------------
+
+    PlayerErrors ClapInstance::setParameterValue(clap_id id, double value)
+    {
+        if (!std::isfinite(value))
+            return PlayerErrors::invalidParameter;
+        // One critical section (plan R1): snapshot, epoch, push.
+        GuardedLock producer(mEditProducerMutex);
+        std::shared_ptr<const ParamCache> cache;
+        {
+            GuardedLock paramsLock(mParamsMutex);
+            cache = mParamsCache;
+        }
+        if (cache->pending)
+            return PlayerErrors::unknownError;
+        const ParamEntry *entry = cache->find(id);
+        if (entry == nullptr || (entry->flags & CLAP_PARAM_IS_READONLY) != 0)
+            return PlayerErrors::invalidParameter;
+        double plain = std::min(std::max(value, entry->min), entry->max);
+        if ((entry->flags & (CLAP_PARAM_IS_STEPPED | CLAP_PARAM_IS_ENUM |
+                             CLAP_PARAM_IS_BYPASS)) != 0)
+            plain = std::min(std::max(std::round(plain), entry->min), entry->max);
+        Edit edit;
+        edit.id = id;
+        edit.cookie = entry->cookie;
+        edit.value = plain;
+        edit.requiresProcess =
+            (entry->flags & CLAP_PARAM_REQUIRES_PROCESS) != 0;
+        edit.generation = cache->generation;
+        edit.epoch = mEditEpoch.load(std::memory_order_acquire);
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+        if (auto hook = gEditProducerHook.load(std::memory_order_acquire))
+            hook();
+#endif
+        if (!mEditRing.tryPush(edit))
+            return PlayerErrors::outOfMemory;
+        return PlayerErrors::noError;
+    }
+
+    bool ClapInstance::editStale(const Edit &edit) const noexcept
+    {
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            if (edit.generation ==
+                    mParamsGeneration.load(std::memory_order_acquire) &&
+                edit.epoch == mEditEpoch.load(std::memory_order_acquire))
+                return false;
+        }
+        return true;
+    }
+
+    bool ClapInstance::pushEditEvent(const Edit &edit) noexcept
+    {
+        clap_event_param_value_t event{};
+        event.header.size = sizeof(event);
+        event.header.time = 0;
+        event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+        event.header.type = CLAP_EVENT_PARAM_VALUE;
+        event.header.flags = 0;
+        event.param_id = edit.id;
+        event.cookie = edit.cookie;
+        event.note_id = -1;
+        event.port_index = -1;
+        event.channel = -1;
+        event.key = -1;
+        event.value = edit.value;
+        return mInputEvents.tryPush(&event.header);
+    }
+
+    void ClapInstance::retainedPush(const Edit &edit) noexcept
+    {
+        mRetained[(mRetainedHead + mRetainedSize) % kEditCapacity] = edit;
+        ++mRetainedSize;
+        mRetainedCount.store(mRetainedSize, std::memory_order_release);
+    }
+
+    const Edit *ClapInstance::retainedFront() const noexcept
+    {
+        return mRetainedSize > 0 ? &mRetained[mRetainedHead] : nullptr;
+    }
+
+    void ClapInstance::retainedPop() noexcept
+    {
+        mRetainedHead = (mRetainedHead + 1) % kEditCapacity;
+        --mRetainedSize;
+        mRetainedCount.store(mRetainedSize, std::memory_order_release);
+    }
+
+    void ClapInstance::compactRetained() noexcept
+    {
+        uint32_t kept = 0;
+        for (uint32_t i = 0; i < mRetainedSize; ++i)
+        {
+            const Edit &edit = mRetained[(mRetainedHead + i) % kEditCapacity];
+            if (editStale(edit))
+                continue;
+            if (kept != i)
+                mRetained[(mRetainedHead + kept) % kEditCapacity] = edit;
+            ++kept;
+        }
+        mRetainedSize = kept;
+        if (kept == 0)
+            mRetainedHead = 0;
+        mRetainedCount.store(mRetainedSize, std::memory_order_release);
+    }
+
+    void ClapInstance::consumeEditsDsp() noexcept
+    {
+        uint32_t examined = 0;
+        bool full = false;
+        // Retained edits are older than every ring entry (plan R2).
+        while (examined < kMaxEditsExaminedPerChunk)
+        {
+            const Edit *edit = retainedFront();
+            if (edit == nullptr)
+                break;
+            ++examined;
+            if (!editStale(*edit) && !pushEditEvent(*edit))
+            {
+                full = true;
+                break;
+            }
+            retainedPop();
+        }
+        if (!full && mRetainedSize == 0)
+        {
+            while (examined < kMaxEditsExaminedPerChunk)
+            {
+                const Edit *edit = mEditRing.peek();
+                if (edit == nullptr)
+                    break;
+                ++examined;
+                if (!editStale(*edit) && !pushEditEvent(*edit))
+                    break;
+                mEditRing.pop();
+            }
+        }
+        if (examined > mMaxExamined.load(std::memory_order_relaxed))
+            mMaxExamined.store(examined, std::memory_order_release);
+    }
+
+    void ClapInstance::stallRecord() noexcept
+    {
+        mFlushStalled = true;
+        mStallRetained = mRetainedSize;
+        mStallEpoch = mEditEpoch.load(std::memory_order_acquire);
+        mStallGeneration = mParamsGeneration.load(std::memory_order_acquire);
+    }
+
+    bool ClapInstance::stallActive() const noexcept
+    {
+        return mFlushStalled && lifecycle() == Lifecycle::activated &&
+               mRetainedCount.load(std::memory_order_acquire) >= mStallRetained &&
+               mEditEpoch.load(std::memory_order_acquire) == mStallEpoch &&
+               mParamsGeneration.load(std::memory_order_acquire) ==
+                   mStallGeneration;
+    }
+
+    void ClapInstance::serviceFlush(int64_t now)
+    {
+        const Disposition d = disposition();
+        if (d == Disposition::retired || d == Disposition::servicing)
+            return;
+        const Lifecycle l = lifecycle();
+        if (l != Lifecycle::inited && l != Lifecycle::activated)
+            return;
+        if (mPluginParams == nullptr)
+        {
+            // Nothing to flush; request_process stays pending for the next
+            // processed block (Phase 2 contract).
+            mFlushRequested.store(false, std::memory_order_release);
+            return;
+        }
+        // A scheduling heuristic, not proof DSP stopped (plan R10).
+        const int64_t last = mLastProcessNs.load(std::memory_order_acquire);
+        const int64_t idle =
+            static_cast<int64_t>(gIdleNs.load(std::memory_order_acquire));
+        if (last >= 0 && now - last <= idle)
+            return;
+        const bool work =
+            (!mEditRing.empty() && !stallActive()) ||
+            mFlushRequested.load(std::memory_order_acquire) ||
+            mProcessRequested.load(std::memory_order_acquire) ||
+            (l == Lifecycle::inited &&
+             mRetainedCount.load(std::memory_order_acquire) > 0);
+        if (!work)
+            return;
+
+        std::unique_lock<std::mutex> lock(mProcessMutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            return; // DSP is processing right now.
+        mMainHoldsProcessMutex = true;
+        // Taken before the call: a request made inside it stays pending.
+        mFlushRequested.exchange(false, std::memory_order_acq_rel);
+        mProcessRequested.exchange(false, std::memory_order_acq_rel);
+        mFlushStalled = false;
+        mInputEvents.clear();
+
+        if (l == Lifecycle::activated)
+        {
+            AudioRole role(*this);
+            compactRetained();
+            for (uint64_t n = mEditRing.readable(); n > 0; --n)
+            {
+                const Edit *edit = mEditRing.peek();
+                if (edit == nullptr)
+                    break;
+                if (editStale(*edit))
+                {
+                    mEditRing.pop();
+                    continue;
+                }
+                if (edit->requiresProcess)
+                {
+                    // Not deliverable through an active flush (params.h).
+                    if (mRetainedSize >= kEditCapacity)
+                    {
+                        stallRecord();
+                        break;
+                    }
+                    retainedPush(*edit);
+                    mEditRing.pop();
+                    continue;
+                }
+                if (!pushEditEvent(*edit))
+                    break;
+                mEditRing.pop();
+            }
+            checkPluginCall();
+            mPluginParams->flush(mPlugin, mInputEvents.vtable(), &mOutEvents);
+        }
+        else
+        {
+            // Inactive: REQUIRES_PROCESS is deliverable; a main-thread call.
+            bool full = false;
+            while (const Edit *edit = retainedFront())
+            {
+                if (!editStale(*edit) && !pushEditEvent(*edit))
+                {
+                    full = true;
+                    break;
+                }
+                retainedPop();
+            }
+            if (!full && mRetainedSize == 0)
+            {
+                for (uint64_t n = mEditRing.readable(); n > 0; --n)
+                {
+                    const Edit *edit = mEditRing.peek();
+                    if (edit == nullptr)
+                        break;
+                    if (!editStale(*edit) && !pushEditEvent(*edit))
+                        break;
+                    mEditRing.pop();
+                }
+            }
+            checkPluginCall();
+            mPluginParams->flush(mPlugin, mInputEvents.vtable(), &mOutEvents);
+        }
+        mInputEvents.clear();
+        mFlushCount.fetch_add(1, std::memory_order_acq_rel);
+        mMainHoldsProcessMutex = false;
+        lock.unlock();
+        afterPluginCall();
+    }
+
+    // --- Phase 3: plugin -> host events ------------------------------------
+
+    bool ClapInstance::outBlocked() const noexcept
+    {
+        return (mOutState.load(std::memory_order_acquire) & kOutBlocked) != 0;
+    }
+
+    bool ClapInstance::outPush(const OutEvent &event) noexcept
+    {
+        for (;;)
+        {
+            uint64_t word = mOutState.load(std::memory_order_acquire);
+            if ((word & kOutBlocked) != 0)
+            {
+                if (mOutState.compare_exchange_weak(word, withDrop(word),
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire))
+                    return false;
+                continue; // Changed (perhaps cleared by the consumer).
+            }
+            if (mOutRing.tryPush(event))
+                return true;
+            if (mOutState.compare_exchange_strong(
+                    word, withDrop(word | kOutBlocked | kOutReasonOverflow),
+                    std::memory_order_acq_rel, std::memory_order_acquire))
+                return false;
+        }
+    }
+
+    bool CLAP_ABI ClapInstance::outTryPush(const clap_output_events_t *list,
+                                           const clap_event_header_t *event)
+    {
+        if (list == nullptr || event == nullptr || list->ctx == nullptr)
+            return false;
+        auto *self = static_cast<ClapInstance *>(list->ctx);
+        OutEvent out;
+        bool carried = false;
+        if (event->space_id == CLAP_CORE_EVENT_SPACE_ID)
+        {
+            switch (event->type)
+            {
+            case CLAP_EVENT_PARAM_VALUE:
+                if (event->size >= sizeof(clap_event_param_value_t))
+                {
+                    const auto *value =
+                        reinterpret_cast<const clap_event_param_value_t *>(event);
+                    out.kind = HostEventType::paramValue;
+                    out.paramId = value->param_id;
+                    out.value = value->value;
+                    carried = true;
+                }
+                break;
+            case CLAP_EVENT_PARAM_GESTURE_BEGIN:
+            case CLAP_EVENT_PARAM_GESTURE_END:
+                if (event->size >= sizeof(clap_event_param_gesture_t))
+                {
+                    const auto *gesture =
+                        reinterpret_cast<const clap_event_param_gesture_t *>(
+                            event);
+                    out.kind = event->type == CLAP_EVENT_PARAM_GESTURE_BEGIN
+                                   ? HostEventType::gestureBegin
+                                   : HostEventType::gestureEnd;
+                    out.paramId = gesture->param_id;
+                    out.value = 0;
+                    carried = true;
+                }
+                break;
+            default:
+                break;
+            }
+        }
+        if (!carried)
+        {
+            // v1 hosts effects: other events are accepted and discarded.
+            self->mDiscardedOutEvents.fetch_add(1, std::memory_order_acq_rel);
+            return true;
+        }
+        out.dontRecord = (event->flags & CLAP_EVENT_DONT_RECORD) != 0;
+        return self->outPush(out);
+    }
+
+    int ClapInstance::drainEvents(int capacity, int *outTypes,
+                                  unsigned *outParamIds, double *outValues,
+                                  unsigned *outFlags)
+    {
+        if (capacity <= 0 || outTypes == nullptr || outParamIds == nullptr ||
+            outValues == nullptr || outFlags == nullptr)
+            return 0;
+        std::lock_guard<std::mutex> lock(mDrainMutex);
+        int written = 0;
+        auto emit = [&](HostEventType type, unsigned paramId, double value,
+                        unsigned flags) {
+            outTypes[written] = static_cast<int>(type);
+            outParamIds[written] = paramId;
+            outValues[written] = value;
+            outFlags[written] = flags;
+            ++written;
+        };
+        bool enteredNotifications = false;
+        for (;;)
+        {
+            if (!mDrainNotifications)
+            {
+                // Ring phase (plan arbitration B1).
+                if (!mPrefixValid)
+                {
+                    const uint64_t word = mOutState.load(std::memory_order_acquire);
+                    mPrefixEnd = mOutRing.writePos();
+                    mResyncAtEnd = (word & kOutBlocked) != 0;
+                    mPrefixValid = true;
+                }
+                for (;;)
+                {
+                    while (mOutRing.readPos() < mPrefixEnd)
+                    {
+                        if (written >= capacity)
+                            return written;
+                        const OutEvent &event = mOutRing.at(mOutRing.readPos());
+                        emit(event.kind, event.paramId, event.value,
+                             event.dontRecord ? 1u : 0u);
+                        mOutRing.pop();
+                    }
+                    if (mResyncAtEnd)
+                    {
+                        if (written >= capacity)
+                            return written;
+                        uint64_t word = mOutState.load(std::memory_order_acquire);
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+                        if (auto hook = gDrainBeforeAckHook.load(
+                                std::memory_order_acquire))
+                            hook();
+#endif
+                        {
+                            // Never announce a reset the cache cannot answer
+                            // yet. The pending check and the acknowledgement
+                            // are one critical section with every pending
+                            // transition (handleRescanAll and rebuildParams
+                            // change mParamsPending under mParamsMutex), so a
+                            // rescan(ALL), inactive or active, cannot slip
+                            // between them: a reset made outside the lock
+                            // follows a pending store made inside it. A CAS
+                            // failure (a DSP drop, a reset) re-checks here.
+                            // mParamsMutex is a leaf: no plugin call, no
+                            // other lock under it.
+                            GuardedLock paramsLock(mParamsMutex);
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+                            bool hookRan = false;
+#endif
+                            for (;;)
+                            {
+                                if ((word & kOutReasonReset) != 0 &&
+                                    mParamsPending.load(std::memory_order_acquire))
+                                    return written;
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+                                if (!hookRan)
+                                {
+                                    hookRan = true;
+                                    if (auto hook = gDrainInsideAckHook.load(
+                                            std::memory_order_acquire))
+                                        hook();
+                                }
+#endif
+                                if (mOutState.compare_exchange_weak(
+                                        word, 0, std::memory_order_acq_rel,
+                                        std::memory_order_acquire))
+                                    break;
+                            }
+                        }
+                        unsigned reasons = 0;
+                        if ((word & kOutReasonOverflow) != 0)
+                            reasons |= kResyncOverflow;
+                        if ((word & kOutReasonReset) != 0)
+                            reasons |= kResyncParamsReset;
+                        emit(HostEventType::resync, 0,
+                             static_cast<double>(word & kOutCountMask), reasons);
+                        mResyncAtEnd = false;
+                    }
+                    mNotifyPending |=
+                        mNotifyFlags.exchange(0, std::memory_order_acq_rel);
+                    mRescanPending |=
+                        mRescanNotifyFlags.exchange(0, std::memory_order_acq_rel);
+                    const uint64_t word = mOutState.load(std::memory_order_acquire);
+                    if ((word & kOutBlocked) == 0)
+                        break;
+                    // Blocked since the prefix: extend it to the block.
+                    mPrefixEnd = mOutRing.writePos();
+                    mResyncAtEnd = true;
+                }
+                mPrefixValid = false;
+                mDrainNotifications = true;
+                enteredNotifications = true;
+            }
+
+            // Notifications phase, in R11 order.
+            static constexpr uint32_t kOrder[] = {
+                kNotifyRestartFailed, kNotifyRestarted, kNotifyLatencyChanged,
+                kNotifyParamsRescan, kNotifyStateDirty};
+            for (const uint32_t bit : kOrder)
+            {
+                if ((mNotifyPending & bit) == 0)
+                    continue;
+                if (bit == kNotifyParamsRescan && mRescanPending == 0)
+                {
+                    mNotifyPending &= ~bit;
+                    continue;
+                }
+                if (written >= capacity)
+                    return written;
+                switch (bit)
+                {
+                case kNotifyRestartFailed:
+                    emit(HostEventType::restartFailed, 0, 0, 0);
+                    break;
+                case kNotifyRestarted:
+                    emit(HostEventType::restarted, 0,
+                         static_cast<double>(restartCount()), 0);
+                    break;
+                case kNotifyLatencyChanged:
+                    emit(HostEventType::latencyChanged, 0,
+                         static_cast<double>(latency()), 0);
+                    break;
+                case kNotifyParamsRescan:
+                    emit(HostEventType::paramsRescan, 0, 0, mRescanPending);
+                    mRescanPending = 0;
+                    break;
+                default:
+                    emit(HostEventType::stateDirty, 0, 0, 0);
+                    break;
+                }
+                mNotifyPending &= ~bit;
+            }
+            mDrainNotifications = false;
+            if (enteredNotifications)
+                return written;
+            // Finished notifications left over from an earlier call: drain
+            // the ring again in this one.
+        }
+    }
+
+    // --- Phase 3: main hops -------------------------------------------------
+
+    PlayerErrors ClapInstance::getParameterValue(clap_id id, double *outValue)
+    {
+        if (outValue != nullptr)
+            *outValue = 0;
+        if (outValue == nullptr)
+            return PlayerErrors::invalidParameter;
+        if (mPluginParams == nullptr)
+            return PlayerErrors::notImplemented;
+        double value = 0;
+        checkPluginCall();
+        const bool ok = mPluginParams->get_value(mPlugin, id, &value);
+        afterPluginCall();
+        if (!ok || !std::isfinite(value))
+            return PlayerErrors::invalidParameter;
+        *outValue = value;
+        return PlayerErrors::noError;
+    }
+
+    PlayerErrors ClapInstance::valueToText(clap_id id, double value,
+                                           char *outText, int textLen)
+    {
+        if (outText != nullptr && textLen > 0)
+            outText[0] = '\0';
+        if (mPluginParams == nullptr)
+            return PlayerErrors::notImplemented;
+        if (!std::isfinite(value))
+            return PlayerErrors::invalidParameter;
+        char text[512] = {};
+        checkPluginCall();
+        const bool ok = mPluginParams->value_to_text(mPlugin, id, value, text,
+                                                     sizeof(text));
+        afterPluginCall();
+        if (!ok)
+            return PlayerErrors::invalidParameter;
+        text[sizeof(text) - 1] = '\0';
+        copyTruncated(text, outText, textLen);
+        return PlayerErrors::noError;
+    }
+
+    PlayerErrors ClapInstance::textToValue(clap_id id, const char *text,
+                                           double *outValue)
+    {
+        if (outValue != nullptr)
+            *outValue = 0;
+        if (text == nullptr || outValue == nullptr)
+            return PlayerErrors::invalidParameter;
+        if (mPluginParams == nullptr)
+            return PlayerErrors::notImplemented;
+        double value = 0;
+        checkPluginCall();
+        const bool ok = mPluginParams->text_to_value(mPlugin, id, text, &value);
+        afterPluginCall();
+        if (!ok || !std::isfinite(value))
+            return PlayerErrors::invalidParameter;
+        *outValue = value;
+        return PlayerErrors::noError;
+    }
+
+    PlayerErrors ClapInstance::saveState(std::vector<unsigned char> &out)
+    {
+        out.clear();
+        if (mPluginState == nullptr)
+            return PlayerErrors::notImplemented;
+        OstreamContext context{&out, gStateLimit.load(std::memory_order_acquire),
+                               false};
+        clap_ostream_t stream{&context, &ostreamWrite};
+        bool ok = false;
+        {
+            CallPhaseScope phase(*this, CallPhase::savingState);
+            checkPluginCall();
+            ok = mPluginState->save(mPlugin, &stream);
+        }
+        afterPluginCall();
+        if (context.overLimit)
+        {
+            out.clear();
+            return PlayerErrors::outOfMemory;
+        }
+        if (!ok)
+        {
+            out.clear();
+            return PlayerErrors::unknownError;
+        }
+        return PlayerErrors::noError;
+    }
+
+    PlayerErrors ClapInstance::loadState(const unsigned char *data, size_t size)
+    {
+        if (data == nullptr && size > 0)
+            return PlayerErrors::invalidParameter;
+        if (mPluginState == nullptr)
+            return PlayerErrors::notImplemented;
+        IstreamContext context{data, size, 0};
+        clap_istream_t stream{&context, &istreamRead};
+        bool ok = false;
+        {
+            CallPhaseScope phase(*this, CallPhase::loadingState);
+            checkPluginCall();
+            ok = mPluginState->load(mPlugin, &stream);
+        }
+        if (ok)
+        {
+            // Edits queued before the load must not override it.
+            {
+                GuardedLock producer(mEditProducerMutex);
+                mEditEpoch.fetch_add(1, std::memory_order_acq_rel);
+            }
+            notifyParamsRescan(CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
+        }
+        afterPluginCall();
+        return ok ? PlayerErrors::noError : PlayerErrors::unknownError;
+    }
+
+    // --- Phase 3: timers ----------------------------------------------------
+
+    void ClapInstance::fireTimers(int64_t now)
+    {
+        if (!mTimersEnabled || mTimers.empty() || mPluginTimer == nullptr ||
+            !callable())
+            return;
+        // Due ids now; a timer registered during this pass waits a tick.
+        clap_id due[kMaxTimers];
+        size_t dueCount = 0;
+        for (const Timer &timer : mTimers)
+        {
+            if (timer.dueNs <= now && dueCount < kMaxTimers)
+                due[dueCount++] = timer.id;
+        }
+        for (size_t i = 0; i < dueCount; ++i)
+        {
+            if (!mTimersEnabled || !callable())
+                break;
+            auto it = std::find_if(mTimers.begin(), mTimers.end(),
+                                   [&](const Timer &t) { return t.id == due[i]; });
+            if (it == mTimers.end())
+                continue; // Unregistered by an earlier on_timer.
+            const int64_t period =
+                static_cast<int64_t>(it->periodMs) * 1000 * 1000;
+            it->dueNs += period;
+            if (it->dueNs <= now)
+                it->dueNs = now + period; // No catch-up bursts.
+            checkPluginCall();
+            mPluginTimer->on_timer(mPlugin, due[i]);
+            afterPluginCall();
+            if (disposition() == Disposition::retired)
+                break;
+        }
+    }
+
+    // --- Phase 3: host extension callbacks ---------------------------------
+
+    void CLAP_ABI ClapInstance::hostLog(const clap_host_t *host,
+                                        clap_log_severity severity,
+                                        const char *msg)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr)
+            return;
+        if (self->isAudioThread())
+        {
+            // No I/O, no lock and no allocation in the audio role.
+            self->mDroppedAudioLogs.fetch_add(1, std::memory_order_acq_rel);
+            return;
+        }
+        emitLog(self->mPluginId.c_str(), severity,
+                msg != nullptr ? msg : "(null)");
+    }
+
+    void CLAP_ABI ClapInstance::hostParamsRescan(const clap_host_t *host,
+                                                 clap_param_rescan_flags flags)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed("params.rescan off the main thread"))
+            return;
+        if ((flags & CLAP_PARAM_RESCAN_ALL) != 0)
+        {
+            self->handleRescanAll();
+            return;
+        }
+        const uint32_t immediate =
+            flags & (CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_TEXT);
+        if (immediate != 0)
+            self->notifyParamsRescan(immediate);
+        if ((flags & CLAP_PARAM_RESCAN_INFO) != 0)
+            self->mLatchedRescan.fetch_or(CLAP_PARAM_RESCAN_INFO,
+                                          std::memory_order_acq_rel);
+    }
+
+    void CLAP_ABI ClapInstance::hostParamsClear(const clap_host_t *host,
+                                                clap_id, clap_param_clear_flags)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed("params.clear off the main thread"))
+            return;
+        // v1 holds no automation references: drop every queued edit.
+        GuardedLock producer(self->mEditProducerMutex);
+        self->mEditEpoch.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    void CLAP_ABI ClapInstance::hostParamsRequestFlush(const clap_host_t *host)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr)
+            return;
+        if (self->isAudioThread())
+            self->mMisbehavingCount.fetch_add(1, std::memory_order_acq_rel);
+        self->mFlushRequested.store(true, std::memory_order_release);
+    }
+
+    void CLAP_ABI ClapInstance::hostStateMarkDirty(const clap_host_t *host)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed("state.mark_dirty off the main thread"))
+            return;
+        self->notify(kNotifyStateDirty);
+    }
+
+    void CLAP_ABI ClapInstance::hostLatencyChanged(const clap_host_t *host)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed("latency.changed off the main thread"))
+            return;
+        // Legal only inside activate; the value is read right after it.
+        if (self->mPhase != CallPhase::activating)
+            self->logMisbehaving(
+                "latency.changed outside activate; request a restart instead");
+    }
+
+    bool CLAP_ABI ClapInstance::hostRegisterTimer(const clap_host_t *host,
+                                                  uint32_t periodMs,
+                                                  clap_id *timerId)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr || timerId == nullptr)
+            return false;
+        *timerId = CLAP_INVALID_ID;
+        if (!self->mainCallbackAllowed(
+                "timer_support.register_timer off the main thread"))
+            return false;
+        self->resolveTimerExtension();
+        if (self->mPluginTimer == nullptr ||
+            self->mTimers.size() >= kMaxTimers)
+            return false;
+        const uint32_t period = std::max(periodMs, kMinTimerPeriodMs);
+        if (self->mNextTimerId == CLAP_INVALID_ID)
+            self->mNextTimerId = 1;
+        const clap_id id = self->mNextTimerId++;
+        try
+        {
+            self->mTimers.push_back(
+                {id, period,
+                 nowNs() + static_cast<int64_t>(period) * 1000 * 1000});
+        }
+        catch (const std::bad_alloc &)
+        {
+            return false;
+        }
+        *timerId = id;
+        return true;
+    }
+
+    bool CLAP_ABI ClapInstance::hostUnregisterTimer(const clap_host_t *host,
+                                                    clap_id timerId)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed(
+                "timer_support.unregister_timer off the main thread"))
+            return false;
+        auto it = std::find_if(self->mTimers.begin(), self->mTimers.end(),
+                               [&](const Timer &t) { return t.id == timerId; });
+        if (it == self->mTimers.end())
+            return false;
+        self->mTimers.erase(it);
+        return true;
+    }
+
+    bool CLAP_ABI ClapInstance::hostAudioPortsIsRescanFlagSupported(
+        const clap_host_t *host, uint32_t flag)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed(
+                "audio_ports.is_rescan_flag_supported off the main thread"))
+            return false;
+        // Every port aspect is re-read and re-validated before activate.
+        return flag != 0 && (flag & ~kSupportedPortRescans) == 0;
+    }
+
+    void CLAP_ABI ClapInstance::hostAudioPortsRescan(const clap_host_t *host,
+                                                     uint32_t flags)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed("audio_ports.rescan off the main thread"))
+            return;
+        if ((flags & ~CLAP_AUDIO_PORTS_RESCAN_NAMES) == 0)
+            return; // Names are not used.
+        if (self->inactiveForRescan())
+            return; // Re-read before the next activate.
+        self->logMisbehaving("audio_ports.rescan while the plugin is active");
+        self->mRestartRequested.store(true, std::memory_order_release);
     }
 } // namespace soloud_clap
 

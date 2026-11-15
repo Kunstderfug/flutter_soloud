@@ -168,6 +168,7 @@ void main(List<String> args) async {
           '-fobjc-arc',
           '-DSOLOUD_ENABLE_VST3=1',
           '-DSOLOUD_VST3_HELPER_MAIN=1',
+          '-DSOLOUD_ENABLE_PLUGIN_UI=1',
           '-DNDEBUG=1',
           '-Wno-unnecessary-virtual-specifier',
           '-I${input.packageRoot.resolve('src').toFilePath()}',
@@ -179,6 +180,8 @@ void main(List<String> args) async {
           input.packageRoot
               .resolve('src/vst3/vst3_editor_macos.mm')
               .toFilePath(),
+          for (final source in pluginUiObjcSources)
+            input.packageRoot.resolve(source).toFilePath(),
           '${vst3.libraryDirectories.first}/libvst3_hosting.a',
           '-framework',
           'Cocoa',
@@ -200,6 +203,10 @@ void main(List<String> args) async {
           input.packageRoot.resolve('src/vst3/vst3_editor_helper_macos.mm'),
           input.packageRoot.resolve('src/vst3/vst3_editor_macos.mm'),
           input.packageRoot.resolve('src/vst3/vst3_editor_shm.h'),
+          input.packageRoot.resolve('src/vst3/vst3_editor_window.h'),
+          input.packageRoot.resolve('src/plugin_ui/plugin_host_window.h'),
+          for (final source in pluginUiObjcSources)
+            input.packageRoot.resolve(source),
         ]);
       } else if (os == OS.linux || os == OS.windows) {
         final exeName = os.executableFileName('soloud_vst3_editor_helper');
@@ -275,6 +282,7 @@ void main(List<String> args) async {
       if (noXiph) 'NO_XIPH_LIBS': null,
       if (enableVst3) 'SOLOUD_ENABLE_VST3': null,
       if (enableClap) 'SOLOUD_ENABLE_CLAP': null,
+      if (linkAppKit) 'SOLOUD_ENABLE_PLUGIN_UI': null,
       if (vst3HelperPath != null)
         'SOLOUD_VST3_HELPER_PATH': '"$vst3HelperPath"',
     };
@@ -371,6 +379,7 @@ void main(List<String> args) async {
           'src/audiobuffer/aac_stream_decoder_apple.mm',
           if (enableVst3 && os == OS.macOS) 'src/vst3/vst3_editor_macos.mm',
           if (enableClap) ...collectClapObjcSources(input.packageRoot),
+          if (linkAppKit) ...pluginUiObjcSources,
         ],
         includes: includes,
         forcedIncludes: forcedIncludes,
@@ -472,6 +481,10 @@ void main(List<String> args) async {
         enableClap: enableClap,
       ),
       if (enableClap) ...collectClapObjcSources(input.packageRoot),
+      if (linkAppKit) ...[
+        ...pluginUiObjcSources,
+        'src/plugin_ui/plugin_host_window.h',
+      ],
     ]) {
       output.dependencies.add(input.packageRoot.resolve(src));
     }
@@ -643,6 +656,10 @@ bool pluginFormatEnabled({
       parseBool(environment) ??
       false;
 }
+
+/// The shared native plugin editor window (macOS), built whenever a plugin
+/// format is, and into the VST3 editor helper.
+const pluginUiObjcSources = ['src/plugin_ui/plugin_host_window_macos.mm'];
 
 /// Objective-C++ sources of the CLAP host (macOS only), built by the ObjC
 /// builder because CBuilder's C++ mode forces `-x c++`.

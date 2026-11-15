@@ -89,6 +89,7 @@ c++ -std=c++17 -Wall -O1 \
 
 c++ -std=c++17 -Wall -pthread "${SANITIZER[@]}" \
     -DSOLOUD_ENABLE_VST3 \
+    -DSOLOUD_ENABLE_PLUGIN_UI \
     -DSOLOUD_VST3_HELPER_PATH="\"$WORK/vst3_mock_editor_helper\"" \
     -I src \
     -I test \
@@ -97,6 +98,7 @@ c++ -std=c++17 -Wall -pthread "${SANITIZER[@]}" \
     test/vst3_host_test.mm \
     src/vst3/vst3_host.cpp \
     src/vst3/vst3_editor_macos.mm \
+    src/plugin_ui/plugin_host_window_macos.mm \
     "$SDK_LIB" \
     -framework Cocoa \
     -framework QuartzCore \

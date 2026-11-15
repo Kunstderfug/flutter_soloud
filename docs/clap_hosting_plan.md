@@ -199,3 +199,13 @@ Live macOS checks, committed in GPhil `v2_daw` 51e5ae22 (`integration_test/vst3_
 - Review rounds: round 1 fixed the driver's pid binding, error handling and step names. Round 2 rejected because app close covered only one plugin and lacked evidence of a normal exit. Round 3 accepted.
 
 No VST3 editor defects were found, so Phase 4a extracts the existing window behaviour as is.
+
+### Phase 4a: shared native editor window (2026-11-15, Sol 6.1 ACCEPT in round 1)
+
+`src/plugin_ui/plugin_host_window.h` and `plugin_host_window_macos.mm` own the NSWindow, its delegate, sizing (Fixed, Native, HostScaled with Cmd +/-/0 zoom), focus, occlusion and termination. `Vst3EditorWindowMacOS` is now an adapter (IPlugFrame and `PluginHostWindowListener`); the out-of-process editor helper stays in the VST3 file. The hook defines `SOLOUD_ENABLE_PLUGIN_UI` and builds the window whenever a plugin format is on macOS, and links it into the VST3 editor helper.
+
+- Builds without warnings under ARC (the helper) and without it (the plugin library).
+- `test/run_vst3_host_test.sh`: plain, TSan and ASan, 114 assertions, 0 failures.
+- Hook matrix: all four `enable_vst3` x `enable_clap` configurations build and pass `test/clap_stub_test.dart`. With CLAP alone the window is compiled but dead-stripped until 4b uses it.
+- Live GPhil, Debug, built from this worktree (checked in the binary): the Phase 0 lifecycle matrix passed for TDR Nova and ZeroEQ, and app close released the chain 18 ms after the close event for both, with a clean exit and no crash reports.
+- Testing note: `flutter test` does not re-resolve after `pubspec_overrides.yaml` changes. Run `flutter pub get` and check the built binary before trusting a run against another checkout.

@@ -90,6 +90,28 @@ void main() {
     });
   });
 
+  group('plugin UI sources', () {
+    test('the shared editor window source exists outside the formats', () {
+      expect(hook.pluginUiObjcSources, isNotEmpty);
+      for (final source in hook.pluginUiObjcSources) {
+        expect(source, startsWith('src/plugin_ui/'));
+        expect(source, endsWith('.mm'));
+        expect(File(source).existsSync(), isTrue, reason: source);
+      }
+      expect(File('src/plugin_ui/plugin_host_window.h').existsSync(), isTrue);
+    });
+
+    test('are not collected as C++ sources of the plugin library', () {
+      final sources = hook.collectSources(
+        Directory.current.uri,
+        OS.macOS,
+        enableVst3: true,
+        enableClap: true,
+      );
+      expect(sources.where((s) => s.startsWith('src/plugin_ui/')), isEmpty);
+    });
+  });
+
   group('CLAP sources', () {
     final root = Directory.current.uri;
     List<String> clap(List<String> sources) =>

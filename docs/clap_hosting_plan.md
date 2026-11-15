@@ -568,3 +568,37 @@ Phase 6 adds the two things still missing. Both are in `example/integration_test
 - **Round 2, Sol ACCEPT.** No blocking findings. Two minors, both folded in:
   - The first eligible parameter may not take an edit (for example, clamped by a linked one). Fix: try both directions and up to four parameters, report `smoke` when none moves, and keep a failed restore fatal once a move is seen.
   - A throwing cleanup step could skip the rest. Fix: the instrument cleanup is nested `try`/`finally`. The effect cleanup is a single `dispose`.
+
+### Phase 7: GPhil integration (2026-11-15, review pending)
+
+GPhil (`/Volumes/DEV/gphil-flutter`, `v2_daw`) now hosts CLAP effects in its experimental master chain, alongside VST3. The change generalises GPhil's small plugin interface; no fork API was added.
+- **Backend** (`lib/services/vst3/vst3_chain_backend.dart`):
+  - `PluginFormat { vst3, clap }`, carried on `Vst3BundleRef`. The backend's `load(bundle, slot)` dispatches on it.
+  - Discovery covers `/Library/Audio/Plug-Ins/{VST3,CLAP}` and the same folders under the real home (the sandbox HOME is the container). It matches the extension case-insensitively and sorts by name, VST3 before CLAP.
+  - A CLAP bundle is scanned, and the first non-instrument plugin (preferring `audio-effect`) is loaded onto `CustomFilterGlobal(slot)`.
+  - Latency changes come from the drained `events` stream (`latencyChanged`, `restarted`).
+  - `unloadAll` unloads both hosts, even when the first throws.
+- **Controller and panel:** VST3 and CLAP share one chain, its slots, the pending-load crash marker, the latency total, the close guard and engine shutdown/resume.
+  - Each row shows the format.
+  - The add dialog badges each plugin (`PluginFormatBadge`, white70 on the dark dialog, at least 4.5:1, checked in a widget test).
+  - The dialog's search also matches a format name.
+- **Build and sandbox:** `enable_clap: macos` is in the pubspec user_defines. `DebugProfile.entitlements` has the CLAP read-only exceptions, both absolute and home-relative.
+- **Tests:**
+  - Two new controller tests: CLAP discovery, and a mixed VST3/CLAP chain with editor and release.
+  - One new tab test: badges, the format search, a CLAP load and its editor.
+- **Live checks:** these now include CLAP bundles. A `.clap` suffix in a probe name selects the CLAP bundle.
+  - The editor driver reports whether the window accepts a new size (`AXSize` settable). A fixed-size editor must keep its size; any other editor must change size.
+- `APP_ARCHITECTURE.md` is updated. There is no help article, because the tab is debug/profile-only.
+
+**Verification** (sandboxed Debug `GPhil.app`, built against this branch through a temporary path override):
+- **Editor live driver: all four editors pass the full lifecycle.** The lifecycle is open, resize, close button, reopen, remove, open again, and release.
+  - TDR Nova VST3: 830x630→1052x790.
+  - ZeroEQ VST3: 760x572→1000x732.
+  - ZeroEQ CLAP: 760x572→1000x412. The plugin's `adjust_size` set the height.
+  - Airwindows Consolidated CLAP: fixed size. `can_resize` is false, so the host window drops `NSWindowStyleMaskResizable`. The driver reads `resizable=false` and the size stays 600x632.
+- **Panel live test:** it passes with TDR Nova VST3 (184 samples) and ZeroEQ CLAP (0 samples). ZeroEQ CLAP was loaded from the home CLAP folder inside the sandbox.
+- **App close with the ZeroEQ CLAP editor open:** the app exits cleanly. The plugin is released 17 ms after the close event, and there is no crash report.
+- **Analyze and tests:** GPhil analyze is clean apart from 4 pre-existing infos in untouched tests. The controller and tab tests pass (29).
+- The screenshots are kept local, because full-desktop captures show unrelated windows.
+
+**Landing:** `v2_daw` depends on `flutter_soloud` through `path: ../flutter_soloud` (the `feature_capture-v5.0` checkout). After acceptance, `feature_capture-v5.0` is fast-forwarded to `clap-host`, so the GPhil commit builds without an override.

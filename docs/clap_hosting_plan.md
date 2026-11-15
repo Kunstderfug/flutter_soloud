@@ -320,3 +320,47 @@ No VST3 editor defects were found, so Phase 4a extracts the existing window beha
   - There is no deadlock or audio-thread impact: DSP never takes `mParamsMutex`.
   - The tests exercise the real interleaving with bounded waits.
   - Non-blocking notes: the consumer contract above; the pending sentinel is installed even for created or retired instances, as the arbitration's B2 specifies.
+
+### Minimal Dart wrapper (2026-11-15, Sol 6.1 ACCEPT in round 3)
+
+`lib/src/clap/` holds the first slice of the Phase 5 API, exported from `flutter_soloud.dart` as `@experimental`:
+- `ClapHost`: `isSupported`, `hostClapVersion`, `standardSearchPaths`, `scanBundle`, `unloadAll` and `loadEffect({bundlePath, slot, pluginId, sampleRate, maxBlockSize, channels})`. Without a `pluginId`, `loadEffect` takes the first `audio-effect` plugin, or else the first plugin that is not an instrument.
+- `ClapEffectPlugin`: `parameters`/`refreshParameters`, plain get/set, value↔text, save/restore state, `latencySamples`, `drainEvents({maxEvents})` and an idempotent `dispose`. Disposing after `unloadAll` is still safe.
+- The value types `ClapPluginInfo`, `ClapParamInfo` and `ClapHostEvent`, and a web stub.
+- `drainEvents` refreshes `parameters` on a `resync(paramsReset)` or a `rescan(INFO|ALL)`, following the Phase 3 consumer contract.
+
+**Slot ownership** (`clap_slot_owners.dart`, internal):
+- Each native slot is keyed the way the native side routes it. Sound and bus are unsigned 32-bit values, a nonzero sound wins over the bus, and sound 0 with bus 0 is the global chain.
+- The key maps to the last CLAP plugin bound to the slot, held weakly, together with `SoLoud.engineSession`. That counter goes up on every teardown, including init's hot-restart teardown.
+- `dispose` unbinds and deactivates the slot only while that plugin is still the owner in the current session.
+- A failed bind deactivates only a slot it activated itself. The native callback setter leaves the slot unchanged on every error.
+- Binds made through VST3 or custom callbacks are invisible to this registry: dispose a CLAP plugin before reusing its slot for anything else.
+
+**Text:** names use 256 bytes, modules 1024 and formatted values 512. All plugin text is decoded with `allowMalformed`, so a truncated multi-byte character never throws.
+
+**Tests:**
+- `test/clap_wrapper_test.dart` (runs in the hook matrix, 18/18 in all four configurations) covers:
+  - value types;
+  - text decoding;
+  - slot keys and owners;
+  - the paths that do not need the main thread;
+  - the web stub.
+- `example/integration_test/clap_wrapper_test.dart` runs live against ZeroEQ (9/9):
+  - scan;
+  - load, edit, state and dispose;
+  - `unloadAll`;
+  - stale disposal after `unloadAll` and after reload, after loading over a live plugin, and after a deinit/init restart;
+  - slots that alias one native slot;
+  - failed loads.
+- An opt-in group with `CLAP_MOCK_BUNDLE` uses the mock's new `mock_clap_emit_gestures` export. It checks that a bounded drain leaves the remaining events queued and in order. ZeroEQ cannot show this, because notifications of one kind coalesce.
+- Mutation probe: the unguarded dispose fails both stale-disposal tests.
+
+**Review:**
+- Round 1 (ACCEPT WITH AMENDMENTS) found three things:
+  - a stale dispose removing a replacement's slot;
+  - undersized buffers and a throwing decode;
+  - a weak bounded-drain test.
+- Round 2 (ACCEPT WITH AMENDMENTS) found two more:
+  - sound/bus aliases getting separate keys;
+  - retired sessions retaining plugin objects.
+- Round 3 accepted with no findings.

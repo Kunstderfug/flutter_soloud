@@ -32,6 +32,8 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
 
   very_good_analysis: ^6.0.0
 
@@ -56,3 +58,4 @@ hooks:
 #       android_force_build_libs: true
 #       ios_force_build_libs: true
       enable_vst3: true # Default is false
+      enable_clap: true # Default is false (macOS only)

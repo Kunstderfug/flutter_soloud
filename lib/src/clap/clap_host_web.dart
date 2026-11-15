@@ -1,0 +1,97 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter_soloud/src/clap/clap_types.dart';
+import 'package:flutter_soloud/src/enums.dart';
+import 'package:flutter_soloud/src/exceptions/exceptions.dart';
+import 'package:flutter_soloud/src/filters/custom_filter.dart';
+import 'package:meta/meta.dart';
+
+export 'package:flutter_soloud/src/clap/clap_types.dart';
+
+/// Web stub for [ClapHost]: CLAP hosting is only supported on macOS.
+@experimental
+class ClapHost {
+  /// Creates a [ClapHost] instance.
+  @experimental
+  ClapHost();
+
+  /// Always `false` on the Web platform.
+  @experimental
+  bool get isSupported => false;
+
+  /// Always `(0, 0, 0)` on the Web platform.
+  @experimental
+  ({int major, int minor, int revision}) get hostClapVersion =>
+      (major: 0, minor: 0, revision: 0);
+
+  /// Always empty on the Web platform.
+  @experimental
+  List<String> get standardSearchPaths => const [];
+
+  /// Always empty on the Web platform.
+  @experimental
+  List<ClapPluginInfo> scanBundle(String bundlePath) => const [];
+
+  /// No-op on the Web platform.
+  @experimental
+  void unloadAll() {}
+
+  /// Throws [SoLoudCppException] on the Web platform.
+  @experimental
+  ClapEffectPlugin loadEffect({
+    required String bundlePath,
+    required CustomFilterSlot slot,
+    String? pluginId,
+    int? sampleRate,
+    int maxBlockSize = 2048,
+    Channels channels = Channels.stereo,
+  }) {
+    throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
+  }
+}
+
+/// Web stub for a loaded CLAP audio effect. It cannot be created on the Web
+/// platform.
+@experimental
+abstract class ClapEffectPlugin {
+  /// The native plugin handle.
+  int get pluginHandle;
+
+  /// The [CustomFilterSlot] this effect runs in.
+  CustomFilterSlot get slot;
+
+  /// Whether [dispose] was called.
+  bool get isDisposed;
+
+  /// The plugin's latency in frames.
+  int get latencySamples;
+
+  /// The plugin's parameters as last read.
+  List<ClapParamInfo> get parameters;
+
+  /// Reads the parameter list again.
+  List<ClapParamInfo> refreshParameters();
+
+  /// The plugin's current plain value of [paramId].
+  double getParameterValue(int paramId);
+
+  /// Formats the plain [value] of [paramId].
+  String valueToText(int paramId, double value);
+
+  /// Parses [text] into a plain value of [paramId].
+  double textToValue(int paramId, String text);
+
+  /// Queues the plain [value] for [paramId].
+  void setParameterValue(int paramId, double value);
+
+  /// Saves the plugin's state.
+  Uint8List saveState();
+
+  /// Loads a state saved by [saveState].
+  void restoreState(Uint8List state);
+
+  /// Takes up to [maxEvents] of the plugin's pending events.
+  List<ClapHostEvent> drainEvents({int maxEvents = 1024});
+
+  /// Unloads the plugin.
+  void dispose();
+}

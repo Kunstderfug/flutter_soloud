@@ -1111,6 +1111,16 @@ extern "C"
         return &gState;
     }
 
+    /// For callers without the MockClapState layout (the Dart integration
+    /// test): the next [processCalls] process calls of mock.ext each emit
+    /// BEGIN, [values] x VALUE, END on id 10.
+    __attribute__((visibility("default"))) void mock_clap_emit_gestures(
+        int processCalls, int values)
+    {
+        gState.gestureValues.store(values);
+        gState.gestureFromProcess.store(processCalls);
+    }
+
     __attribute__((visibility("default"))) void mock_clap_set_hook(
         MockClapHook hook)
     {

@@ -401,6 +401,15 @@ interface class SoLoud {
   /// Invalidates initialization continuations after deinitialization starts.
   int _lifecycleGeneration = 0;
 
+  /// Counts the engine teardowns of this isolate, including the one an
+  /// [init] runs after a hot restart.
+  int _engineSession = 0;
+
+  /// Changes whenever the engine is torn down: native state bound under an
+  /// earlier value (filter slots, callbacks) is gone.
+  @internal
+  int get engineSession => _engineSession;
+
   /// The single in-flight asynchronous native teardown, if any.
   Future<void>? _pendingAsyncDeinit;
 
@@ -1296,6 +1305,7 @@ interface class SoLoud {
   }
 
   void _predeinit({bool invalidateInitialization = true}) {
+    _engineSession++;
     _controller.soLoudFFI.requestEngineShutdown();
     if (invalidateInitialization) {
       _lifecycleGeneration++;

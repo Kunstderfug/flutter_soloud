@@ -4,6 +4,7 @@ library;
 export 'src/audio_source.dart';
 export 'src/audio_visualization_data.dart';
 export 'src/capture/soloud_capture.dart';
+export 'src/clap/clap_host.dart';
 export 'src/enums.dart' hide PlayerErrors, PlayerStateNotification;
 export 'src/exceptions/exceptions.dart';
 export 'src/filters/classical_leveler_filter.dart';

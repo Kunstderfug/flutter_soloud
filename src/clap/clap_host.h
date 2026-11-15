@@ -68,6 +68,21 @@ namespace soloud_clap
                                 unsigned sampleRate, unsigned maxBlockSize,
                                 unsigned channels, int *outHandle);
 
+        /// Phase 5b: like loadEffect, for an instrument rendered by
+        /// clapSourceDspCallback. It gets silent inputs and the notes of
+        /// sendNote on note port 0.
+        PlayerErrors loadInstrument(const char *bundlePath, const char *pluginId,
+                                    unsigned sampleRate, unsigned maxBlockSize,
+                                    unsigned channels, int *outHandle);
+
+        /// Any non-audio thread; never waits for main. invalidParameter for an
+        /// unknown handle, a value out of range or a plugin without a note
+        /// dialect; outOfMemory when the note queue is full.
+        PlayerErrors sendNote(int handle, bool on, int channel, int key,
+                              double velocity, uint32_t sampleOffset);
+        /// Any thread: the dialect of note port 0 (none for an unknown handle).
+        NoteDialect noteDialect(int handle);
+
         /// Unloads [handle]: retires it, runs the audio barrier, then tears it
         /// down on main (later, from the pump, if it is in a lifecycle call).
         PlayerErrors unloadPlugin(int handle);
@@ -163,8 +178,11 @@ namespace soloud_clap
         /// dispose or unloadAll after it cancels the load.
         PlayerErrors loadOnMain(const std::string &bundlePath,
                                 const std::string &pluginId, unsigned sampleRate,
-                                unsigned maxBlockSize, uint64_t epoch,
-                                int *outHandle);
+                                unsigned maxBlockSize, bool instrument,
+                                uint64_t epoch, int *outHandle);
+        PlayerErrors load(const char *bundlePath, const char *pluginId,
+                          unsigned sampleRate, unsigned maxBlockSize,
+                          unsigned channels, bool instrument, int *outHandle);
         /// Retires [instances] (and [modules]) into one new batch under mMutex,
         /// runs the barrier, marks the batch quiesced and drains on main.
         void retireAndDrain(std::vector<std::shared_ptr<ClapInstance>> instances,
@@ -226,6 +244,16 @@ extern "C"
                                float aSamplerate, double aTime,
                                const float *aParams, uint64_t aParamChangedMask,
                                unsigned int aParamCount, void *aUserData);
+
+    /// SoLoudSourceDspCallback_t for CLAP instruments (Phase 5b). [aUserData]
+    /// is the handle. An unknown handle ends the source; an effect handle
+    /// renders silence.
+    unsigned int clapSourceDspCallback(float *aBuffer, unsigned int aSamplesToRead,
+                                       unsigned int aBufferSize,
+                                       unsigned int aChannels, float aSamplerate,
+                                       double aStreamTime,
+                                       double aStreamPosition,
+                                       uint32_t *aOutHasEnded, void *aUserData);
 }
 
 #endif // SOLOUD_ENABLE_CLAP

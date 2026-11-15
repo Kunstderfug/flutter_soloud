@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
+#include <type_traits>
 
 static_assert(CLAP_VERSION_MAJOR == 1 && CLAP_VERSION_MINOR >= 2,
               "the CLAP host is written against CLAP 1.2");
@@ -211,6 +213,27 @@ namespace soloud_clap
                                              unsigned maxBlockSize,
                                              unsigned channels, int *outHandle)
     {
+        return load(bundlePath, pluginId, sampleRate, maxBlockSize, channels,
+                    false, outHandle);
+    }
+
+    PlayerErrors ClapHostManager::loadInstrument(const char *bundlePath,
+                                                 const char *pluginId,
+                                                 unsigned sampleRate,
+                                                 unsigned maxBlockSize,
+                                                 unsigned channels,
+                                                 int *outHandle)
+    {
+        return load(bundlePath, pluginId, sampleRate, maxBlockSize, channels,
+                    true, outHandle);
+    }
+
+    PlayerErrors ClapHostManager::load(const char *bundlePath,
+                                       const char *pluginId,
+                                       unsigned sampleRate,
+                                       unsigned maxBlockSize, unsigned channels,
+                                       bool instrument, int *outHandle)
+    {
         if (outHandle != nullptr)
             *outHandle = 0;
         if (bundlePath == nullptr || bundlePath[0] == '\0' ||
@@ -236,7 +259,8 @@ namespace soloud_clap
         int handle = 0;
         runOnMain([&] {
             result =
-                loadOnMain(path, id, sampleRate, maxBlockSize, epoch, &handle);
+                loadOnMain(path, id, sampleRate, maxBlockSize, instrument,
+                           epoch, &handle);
         });
         *outHandle = result == noError ? handle : 0;
         return result;
@@ -246,7 +270,8 @@ namespace soloud_clap
                                              const std::string &pluginId,
                                              unsigned sampleRate,
                                              unsigned maxBlockSize,
-                                             uint64_t epoch, int *outHandle)
+                                             bool instrument, uint64_t epoch,
+                                             int *outHandle)
     {
         // Cancelled while it waited for main: nothing is created.
         if (epochChanged(epoch))
@@ -273,7 +298,7 @@ namespace soloud_clap
         const std::string cacheKey = module.path();
         auto instance = std::make_shared<ClapInstance>(
             std::move(module), pluginId, static_cast<double>(sampleRate),
-            maxBlockSize);
+            maxBlockSize, instrument);
 
         // The instance is unpublished until the end, so nothing else can
         // reach it: a failure, or an engine dispose / unloadAll meanwhile (the
@@ -742,6 +767,22 @@ namespace soloud_clap
         return instance->setParameterValue(id, value);
     }
 
+    PlayerErrors ClapHostManager::sendNote(int handle, bool on, int channel,
+                                           int key, double velocity,
+                                           uint32_t sampleOffset)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        if (!instance)
+            return invalidParameter;
+        return instance->sendNote(on, channel, key, velocity, sampleOffset);
+    }
+
+    NoteDialect ClapHostManager::noteDialect(int handle)
+    {
+        std::shared_ptr<ClapInstance> instance = getInstance(handle);
+        return instance ? instance->noteDialect() : NoteDialect::none;
+    }
+
     PlayerErrors ClapHostManager::mapSlotParameter(int handle, unsigned slot,
                                                    clap_id id, float baseline)
     {
@@ -911,7 +952,8 @@ extern "C" void clapFilterDspCallback(float *aBuffer, unsigned int aSamples,
         static_cast<int>(reinterpret_cast<uintptr_t>(aUserData));
     soloud_clap::ClapInstance *instance =
         soloud_clap::ClapHostManager::instance().getInstanceAudioThread(handle);
-    if (instance == nullptr)
+    // An instrument renders through clapSourceDspCallback only.
+    if (instance == nullptr || instance->isInstrument())
         return;
 #ifdef SOLOUD_CLAP_TEST_HOOKS
     if (auto hook = soloud_clap::gAfterTableLoadHook.load(
@@ -922,5 +964,48 @@ extern "C" void clapFilterDspCallback(float *aBuffer, unsigned int aSamples,
                            aParams != nullptr ? aParamCount : 0,
                            aParamChangedMask);
 }
+
+extern "C" unsigned int clapSourceDspCallback(
+    float *aBuffer, unsigned int aSamplesToRead, unsigned int aBufferSize,
+    unsigned int aChannels, float /*aSamplerate*/, double /*aStreamTime*/,
+    double /*aStreamPosition*/, uint32_t *aOutHasEnded, void *aUserData)
+{
+    const int handle =
+        static_cast<int>(reinterpret_cast<uintptr_t>(aUserData));
+    soloud_clap::ClapInstance *instance =
+        soloud_clap::ClapHostManager::instance().getInstanceAudioThread(handle);
+    if (instance == nullptr)
+    {
+        // Unloaded: the source ends.
+        if (aOutHasEnded != nullptr)
+            *aOutHasEnded = 1;
+        return 0;
+    }
+    if (aOutHasEnded != nullptr)
+        *aOutHasEnded = 0;
+    if (!instance->isInstrument())
+    {
+        // An effect handle: silence, never the filter path.
+        if (aBuffer != nullptr)
+        {
+            for (unsigned int c = 0; c < aChannels; ++c)
+                std::memset(aBuffer + static_cast<size_t>(c) * aBufferSize, 0,
+                            aSamplesToRead * sizeof(float));
+        }
+        return aSamplesToRead;
+    }
+#ifdef SOLOUD_CLAP_TEST_HOOKS
+    if (auto hook = soloud_clap::gAfterTableLoadHook.load(
+            std::memory_order_acquire))
+        hook(handle);
+#endif
+    return instance->renderInstrument(aBuffer, aSamplesToRead, aBufferSize,
+                                      aChannels);
+}
+
+static_assert(
+    std::is_same<decltype(&clapSourceDspCallback),
+                 SoLoudSourceDspCallback_t>::value,
+    "clapSourceDspCallback must match SoLoudSourceDspCallback_t");
 
 #endif // SOLOUD_ENABLE_CLAP

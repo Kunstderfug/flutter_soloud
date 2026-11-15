@@ -359,12 +359,15 @@ namespace soloud_clap
     };
 
     ClapInstance::ClapInstance(ModuleRef module, std::string pluginId,
-                               double sampleRate, uint32_t maxBlockSize)
+                               double sampleRate, uint32_t maxBlockSize,
+                               bool instrument)
         : mModule(std::move(module)), mPluginId(std::move(pluginId)),
           mSampleRate(sampleRate), mMaxBlockSize(maxBlockSize),
+          mInstrument(instrument),
           mOutRing(gOutRingCapacity.load(std::memory_order_acquire))
     {
         mRetained.reset(new Edit[kEditCapacity]);
+        mBlockNotes.reset(new NoteEvent[kMaxNotesPerBlock]);
         mParamsCache = pendingCache();
         mOutEvents.ctx = this;
         mOutEvents.try_push = &ClapInstance::outTryPush;
@@ -530,12 +533,61 @@ namespace soloud_clap
             return false;
         }
         const uint32_t mainIn = outLayout.mainInputChannels();
-        if (outLayout.hasMainInput && (mainIn < 1 || mainIn > 2))
+        // An instrument's inputs are all silent, so their width is free.
+        if (!mInstrument && outLayout.hasMainInput && (mainIn < 1 || mainIn > 2))
         {
             outError = "the main input must have 1 or 2 channels";
             return false;
         }
+        readNotePorts(outLayout);
         return true;
+    }
+
+    namespace
+    {
+        /// The dialect for note port 0: the plugin's preferred one when this
+        /// host speaks it, else CLAP note events, else MIDI 1.0.
+        NoteDialect chooseDialect(uint32_t supported, uint32_t preferred)
+        {
+            const uint32_t spoken =
+                supported & (CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI);
+            if (preferred == CLAP_NOTE_DIALECT_CLAP && (spoken & preferred) != 0)
+                return NoteDialect::clap;
+            if (preferred == CLAP_NOTE_DIALECT_MIDI && (spoken & preferred) != 0)
+                return NoteDialect::midi;
+            if ((spoken & CLAP_NOTE_DIALECT_CLAP) != 0)
+                return NoteDialect::clap;
+            if ((spoken & CLAP_NOTE_DIALECT_MIDI) != 0)
+                return NoteDialect::midi;
+            return NoteDialect::none;
+        }
+    } // namespace
+
+    void ClapInstance::readNotePorts(PortLayout &layout)
+    {
+        // note-ports.h: without the extension the plugin has no note ports.
+        // A broken one costs the notes, not the load.
+        checkPluginCall();
+        const auto *ports = static_cast<const clap_plugin_note_ports_t *>(
+            mPlugin->get_extension(mPlugin, CLAP_EXT_NOTE_PORTS));
+        if (ports == nullptr)
+            return;
+        if (ports->count == nullptr || ports->get == nullptr)
+        {
+            logMisbehaving("incomplete note-ports extension");
+            return;
+        }
+        layout.noteInputPorts = ports->count(mPlugin, true);
+        if (layout.noteInputPorts == 0)
+            return;
+        clap_note_port_info_t info{};
+        if (!ports->get(mPlugin, 0, true, &info))
+        {
+            logMisbehaving("note port info unavailable");
+            return;
+        }
+        layout.noteDialect =
+            chooseDialect(info.supported_dialects, info.preferred_dialect);
     }
 
     bool ClapInstance::installLayout(const PortLayout &layout)
@@ -585,6 +637,8 @@ namespace soloud_clap
 
         std::lock_guard<std::mutex> lock(mProcessMutex);
         mLayout = layout;
+        mNoteDialect.store(static_cast<int>(layout.noteDialect),
+                           std::memory_order_release);
         mInputScratch = std::move(inputScratch);
         mOutputScratch = std::move(outputScratch);
         mInputPointers = std::move(inputPointers);
@@ -626,38 +680,47 @@ namespace soloud_clap
                         samples * sizeof(float));
     }
 
-    void ClapInstance::processAudio(float *buffer, unsigned samples,
-                                    unsigned bufferSize, unsigned channels,
-                                    const float *slotParams,
-                                    unsigned slotParamCount,
-                                    uint64_t slotChangedMask) noexcept
+    void ClapInstance::silenceAll(float *buffer, unsigned samples,
+                                  unsigned bufferSize,
+                                  unsigned channels) noexcept
     {
-        if (buffer == nullptr || samples == 0 || channels == 0)
-            return;
+        for (unsigned c = 0; c < channels; ++c)
+            std::memset(buffer + static_cast<size_t>(c) * bufferSize, 0,
+                        samples * sizeof(float));
+    }
+
+    bool ClapInstance::runBlock(float *buffer, unsigned samples,
+                                unsigned bufferSize, unsigned busChannels,
+                                bool instrument, const float *slotParams,
+                                unsigned slotParamCount,
+                                uint64_t slotChangedMask,
+                                bool &outSilence) noexcept
+    {
+        outSilence = false;
         Disposition d = disposition();
         if (d == Disposition::failed)
         {
-            silence(buffer, samples, bufferSize, channels);
-            return;
+            outSilence = true;
+            return false;
         }
         if (d != Disposition::active)
-            return; // Servicing (dry) or Retired (no-op).
+            return false; // Servicing (dry) or Retired (no-op).
 
         std::unique_lock<std::mutex> lock(mProcessMutex, std::try_to_lock);
         if (!lock.owns_lock())
         {
             // Exclusive servicing in progress: a dry block.
             mDryBlocksFromServicing.fetch_add(1, std::memory_order_acq_rel);
-            return;
+            return false;
         }
         d = disposition();
         if (d == Disposition::failed)
         {
-            silence(buffer, samples, bufferSize, channels);
-            return;
+            outSilence = true;
+            return false;
         }
         if (d != Disposition::active)
-            return;
+            return false;
 
         AudioRole role(*this);
         soloud_simd::ScopedFlushDenormals flushDenormals;
@@ -668,13 +731,15 @@ namespace soloud_clap
             {
                 // Muted until a restart succeeds (plan Phase 2, F5).
                 transition(Disposition::active, Disposition::failed);
-                silence(buffer, samples, bufferSize, channels);
-                return;
+                outSilence = true;
+                return false;
             }
             mStarted = true;
         }
 
-        const unsigned busChannels = std::min(channels, 2u);
+        // Notes are taken only by a block that runs: a dry block leaves them
+        // queued.
+        stageNotesDsp(samples);
         for (unsigned offset = 0; offset < samples; offset += mMaxBlockSize)
         {
             const unsigned frames =
@@ -682,15 +747,54 @@ namespace soloud_clap
             // Slot values go with the first chunk only, at time 0.
             const bool first = offset == 0;
             processChunk(buffer, offset, frames, bufferSize, busChannels,
-                         first ? slotParams : nullptr,
+                         instrument, first ? slotParams : nullptr,
                          first ? slotParamCount : 0,
                          first ? slotChangedMask : 0);
         }
+        mBlockNoteCount = 0;
+        return true;
+    }
+
+    void ClapInstance::processAudio(float *buffer, unsigned samples,
+                                    unsigned bufferSize, unsigned channels,
+                                    const float *slotParams,
+                                    unsigned slotParamCount,
+                                    uint64_t slotChangedMask) noexcept
+    {
+        if (buffer == nullptr || samples == 0 || channels == 0)
+            return;
+        bool silent = false;
+        if (!runBlock(buffer, samples, bufferSize, std::min(channels, 2u),
+                      false, slotParams, slotParamCount, slotChangedMask,
+                      silent) &&
+            silent)
+            silence(buffer, samples, bufferSize, channels);
+    }
+
+    unsigned ClapInstance::renderInstrument(float *buffer, unsigned samples,
+                                            unsigned bufferSize,
+                                            unsigned channels) noexcept
+    {
+        if (buffer == nullptr || samples == 0 || channels == 0)
+            return 0;
+        const unsigned busChannels = std::min(channels, 2u);
+        bool silent = false;
+        // A source has no dry signal: a block that does not run is silent.
+        if (!runBlock(buffer, samples, bufferSize, busChannels, true, nullptr,
+                      0, 0, silent))
+        {
+            silenceAll(buffer, samples, bufferSize, channels);
+            return samples;
+        }
+        for (unsigned c = busChannels; c < channels; ++c)
+            std::memset(buffer + static_cast<size_t>(c) * bufferSize, 0,
+                        samples * sizeof(float));
+        return samples;
     }
 
     void ClapInstance::processChunk(float *buffer, unsigned offset,
                                     unsigned frames, unsigned bufferSize,
-                                    unsigned busChannels,
+                                    unsigned busChannels, bool instrument,
                                     const float *slotParams,
                                     unsigned slotParamCount,
                                     uint64_t slotChangedMask) noexcept
@@ -699,8 +803,9 @@ namespace soloud_clap
         float *right = busChannels == 2 ? buffer + bufferSize + offset : left;
         const size_t bytes = frames * sizeof(float);
 
-        // Inputs: the main port from the bus, aux ports zeroed every chunk.
-        const uint32_t mainIn = mLayout.mainInputChannels();
+        // Inputs: the main port from the bus, aux ports zeroed every chunk. An
+        // instrument has no bus input: every port is zeroed.
+        const uint32_t mainIn = instrument ? 0 : mLayout.mainInputChannels();
         for (size_t c = 0; c < mInputPointers.size(); ++c)
         {
             if (c >= mainIn)
@@ -729,6 +834,7 @@ namespace soloud_clap
         consumeEditsDsp();
         if (slotParams != nullptr)
             pushSlotEventsDsp(slotParams, slotParamCount, slotChangedMask);
+        pushNotesDsp(offset, frames);
 
         clap_process_t process{};
         process.steady_time = mSteadyTime;
@@ -822,6 +928,10 @@ namespace soloud_clap
             &ClapInstance::hostAudioPortsIsRescanFlagSupported,
             &ClapInstance::hostAudioPortsRescan,
         };
+        static const clap_host_note_ports_t kNotePorts = {
+            &ClapInstance::hostNotePortsSupportedDialects,
+            &ClapInstance::hostNotePortsRescan,
+        };
         if (std::strcmp(id, CLAP_EXT_THREAD_CHECK) == 0)
             return &kThreadCheck;
         if (std::strcmp(id, CLAP_EXT_LOG) == 0)
@@ -836,6 +946,8 @@ namespace soloud_clap
             return &kTimer;
         if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0)
             return &kAudioPorts;
+        if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0)
+            return &kNotePorts;
 #ifdef SOLOUD_CLAP_GUI
         static const clap_host_gui_t kGui = {
             &ClapInstance::hostGuiResizeHintsChanged,
@@ -1869,6 +1981,101 @@ namespace soloud_clap
         }
     }
 
+    // --- Phase 5b: notes ------------------------------------------------------
+
+    PlayerErrors ClapInstance::sendNote(bool on, int channel, int key,
+                                        double velocity, uint32_t sampleOffset)
+    {
+        if (channel < 0 || channel > 15 || key < 0 || key > 127 ||
+            !std::isfinite(velocity))
+            return PlayerErrors::invalidParameter;
+        if (noteDialect() == NoteDialect::none)
+            return PlayerErrors::invalidParameter;
+        NoteEvent note;
+        note.on = on;
+        note.channel = static_cast<int16_t>(channel);
+        note.key = static_cast<int16_t>(key);
+        note.velocity = std::min(std::max(velocity, 0.0), 1.0);
+        note.sampleOffset = sampleOffset;
+        std::lock_guard<std::mutex> producer(mNoteProducerMutex);
+        if (!mNoteRing.tryPush(note))
+            return PlayerErrors::outOfMemory;
+        return PlayerErrors::noError;
+    }
+
+    void ClapInstance::stageNotesDsp(unsigned samples) noexcept
+    {
+        mBlockNoteCount = 0;
+        while (mBlockNoteCount < kMaxNotesPerBlock)
+        {
+            const NoteEvent *queued = mNoteRing.peek();
+            if (queued == nullptr)
+                break;
+            NoteEvent note = *queued;
+            mNoteRing.pop();
+            if (note.sampleOffset >= samples)
+                note.sampleOffset = samples - 1;
+            mBlockNotes[mBlockNoteCount++] = note;
+        }
+    }
+
+    void ClapInstance::pushNotesDsp(unsigned offset, unsigned frames) noexcept
+    {
+        if (mBlockNoteCount == 0)
+            return;
+        // The layout's dialect: a restart may have changed it since the note
+        // was queued.
+        const NoteDialect dialect = mLayout.noteDialect;
+        uint64_t dropped = 0;
+        for (uint32_t i = 0; i < mBlockNoteCount; ++i)
+        {
+            const NoteEvent &note = mBlockNotes[i];
+            if (note.sampleOffset < offset || note.sampleOffset - offset >= frames)
+                continue;
+            const uint32_t time = note.sampleOffset - offset;
+            bool pushed = false;
+            if (dialect == NoteDialect::clap)
+            {
+                clap_event_note_t event{};
+                event.header.size = sizeof(event);
+                event.header.time = time;
+                event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                event.header.type =
+                    note.on ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF;
+                event.header.flags = 0;
+                event.note_id = -1;
+                event.port_index = 0;
+                event.channel = note.channel;
+                event.key = note.key;
+                event.velocity = note.velocity;
+                pushed = mInputEvents.tryPush(&event.header);
+            }
+            else if (dialect == NoteDialect::midi)
+            {
+                // A note on with velocity 0 would be a note off: on is 1..127.
+                const long scaled = std::lround(note.velocity * 127.0);
+                const long velocity =
+                    std::min(127L, std::max(note.on ? 1L : 0L, scaled));
+                clap_event_midi_t event{};
+                event.header.size = sizeof(event);
+                event.header.time = time;
+                event.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                event.header.type = CLAP_EVENT_MIDI;
+                event.header.flags = 0;
+                event.port_index = 0;
+                event.data[0] = static_cast<uint8_t>((note.on ? 0x90 : 0x80) |
+                                                     (note.channel & 0x0f));
+                event.data[1] = static_cast<uint8_t>(note.key & 0x7f);
+                event.data[2] = static_cast<uint8_t>(velocity);
+                pushed = mInputEvents.tryPush(&event.header);
+            }
+            if (!pushed)
+                ++dropped;
+        }
+        if (dropped > 0)
+            mDroppedNotes.fetch_add(dropped, std::memory_order_acq_rel);
+    }
+
     void ClapInstance::stallRecord() noexcept
     {
         mFlushStalled = true;
@@ -2061,13 +2268,30 @@ namespace soloud_clap
                     carried = true;
                 }
                 break;
+            case CLAP_EVENT_NOTE_END:
+                if (event->size >= sizeof(clap_event_note_t))
+                {
+                    const auto *note =
+                        reinterpret_cast<const clap_event_note_t *>(event);
+                    out.kind = HostEventType::noteEnd;
+                    out.paramId = static_cast<clap_id>(note->note_id);
+                    out.value = note->key;
+                    out.flags =
+                        (static_cast<unsigned>(
+                             static_cast<uint16_t>(note->port_index))
+                         << 16) |
+                        static_cast<uint16_t>(note->channel);
+                    carried = true;
+                }
+                break;
             default:
                 break;
             }
         }
         if (!carried)
         {
-            // v1 hosts effects: other events are accepted and discarded.
+            // Other events (notes, MIDI, modulation) are accepted and
+            // discarded.
             self->mDiscardedOutEvents.fetch_add(1, std::memory_order_acq_rel);
             return true;
         }
@@ -2113,7 +2337,9 @@ namespace soloud_clap
                             return written;
                         const OutEvent &event = mOutRing.at(mOutRing.readPos());
                         emit(event.kind, event.paramId, event.value,
-                             event.dontRecord ? 1u : 0u);
+                             event.kind == HostEventType::noteEnd
+                                 ? event.flags
+                                 : (event.dontRecord ? 1u : 0u));
                         mOutRing.pop();
                     }
                     if (mResyncAtEnd)
@@ -2543,6 +2769,32 @@ namespace soloud_clap
         if (self->inactiveForRescan())
             return; // Re-read before the next activate.
         self->logMisbehaving("audio_ports.rescan while the plugin is active");
+        self->mRestartRequested.store(true, std::memory_order_release);
+    }
+
+    uint32_t CLAP_ABI
+    ClapInstance::hostNotePortsSupportedDialects(const clap_host_t *host)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed(
+                "note_ports.supported_dialects off the main thread"))
+            return 0;
+        return CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
+    }
+
+    void CLAP_ABI ClapInstance::hostNotePortsRescan(const clap_host_t *host,
+                                                    uint32_t flags)
+    {
+        ClapInstance *self = from(host);
+        if (self == nullptr ||
+            !self->mainCallbackAllowed("note_ports.rescan off the main thread"))
+            return;
+        if ((flags & ~CLAP_NOTE_PORTS_RESCAN_NAMES) == 0)
+            return; // Names are not used.
+        if (self->inactiveForRescan())
+            return; // Re-read with the audio ports before the next activate.
+        self->logMisbehaving("note_ports.rescan while the plugin is active");
         self->mRestartRequested.store(true, std::memory_order_release);
     }
 } // namespace soloud_clap

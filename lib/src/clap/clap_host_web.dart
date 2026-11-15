@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_soloud/src/audio_source.dart';
 import 'package:flutter_soloud/src/clap/clap_types.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
@@ -48,17 +49,26 @@ class ClapHost {
   }) {
     throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
   }
+
+  /// Throws [SoLoudCppException] on the Web platform.
+  @experimental
+  ClapInstrumentPlugin loadInstrument({
+    required String bundlePath,
+    String? pluginId,
+    int? sampleRate,
+    int maxBlockSize = 2048,
+    Channels channels = Channels.stereo,
+  }) {
+    throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
+  }
 }
 
-/// Web stub for a loaded CLAP audio effect. It cannot be created on the Web
-/// platform.
+/// Web stub for what a loaded CLAP plugin offers. It cannot be created on the
+/// Web platform.
 @experimental
-abstract class ClapEffectPlugin {
+abstract class ClapPluginBase {
   /// The native plugin handle.
   int get pluginHandle;
-
-  /// The [CustomFilterSlot] this effect runs in.
-  CustomFilterSlot get slot;
 
   /// Whether [dispose] was called.
   bool get isDisposed;
@@ -93,16 +103,6 @@ abstract class ClapEffectPlugin {
   /// Queues the normalized [value] for [paramId].
   void setParameterNormalized(int paramId, double value);
 
-  /// Binds slot parameter [slotParamIndex] (`1..7`) to [paramId].
-  CustomFilterParam mapToSlotParameter({
-    required int slotParamIndex,
-    required int paramId,
-    SoundHandle? soundHandle,
-  });
-
-  /// Removes the binding of slot parameter [slotParamIndex].
-  void unmapSlotParameter(int slotParamIndex);
-
   /// Saves the plugin's state.
   Uint8List saveState();
 
@@ -132,4 +132,49 @@ abstract class ClapEffectPlugin {
 
   /// Unloads the plugin.
   void dispose();
+}
+
+/// Web stub for a loaded CLAP audio effect. It cannot be created on the Web
+/// platform.
+@experimental
+abstract class ClapEffectPlugin extends ClapPluginBase {
+  /// The [CustomFilterSlot] this effect runs in.
+  CustomFilterSlot get slot;
+
+  /// Binds slot parameter [slotParamIndex] (`1..7`) to [paramId].
+  CustomFilterParam mapToSlotParameter({
+    required int slotParamIndex,
+    required int paramId,
+    SoundHandle? soundHandle,
+  });
+
+  /// Removes the binding of slot parameter [slotParamIndex].
+  void unmapSlotParameter(int slotParamIndex);
+}
+
+/// Web stub for a loaded CLAP instrument. It cannot be created on the Web
+/// platform.
+@experimental
+abstract class ClapInstrumentPlugin extends ClapPluginBase {
+  /// The playable SoLoud [AudioSource] the plugin renders.
+  AudioSource get audioSource;
+
+  /// How notes reach the plugin.
+  ClapNoteDialect get noteDialect;
+
+  /// Starts note [pitch].
+  void noteOn({
+    required int pitch,
+    double velocity = 0.8,
+    int channel = 0,
+    int sampleOffset = 0,
+  });
+
+  /// Releases note [pitch].
+  void noteOff({
+    required int pitch,
+    double velocity = 0,
+    int channel = 0,
+    int sampleOffset = 0,
+  });
 }

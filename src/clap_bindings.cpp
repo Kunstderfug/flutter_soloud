@@ -195,6 +195,30 @@ extern "C"
 #endif
     }
 
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapLoadInstrument(
+        const char *bundlePath,
+        const char *pluginId,
+        unsigned int sampleRate,
+        unsigned int maxBlockSize,
+        unsigned int channels,
+        int *outPluginHandle)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().loadInstrument(bundlePath, pluginId, sampleRate,
+                                        maxBlockSize, channels,
+                                        outPluginHandle);
+#else
+        (void)bundlePath;
+        (void)pluginId;
+        (void)sampleRate;
+        (void)maxBlockSize;
+        (void)channels;
+        if (outPluginHandle != nullptr)
+            *outPluginHandle = 0;
+        return notImplemented;
+#endif
+    }
+
     FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapUnloadPlugin(int pluginHandle)
     {
 #ifdef SOLOUD_ENABLE_CLAP
@@ -219,6 +243,48 @@ extern "C"
         return reinterpret_cast<void *>(callback);
 #else
         return nullptr;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT void *soloud_clapGetSourceCallbackPtr(void)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        SoLoudSourceDspCallback_t callback = &clapSourceDspCallback;
+        return reinterpret_cast<void *>(callback);
+#else
+        return nullptr;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapSendNote(
+        int pluginHandle,
+        int isOn,
+        int channel,
+        int key,
+        double velocity,
+        unsigned int sampleOffset)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return manager().sendNote(pluginHandle, isOn != 0, channel, key,
+                                  velocity, sampleOffset);
+#else
+        (void)pluginHandle;
+        (void)isOn;
+        (void)channel;
+        (void)key;
+        (void)velocity;
+        (void)sampleOffset;
+        return notImplemented;
+#endif
+    }
+
+    FFI_PLUGIN_EXPORT int soloud_clapGetNoteDialect(int pluginHandle)
+    {
+#ifdef SOLOUD_ENABLE_CLAP
+        return static_cast<int>(manager().noteDialect(pluginHandle));
+#else
+        (void)pluginHandle;
+        return 0;
 #endif
     }
 

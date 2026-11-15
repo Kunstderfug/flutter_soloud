@@ -141,6 +141,34 @@ struct MockClapState
     std::atomic<int> guiShown{0};
     std::atomic<int> guiTransients{0};
     std::atomic<int> guiTransientNull{0};
+
+    // --- synths (Phase 5b) ---------------------------------------------------
+    /// The note dialects (CLAP_NOTE_DIALECT_*) a synth's next deactivate()
+    /// switches to; it then calls note_ports.rescan(ALL). -1 none.
+    std::atomic<int> pendingNoteDialects{-1};
+    /// 1: note_ports.count reports a port that get() refuses; 2: no
+    /// note-ports extension.
+    std::atomic<int> notePortsBroken{0};
+    /// The preferred dialect note_ports.get reports when >= 0 (else CLAP when
+    /// supported, then MIDI, then MIDI 2.0).
+    std::atomic<int> notePreferredDialect{-1};
+    /// note_ports.count calls (one while active is a violation).
+    std::atomic<int> noteDialectQueries{0};
+};
+
+/// One note or MIDI event a synth received (process only).
+struct MockNote
+{
+    /// 1 a CLAP note event, 2 a MIDI message.
+    int dialect;
+    int on;
+    int channel;
+    int key;
+    /// 0..1 for CLAP, 0..127 for MIDI.
+    double velocity;
+    /// The event's time within its block, and the block's steady_time.
+    uint32_t time;
+    int64_t steadyTime;
 };
 
 /// One parameter value the mock received (process or flush).
@@ -176,4 +204,7 @@ extern "C"
     /// Copies up to [capacity] received parameter values, oldest first, and
     /// returns the total received since the last reset.
     typedef size_t (*MockClapReceivedFn)(MockReceived *out, size_t capacity);
+    /// Copies up to [capacity] received notes, oldest first, and returns the
+    /// total received since the last reset.
+    typedef size_t (*MockClapNotesFn)(MockNote *out, size_t capacity);
 }

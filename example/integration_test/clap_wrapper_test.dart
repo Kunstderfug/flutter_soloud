@@ -745,5 +745,124 @@ void main() {
       }
       expect(slot.index, lessThan(0));
     });
+
+    testWidgets('an instrument plays notes as an audio source', (_) async {
+      final image = ffi.DynamicLibrary.open(
+        '$mockBundle/Contents/MacOS/MockClap',
+      );
+      final noteCount = image
+          .lookupFunction<ffi.Int Function(), int Function()>(
+            'mock_clap_note_count',
+          );
+      final violations = image
+          .lookupFunction<ffi.Int Function(), int Function()>(
+            'mock_clap_violations',
+          );
+      final violationsBefore = violations();
+      final notesBefore = noteCount();
+
+      final instruments = host
+          .scanBundle(mockBundle!)
+          .where((p) => p.isInstrument)
+          .map((p) => p.pluginId);
+      expect(instruments, [
+        'mock.synth',
+        'mock.synth_midi',
+        'mock.synth_midi2',
+      ]);
+
+      // Without an id: the bundle's first instrument.
+      final synth = host.loadInstrument(bundlePath: mockBundle);
+      expect(synth.noteDialect, ClapNoteDialect.clap);
+      final voice = SoLoud.instance.play(synth.audioSource);
+      synth.noteOn(pitch: 60, velocity: 0.5, channel: 2, sampleOffset: 7);
+
+      Future<bool> waitFor(bool Function() done) async {
+        final deadline = DateTime.now().add(const Duration(seconds: 3));
+        while (!done() && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        return done();
+      }
+
+      // The playing source renders the plugin, which takes the note.
+      expect(await waitFor(() => noteCount() == notesBefore + 1), isTrue);
+      synth.noteOff(pitch: 60, channel: 2);
+      expect(await waitFor(() => noteCount() == notesBefore + 2), isTrue);
+      final events = <ClapHostEvent>[];
+      expect(
+        await waitFor(() {
+          events.addAll(synth.drainEvents());
+          return events.any((e) => e.type == ClapHostEventType.noteEnd);
+        }),
+        isTrue,
+      );
+      final end = events.firstWhere(
+        (e) => e.type == ClapHostEventType.noteEnd,
+      );
+      expect(end.noteId, -1);
+      expect(end.noteKey, 60);
+      expect(end.noteChannel, 2);
+      expect(end.notePortIndex, 0);
+
+      // Out of range: refused.
+      expect(
+        () => synth.noteOn(pitch: 128),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      expect(
+        () => synth.noteOn(pitch: 60, channel: 16),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      expect(
+        () => synth.noteOn(pitch: 60, sampleOffset: -1),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      // Values that would narrow into range in the FFI call.
+      expect(
+        () => synth.noteOn(pitch: 0x10000003c),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      expect(
+        () => synth.noteOff(pitch: 60, channel: 0x100000002),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      expect(
+        () => synth.noteOn(pitch: -1),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(noteCount(), notesBefore + 2);
+
+      await SoLoud.instance.stop(voice);
+      synth.dispose();
+      expect(synth.isDisposed, isTrue);
+      expect(synth.noteDialect, ClapNoteDialect.none);
+      // A no-op after dispose.
+      synth
+        ..noteOn(pitch: 60)
+        ..noteOff(pitch: 60);
+
+      final midi = host.loadInstrument(
+        bundlePath: mockBundle,
+        pluginId: 'mock.synth_midi',
+        channels: Channels.mono,
+      );
+      expect(midi.noteDialect, ClapNoteDialect.midi);
+      midi.dispose();
+
+      // No dialect the host speaks: it loads, notes are refused.
+      final midi2 = host.loadInstrument(
+        bundlePath: mockBundle,
+        pluginId: 'mock.synth_midi2',
+      );
+      expect(midi2.noteDialect, ClapNoteDialect.none);
+      expect(
+        () => midi2.noteOn(pitch: 60),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      midi2.dispose();
+      expect(violations(), violationsBefore);
+    });
   });
 }

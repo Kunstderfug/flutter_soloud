@@ -18,6 +18,10 @@
 // - Phase 5a maps SoLoud filter-slot parameters onto plugin parameters: a
 //   seqlock table written on non-audio threads under mSlotMapMutex (taken
 //   before mParamsMutex, never with a plugin call) and read by DSP.
+// - Phase 5b adds instruments: the note-ports extension (read with the audio
+//   ports), a host -> plugin note queue (producers serialised by
+//   mNoteProducerMutex, a leaf never held by DSP or across a plugin call) and
+//   renderInstrument, the SoLoud custom-source path.
 #pragma once
 
 #ifdef SOLOUD_ENABLE_CLAP
@@ -69,7 +73,19 @@ namespace soloud_clap
         destroyed,
     };
 
-    /// The port layout read from `audio-ports` while deactivated.
+    /// How notes reach the plugin's note input port 0 (Phase 5b).
+    enum class NoteDialect : int
+    {
+        /// No note input port, or none in a dialect this host speaks.
+        none = 0,
+        /// CLAP_EVENT_NOTE_ON / CLAP_EVENT_NOTE_OFF.
+        clap = 1,
+        /// CLAP_EVENT_MIDI, MIDI 1.0 note on / note off.
+        midi = 2,
+    };
+
+    /// The port layout read from `audio-ports` (and `note-ports`) while
+    /// deactivated.
     struct PortLayout
     {
         std::vector<uint32_t> inputChannels;  // per declared input port
@@ -79,6 +95,9 @@ namespace soloud_clap
         /// that side is auxiliary.
         bool hasMainInput = false;
         bool hasMainOutput = false;
+        /// Declared note input ports; notes go to port 0 in [noteDialect].
+        uint32_t noteInputPorts = 0;
+        NoteDialect noteDialect = NoteDialect::none;
 
         uint32_t mainInputChannels() const
         {
@@ -112,6 +131,11 @@ namespace soloud_clap
     /// SoLoud filter-slot parameters a plugin parameter can follow: indices
     /// 1..kMaxSlotParams-1 (0 is the slot's wet).
     constexpr unsigned kMaxSlotParams = 16;
+    // --- Phase 5b limits --------------------------------------------------------
+    /// Host -> plugin note queue.
+    constexpr uint32_t kNoteCapacity = 1024;
+    /// Notes DSP takes from the queue per block; the rest wait.
+    constexpr uint32_t kMaxNotesPerBlock = 512;
 
     /// Event types drainEvents reports (mirrors ClapHostEventType in enums.h).
     enum class HostEventType : int
@@ -126,6 +150,10 @@ namespace soloud_clap
         restartFailed = 8,
         stateDirty = 9,
         editorClosed = 10,
+        /// CLAP_EVENT_NOTE_END: paramId the note id (0xffffffff: none),
+        /// value the key, flags the port index (high 16 bits) and the channel
+        /// (low 16 bits), each 0xffff for a wildcard.
+        noteEnd = 11,
     };
 
     /// `resync` flags.
@@ -192,13 +220,26 @@ namespace soloud_clap
         float baseline = std::numeric_limits<float>::quiet_NaN();
     };
 
-    /// A plugin -> host param event in the out ring.
+    /// A plugin -> host event in the out ring.
     struct OutEvent
     {
         HostEventType kind = HostEventType::paramValue;
         bool dontRecord = false;
         clap_id paramId = CLAP_INVALID_ID;
         double value = 0;
+        /// noteEnd only: the packed port and channel.
+        unsigned flags = 0;
+    };
+
+    /// A queued host -> plugin note (Phase 5b). [sampleOffset] is relative to
+    /// the start of the block that takes it.
+    struct NoteEvent
+    {
+        bool on = false;
+        int16_t channel = 0;
+        int16_t key = 0;
+        double velocity = 0;
+        uint32_t sampleOffset = 0;
     };
 
     /// Main-only: the plugin call in progress, for the legality of rescans
@@ -272,8 +313,10 @@ namespace soloud_clap
     class ClapInstance
     {
     public:
+        /// [instrument]: hosted as a SoLoud audio source (renderInstrument)
+        /// rather than a filter (processAudio).
         ClapInstance(ModuleRef module, std::string pluginId, double sampleRate,
-                     uint32_t maxBlockSize);
+                     uint32_t maxBlockSize, bool instrument = false);
         ~ClapInstance();
         ClapInstance(const ClapInstance &) = delete;
         ClapInstance &operator=(const ClapInstance &) = delete;
@@ -288,6 +331,7 @@ namespace soloud_clap
             mHandle.store(handle, std::memory_order_release);
         }
         const std::string &pluginId() const noexcept { return mPluginId; }
+        bool isInstrument() const noexcept { return mInstrument; }
         const clap_host_t *host() const noexcept { return &mHost; }
         const clap_plugin_t *plugin() const noexcept { return mPlugin; }
 
@@ -369,6 +413,41 @@ namespace soloud_clap
                           unsigned channels, const float *slotParams = nullptr,
                           unsigned slotParamCount = 0,
                           uint64_t slotChangedMask = 0) noexcept;
+        /// The SoLoud custom-source path (Phase 5b): renders [samples] frames
+        /// into [channels] planar channels of [buffer], the plugin's main
+        /// output on the first two and silence on the rest. Every frame is
+        /// written: silence while the instance is servicing, failed or
+        /// retired. Returns [samples].
+        unsigned renderInstrument(float *buffer, unsigned samples,
+                                  unsigned bufferSize,
+                                  unsigned channels) noexcept;
+
+        // --- Phase 5b: notes ------------------------------------------------
+        /// Any thread: the dialect of the installed layout.
+        NoteDialect noteDialect() const noexcept
+        {
+            return static_cast<NoteDialect>(
+                mNoteDialect.load(std::memory_order_acquire));
+        }
+        /// Any non-audio thread, never blocks on main: queues a note on or off
+        /// for note port 0. [channel] 0..15, [key] 0..127, [velocity] 0..1
+        /// (clamped). The next block that runs delivers it at [sampleOffset]
+        /// frames into the block (clamped to the block). invalidParameter for
+        /// out-of-range values or no usable note port; outOfMemory when the
+        /// queue is full (nothing is processed while the source is not
+        /// playing).
+        PlayerErrors sendNote(bool on, int channel, int key, double velocity,
+                              uint32_t sampleOffset);
+        /// Notes taken from the queue that could not be delivered (the
+        /// dialect went away in a restart, or the event list was full).
+        uint64_t droppedNotes() const noexcept
+        {
+            return mDroppedNotes.load(std::memory_order_acquire);
+        }
+        uint64_t noteRingReadable() const noexcept
+        {
+            return mNoteRing.readable();
+        }
 
         // --- Phase 3: extensions, params, state, events -------------------
         /// Main, after init: caches the plugin extensions the host calls.
@@ -583,10 +662,30 @@ namespace soloud_clap
         }
         static void silence(float *buffer, unsigned samples, unsigned bufferSize,
                             unsigned channels) noexcept;
+        /// Writes silence to every channel of [buffer].
+        static void silenceAll(float *buffer, unsigned samples,
+                               unsigned bufferSize, unsigned channels) noexcept;
+        /// Takes mProcessMutex (try-lock), starts processing lazily and runs
+        /// the block in chunks. False, with nothing processed, when the block
+        /// must stay dry (servicing, retired, contended) or be silent
+        /// (failed); [outSilence] tells which.
+        bool runBlock(float *buffer, unsigned samples, unsigned bufferSize,
+                      unsigned busChannels, bool instrument,
+                      const float *slotParams, unsigned slotParamCount,
+                      uint64_t slotChangedMask, bool &outSilence) noexcept;
         void processChunk(float *buffer, unsigned offset, unsigned frames,
                           unsigned bufferSize, unsigned busChannels,
-                          const float *slotParams, unsigned slotParamCount,
+                          bool instrument, const float *slotParams,
+                          unsigned slotParamCount,
                           uint64_t slotChangedMask) noexcept;
+        /// DSP: moves up to kMaxNotesPerBlock queued notes into the block's
+        /// staging, offsets clamped to [samples].
+        void stageNotesDsp(unsigned samples) noexcept;
+        /// DSP: pushes the staged notes inside [offset, offset + frames).
+        void pushNotesDsp(unsigned offset, unsigned frames) noexcept;
+        /// Main, from readPorts: the note input ports and the dialect of
+        /// port 0. A missing or broken extension leaves no dialect.
+        void readNotePorts(PortLayout &layout);
 
         class CallPhaseScope;
 
@@ -657,6 +756,10 @@ namespace soloud_clap
             const clap_host_t *host, uint32_t flag);
         static void CLAP_ABI hostAudioPortsRescan(const clap_host_t *host,
                                                   uint32_t flags);
+        static uint32_t CLAP_ABI hostNotePortsSupportedDialects(
+            const clap_host_t *host);
+        static void CLAP_ABI hostNotePortsRescan(const clap_host_t *host,
+                                                 uint32_t flags);
         static void CLAP_ABI hostGuiResizeHintsChanged(const clap_host_t *host);
         static bool CLAP_ABI hostGuiRequestResize(const clap_host_t *host,
                                                   uint32_t width,
@@ -673,6 +776,7 @@ namespace soloud_clap
         const std::string mPluginId;
         const double mSampleRate;
         const uint32_t mMaxBlockSize;
+        const bool mInstrument;
 
         clap_host_t mHost{};
         const clap_plugin_t *mPlugin = nullptr;
@@ -790,6 +894,19 @@ namespace soloud_clap
         /// value went out. Compared under the current mapping, so a range
         /// change cannot make a real change look sent.
         float mSlotUnsentValue[kMaxSlotParams] = {};
+
+        // --- Phase 5b: notes ------------------------------------------------
+        /// NoteDialect of the installed layout (stored in installLayout).
+        std::atomic<int> mNoteDialect{0};
+        /// Serialises note producers. A leaf: never held by DSP or across a
+        /// plugin call.
+        std::mutex mNoteProducerMutex;
+        SpscRing<NoteEvent> mNoteRing{kNoteCapacity};
+        // DSP-only (mProcessMutex held): the notes staged for the current
+        // block.
+        std::unique_ptr<NoteEvent[]> mBlockNotes;
+        uint32_t mBlockNoteCount = 0;
+        std::atomic<uint64_t> mDroppedNotes{0};
 
         // Main-only.
         CallPhase mPhase = CallPhase::idle;

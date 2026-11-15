@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_soloud/src/audio_source.dart';
 import 'package:flutter_soloud/src/bindings/flutter_soloud_ffigen.dart'
     as ffigen;
 import 'package:flutter_soloud/src/bindings/soloud_controller.dart';
@@ -34,7 +35,8 @@ void _check(ffigen.PlayerErrors error) {
 /// anything else.
 final _slotOwners = ClapSlotOwners<ClapEffectPlugin>();
 
-/// Scans and loads native CLAP audio effects (macOS only for now).
+/// Scans and loads native CLAP audio effects and instruments (macOS only for
+/// now).
 ///
 /// Requires `enable_clap: macos` (or `true`) under
 /// `hooks.user_defines.flutter_soloud` in the application's `pubspec.yaml`.
@@ -244,6 +246,81 @@ class ClapHost {
     return plugin;
   }
 
+  /// Loads the CLAP instrument [pluginId] of the bundle at [bundlePath] and
+  /// wraps it in a playable [ClapInstrumentPlugin.audioSource].
+  ///
+  /// Without [pluginId] the first plugin that declares `instrument` is used.
+  ///
+  /// The plugin renders at [sampleRate] (the engine's, [SoLoud.sampleRate],
+  /// by default), which is also the source's rate. [maxBlockSize] is the
+  /// most frames per process call (`1..65536`) and [channels] the source's
+  /// width: channels past the plugin's main output are silent. The plugin's
+  /// audio inputs are silent.
+  ///
+  /// Throws a [SoLoudCppException] when the plugin cannot be loaded or the
+  /// source cannot be created; nothing stays loaded then.
+  @experimental
+  ClapInstrumentPlugin loadInstrument({
+    required String bundlePath,
+    String? pluginId,
+    int? sampleRate,
+    int maxBlockSize = 2048,
+    Channels channels = Channels.stereo,
+  }) {
+    if (!isSupported) {
+      throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
+    }
+    if (!SoLoud.instance.isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final id = (pluginId != null && pluginId.isNotEmpty)
+        ? pluginId
+        : _defaultInstrumentId(bundlePath);
+    final rate = sampleRate ?? SoLoud.instance.sampleRate;
+    final handle = using((arena) {
+      final outHandle = arena<ffi.Int>();
+      final error = ffigen.soloud_clapLoadInstrument(
+        bundlePath.toNativeUtf8(allocator: arena).cast(),
+        id.toNativeUtf8(allocator: arena).cast(),
+        rate,
+        maxBlockSize,
+        channels.count,
+        outHandle,
+      );
+      _check(error);
+      if (outHandle.value <= 0) {
+        throw SoLoudCppException.fromPlayerError(PlayerErrors.fileLoadFailed);
+      }
+      return outHandle.value;
+    });
+
+    try {
+      final source = SoLoud.instance.createCustomAudioSource(
+        sampleRate: rate,
+        channels: channels,
+        dspCallbackAddress: ffigen.soloud_clapGetSourceCallbackPtr().address,
+        userdataAddress: ffigen.soloud_clapGetPluginUserData(handle).address,
+        // One plugin renders for every voice: with two voices it would run
+        // twice per mix.
+        singleInstance: true,
+      );
+      return ClapInstrumentPlugin._(pluginHandle: handle, audioSource: source);
+    } catch (_) {
+      ffigen.soloud_clapUnloadPlugin(handle);
+      rethrow;
+    }
+  }
+
+  String _defaultInstrumentId(String bundlePath) {
+    final chosen = scanBundle(
+      bundlePath,
+    ).where((p) => p.isInstrument).firstOrNull;
+    if (chosen == null) {
+      throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
+    }
+    return chosen.pluginId;
+  }
+
   String _defaultEffectId(String bundlePath) {
     final plugins = scanBundle(bundlePath);
     final chosen =
@@ -256,7 +333,8 @@ class ClapHost {
   }
 }
 
-/// A loaded CLAP audio effect running in a [CustomFilterSlot].
+/// What a loaded CLAP plugin offers whether it is an effect
+/// ([ClapEffectPlugin]) or an instrument ([ClapInstrumentPlugin]).
 ///
 /// Parameter values are plain: in the plugin's own units, within
 /// [ClapParamInfo.minValue]..[ClapParamInfo.maxValue]. The `*Normalized`
@@ -268,8 +346,8 @@ class ClapHost {
 /// listeners. Each event is taken once: every event [drainEvents] returns
 /// is also delivered to the streams' current listeners.
 @experimental
-class ClapEffectPlugin {
-  ClapEffectPlugin._({required this.pluginHandle, required this.slot})
+abstract class ClapPluginBase {
+  ClapPluginBase._(this.pluginHandle)
     : _parameters = _queryParameters(pluginHandle) {
     _events = StreamController<ClapHostEvent>.broadcast(
       onListen: _updateDrainTimer,
@@ -286,9 +364,6 @@ class ClapEffectPlugin {
 
   /// The native plugin handle.
   final int pluginHandle;
-
-  /// The [CustomFilterSlot] this effect runs in.
-  final CustomFilterSlot slot;
 
   List<ClapParamInfo> _parameters;
   bool _disposed = false;
@@ -474,83 +549,6 @@ class ClapEffectPlugin {
     _checkNotDisposed();
     final info = _requireInfo(paramId);
     setParameterValue(paramId, info.fromNormalized(value));
-  }
-
-  /// Binds parameter [slotParamIndex] (`1..7`) of [slot] to the plugin
-  /// parameter [paramId], so `fadeFilterParameter` and
-  /// `oscillateFilterParameter` on the returned [CustomFilterParam] drive
-  /// it. The slot value (`0..1`) is converted with
-  /// [ClapParamInfo.fromNormalized] and sent at the start of each processed
-  /// block in which it changed.
-  ///
-  /// Binding does not send the slot's current value: the plugin keeps its
-  /// value until the slot value changes. The first processed block after
-  /// binding sends the slot value only when it differs (as a plain value)
-  /// from the one read at binding time, even if blocks were skipped in
-  /// between. A binding replaces an earlier one for the same index, and
-  /// survives a rescan while [paramId] still exists and is writable.
-  ///
-  /// Throws an [ArgumentError] for an index outside `1..7` (0 is the slot's
-  /// wet level), and a [SoLoudCppException] for an unknown or read-only
-  /// parameter, or while the parameter list is being rebuilt.
-  CustomFilterParam mapToSlotParameter({
-    required int slotParamIndex,
-    required int paramId,
-    SoundHandle? soundHandle,
-  }) {
-    _checkNotDisposed();
-    _checkSlotParamIndex(slotParamIndex);
-    // The value the binding is made against (NaN when it cannot be read:
-    // the native side then falls back to the slot's changed bit).
-    var baseline = double.nan;
-    try {
-      final read = SoLoudController().soLoudFFI.getCustomFilterParams(
-        slot.slotIndex,
-        slotParamIndex,
-        handle: soundHandle,
-        busId: slot.busId,
-      );
-      if (read.error == PlayerErrors.noError) {
-        baseline = read.value;
-      }
-    } catch (_) {}
-    _check(
-      ffigen.soloud_clapMapSlotParameter(
-        pluginHandle,
-        slotParamIndex,
-        paramId,
-        baseline,
-      ),
-    );
-    return CustomFilterParam(
-      soundHandle,
-      slot.busId,
-      slot.slotIndex,
-      slotParamIndex,
-      0,
-      1,
-    );
-  }
-
-  /// Removes the binding of slot parameter [slotParamIndex] (`1..7`), if
-  /// any. The plugin keeps the last value it was sent.
-  ///
-  /// Throws an [ArgumentError] for an index outside `1..7`.
-  void unmapSlotParameter(int slotParamIndex) {
-    _checkNotDisposed();
-    _checkSlotParamIndex(slotParamIndex);
-    _check(ffigen.soloud_clapUnmapSlotParameter(pluginHandle, slotParamIndex));
-  }
-
-  static void _checkSlotParamIndex(int slotParamIndex) {
-    if (slotParamIndex < 1 || slotParamIndex > CustomFilterSlot.maxUserParams) {
-      throw ArgumentError.value(
-        slotParamIndex,
-        'slotParamIndex',
-        'must be between 1 and ${CustomFilterSlot.maxUserParams} '
-            '(index 0 is the wet level)',
-      );
-    }
   }
 
   /// Saves the plugin's state.
@@ -797,12 +795,9 @@ class ClapEffectPlugin {
     }
   }
 
-  /// Closes [events] and [paramEdits], unbinds and deactivates [slot] and
-  /// unloads the plugin. Safe to call more than once, and after
-  /// [ClapHost.unloadAll].
-  ///
-  /// The slot is left alone when another CLAP plugin was loaded into it
-  /// since, or the engine was shut down since this plugin was loaded.
+  /// Closes [events] and [paramEdits] and unloads the plugin. Safe to call
+  /// more than once, and after [ClapHost.unloadAll].
+  @mustCallSuper
   void dispose() {
     if (_disposed) {
       return;
@@ -812,6 +807,110 @@ class ClapEffectPlugin {
     _drainTimer = null;
     unawaited(_events.close());
     unawaited(_paramEdits.close());
+    // invalidParameter after unloadAll: nothing is left to unload.
+    ffigen.soloud_clapUnloadPlugin(pluginHandle);
+  }
+}
+
+/// A loaded CLAP audio effect running in a [CustomFilterSlot].
+///
+/// See [ClapPluginBase] for its parameters, state, events and editor.
+@experimental
+class ClapEffectPlugin extends ClapPluginBase {
+  ClapEffectPlugin._({required int pluginHandle, required this.slot})
+    : super._(pluginHandle);
+
+  /// The [CustomFilterSlot] this effect runs in.
+  final CustomFilterSlot slot;
+
+  /// Binds parameter [slotParamIndex] (`1..7`) of [slot] to the plugin
+  /// parameter [paramId], so `fadeFilterParameter` and
+  /// `oscillateFilterParameter` on the returned [CustomFilterParam] drive
+  /// it. The slot value (`0..1`) is converted with
+  /// [ClapParamInfo.fromNormalized] and sent at the start of each processed
+  /// block in which it changed.
+  ///
+  /// Binding does not send the slot's current value: the plugin keeps its
+  /// value until the slot value changes. The first processed block after
+  /// binding sends the slot value only when it differs (as a plain value)
+  /// from the one read at binding time, even if blocks were skipped in
+  /// between. A binding replaces an earlier one for the same index, and
+  /// survives a rescan while [paramId] still exists and is writable.
+  ///
+  /// Throws an [ArgumentError] for an index outside `1..7` (0 is the slot's
+  /// wet level), and a [SoLoudCppException] for an unknown or read-only
+  /// parameter, or while the parameter list is being rebuilt.
+  CustomFilterParam mapToSlotParameter({
+    required int slotParamIndex,
+    required int paramId,
+    SoundHandle? soundHandle,
+  }) {
+    _checkNotDisposed();
+    _checkSlotParamIndex(slotParamIndex);
+    // The value the binding is made against (NaN when it cannot be read:
+    // the native side then falls back to the slot's changed bit).
+    var baseline = double.nan;
+    try {
+      final read = SoLoudController().soLoudFFI.getCustomFilterParams(
+        slot.slotIndex,
+        slotParamIndex,
+        handle: soundHandle,
+        busId: slot.busId,
+      );
+      if (read.error == PlayerErrors.noError) {
+        baseline = read.value;
+      }
+    } catch (_) {}
+    _check(
+      ffigen.soloud_clapMapSlotParameter(
+        pluginHandle,
+        slotParamIndex,
+        paramId,
+        baseline,
+      ),
+    );
+    return CustomFilterParam(
+      soundHandle,
+      slot.busId,
+      slot.slotIndex,
+      slotParamIndex,
+      0,
+      1,
+    );
+  }
+
+  /// Removes the binding of slot parameter [slotParamIndex] (`1..7`), if
+  /// any. The plugin keeps the last value it was sent.
+  ///
+  /// Throws an [ArgumentError] for an index outside `1..7`.
+  void unmapSlotParameter(int slotParamIndex) {
+    _checkNotDisposed();
+    _checkSlotParamIndex(slotParamIndex);
+    _check(ffigen.soloud_clapUnmapSlotParameter(pluginHandle, slotParamIndex));
+  }
+
+  static void _checkSlotParamIndex(int slotParamIndex) {
+    if (slotParamIndex < 1 || slotParamIndex > CustomFilterSlot.maxUserParams) {
+      throw ArgumentError.value(
+        slotParamIndex,
+        'slotParamIndex',
+        'must be between 1 and ${CustomFilterSlot.maxUserParams} '
+            '(index 0 is the wet level)',
+      );
+    }
+  }
+
+  /// Closes [events] and [paramEdits], unbinds and deactivates [slot] and
+  /// unloads the plugin. Safe to call more than once, and after
+  /// [ClapHost.unloadAll].
+  ///
+  /// The slot is left alone when another CLAP plugin was loaded into it
+  /// since, or the engine was shut down since this plugin was loaded.
+  @override
+  void dispose() {
+    if (isDisposed) {
+      return;
+    }
     try {
       if (_slotOwners.release(slot, this, SoLoud.instance.engineSession) &&
           SoLoud.instance.isInitialized &&
@@ -821,7 +920,104 @@ class ClapEffectPlugin {
           ..deactivate();
       }
     } catch (_) {}
-    // invalidParameter after unloadAll: nothing is left to unload.
-    ffigen.soloud_clapUnloadPlugin(pluginHandle);
+    super.dispose();
+  }
+}
+
+/// A loaded CLAP instrument wrapped in a playable SoLoud [AudioSource].
+///
+/// Play [audioSource] with `SoLoud.instance.play` (one voice: playing it
+/// again restarts the voice) and send notes with [noteOn] and [noteOff]. A
+/// [ClapHostEventType.noteEnd] event on [events] reports a note the plugin
+/// finished. See [ClapPluginBase] for its parameters, state, events and
+/// editor.
+@experimental
+class ClapInstrumentPlugin extends ClapPluginBase {
+  ClapInstrumentPlugin._({required int pluginHandle, required this.audioSource})
+    : super._(pluginHandle);
+
+  /// The playable SoLoud [AudioSource] the plugin renders. Pass it to
+  /// `SoLoud.instance.play` or `play3d`. Disposed by [dispose].
+  final AudioSource audioSource;
+
+  /// How notes reach the plugin. [ClapNoteDialect.none] when it has no note
+  /// port this host speaks: [noteOn] and [noteOff] then throw. It can change
+  /// when the plugin restarts.
+  ClapNoteDialect get noteDialect => _disposed
+      ? ClapNoteDialect.none
+      : ClapNoteDialect.fromValue(
+          ffigen.soloud_clapGetNoteDialect(pluginHandle),
+        );
+
+  /// Starts note [pitch] (`0..127`) on [channel] (`0..15`), [sampleOffset]
+  /// frames into the next rendered block (clamped to the block).
+  /// [velocity] is `0..1` (clamped). Never waits for the main thread. A no-op
+  /// after [dispose].
+  ///
+  /// Throws a [SoLoudCppException] for a value out of range, a plugin
+  /// without a note dialect, or a full note queue.
+  @experimental
+  void noteOn({
+    required int pitch,
+    double velocity = 0.8,
+    int channel = 0,
+    int sampleOffset = 0,
+  }) => _sendNote(true, pitch, velocity, channel, sampleOffset);
+
+  /// Releases note [pitch] on [channel]. See [noteOn].
+  @experimental
+  void noteOff({
+    required int pitch,
+    double velocity = 0,
+    int channel = 0,
+    int sampleOffset = 0,
+  }) => _sendNote(false, pitch, velocity, channel, sampleOffset);
+
+  void _sendNote(
+    bool on,
+    int pitch,
+    double velocity,
+    int channel,
+    int sampleOffset,
+  ) {
+    if (_disposed) {
+      return;
+    }
+    // Checked here: the FFI call narrows to 32 bits, so 0x10000003c would
+    // arrive as 60.
+    if (pitch < 0 ||
+        pitch > 127 ||
+        channel < 0 ||
+        channel > 15 ||
+        sampleOffset < 0 ||
+        sampleOffset > 0xffffffff) {
+      throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
+    }
+    _check(
+      ffigen.soloud_clapSendNote(
+        pluginHandle,
+        on ? 1 : 0,
+        channel,
+        pitch,
+        velocity,
+        sampleOffset,
+      ),
+    );
+  }
+
+  /// Disposes [audioSource], closes [events] and [paramEdits] and unloads
+  /// the plugin. Safe to call more than once, and after
+  /// [ClapHost.unloadAll].
+  @override
+  void dispose() {
+    if (isDisposed) {
+      return;
+    }
+    try {
+      if (SoLoud.instance.isInitialized) {
+        unawaited(SoLoud.instance.disposeSource(audioSource));
+      }
+    } catch (_) {}
+    super.dispose();
   }
 }

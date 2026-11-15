@@ -21,7 +21,7 @@ A high-performance audio plugin designed primarily for games and immersive appli
 - 🌊 Generate waveforms in real-time with various types (sine, square, saw, triangle, etc.)
 - 🧬 Real-time PCM mixer injection (`setRealtimeStream` with managed Isolate/Web feeders) and synchronous zero-latency custom DSP callbacks (`createCustomAudioSource` and up to 8 `customFilters` slots per scope)
 - 🔌 Opt-in desktop **VST3 plugin hosting** (macOS, Windows, Linux): load external `.vst3` effects (`Fx`) into filter slots and virtual instruments (`Instrument|Synth`) as playable 3D voices, open native plugin GUI editor windows, and automate parameters
-- 🔌 Opt-in, experimental **CLAP plugin hosting** (macOS): load `.clap` effects into filter slots, open their native editors, and automate parameters
+- 🔌 Opt-in, experimental **CLAP plugin hosting** (macOS): load `.clap` effects into filter slots and instruments as playable audio sources, open their native editors, and automate parameters
 - 🎮 3D positional audio with Doppler effect
 - 🔄 Gapless looping with half-open `[start, end)` loop regions
 - 🎵 Audio playback support for MP3, WAV, OGG, FLAC, plus native platform decoding for M4A, MP4 (audio tracks), AAC, AC-3, and E-AC-3
@@ -80,7 +80,7 @@ The hooks runner does not pass environment variables to build hooks, so use the 
 
 ### Desktop CLAP Plugin Hosting (Opt-In, Experimental)
 
-On **macOS**, you can host native `.clap` audio effects and open their editors. Enable it in your app's `pubspec.yaml` (`true` and `macos` are the same for now; other platforms ignore it):
+On **macOS**, you can host native `.clap` audio effects and instruments and open their editors. Enable it in your app's `pubspec.yaml` (`true` and `macos` are the same for now; other platforms ignore it):
 
 ```yaml
 hooks:
@@ -113,9 +113,18 @@ eq.openEditorWindow(title: 'ZeroEQ');
 final state = eq.saveState(); // restore later with eq.restoreState(state)
 await sub.cancel();
 eq.dispose();
+
+// An instrument renders into a playable audio source.
+final synth = host.loadInstrument(
+  bundlePath: '/Library/Audio/Plug-Ins/CLAP/Surge XT.clap',
+);
+await SoLoud.instance.play(synth.audioSource);
+synth.noteOn(pitch: 60, velocity: 0.8);
+synth.noteOff(pitch: 60);
+synth.dispose();
 ```
 
-Parameter values are plain (in the plugin's own units). The `events` stream (or `drainEvents()`) reports parameter rescans, latency changes, restarts, state changes and editor closes. Sandboxed macOS apps need read access to `/Library/Audio/Plug-Ins/CLAP/` and `~/Library/Audio/Plug-Ins/CLAP/` (temporary-exception entitlements). The CLAP SDK headers are MIT licensed.
+Instruments receive notes as CLAP note events or MIDI 1.0, whichever the plugin prefers (`noteDialect`). Parameter values are plain (in the plugin's own units). The `events` stream (or `drainEvents()`) reports parameter rescans, latency changes, restarts, state changes, editor closes and finished notes. Sandboxed macOS apps need read access to `/Library/Audio/Plug-Ins/CLAP/` and `~/Library/Audio/Plug-Ins/CLAP/` (temporary-exception entitlements). The CLAP SDK headers are MIT licensed.
 
 ### Extended Audio Formats (M4A, MP4, AAC, AC-3, E-AC-3)
 

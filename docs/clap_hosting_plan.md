@@ -458,3 +458,73 @@ Phase 5 is split in two. 5a completes the effect API; 5b adds instruments (`load
   - (2) After `unloadAll`, the drain timer kept polling the dead handle. Fix: stop on `invalidParameter`.
 - **Round 2, Sol REVISE.** (2) resolved. New blocking finding: the generation check ran after arming, so a block against a stale list stored the baseline as a plain value in the old range, and after a range change a real change could match it and be suppressed forever. Fix: the generation check comes first, and an unsent baseline is kept as a slot value compared under the current mapping.
 - **Fable arbitration, ACCEPT, no blocking findings.** The round-2 fix is correct. Full lists, non-finite values, unmap and remap, a dropping re-resolve, a map racing a re-resolve, the seqlock and the DSP cost all hold. Its three minors were folded in before landing: `continue` instead of `break` on a full list, and two comment fixes.
+
+### Phase 5b: instruments (2026-11-15, Sol 6.1 ACCEPT in round 1)
+
+**Native:**
+- `ClapInstance` has an instrument mode. An instrument's audio inputs are silent. SoLoud renders it through `clapSourceDspCallback`, a `SoLoudSourceDspCallback_t` whose user data is the handle.
+  - An unknown handle ends the source.
+  - An effect handle renders silence.
+  - `clapFilterDspCallback` skips instruments.
+- `renderInstrument` shares `runBlock` with the effect path. It writes every frame: silence while servicing, failed, retired or contended.
+  - It renders the plugin's main output to the first two channels; channels past that are silent.
+  - A mono output goes to both channels.
+  - A null buffer, zero samples or zero channels returns 0.
+- **Note ports.** `note-ports` is read with the audio ports while deactivated. Port 0's dialect is chosen this way:
+  - the preferred dialect when it is CLAP or MIDI 1.0;
+  - else CLAP when supported;
+  - else MIDI 1.0;
+  - else none (MIDI 2.0 only, no port, or a broken extension).
+
+  The host's `supported_dialects` is CLAP | MIDI. A `rescan` with `CLAP_NOTE_PORTS_RESCAN_ALL` restarts the plugin; other flags are ignored. A call off the main thread is logged.
+- **Note queue.** `sendNote(on, channel 0..15, key 0..127, velocity, sampleOffset)` runs on any non-audio thread and never waits for main.
+  - Producers are serialised by `mNoteProducerMutex`, a leaf lock, onto an SPSC ring of 1024 notes. A full ring gives `outOfMemory`.
+  - DSP stages up to 512 notes per block, with offsets clamped to the block, and pushes them sample-accurately within each chunk.
+  - A CLAP-dialect plugin gets `NOTE_ON`/`NOTE_OFF` with the velocity clamped to 0..1. A MIDI plugin gets a MIDI 1.0 message with the velocity scaled to 1..127 (on) or 0..127 (off).
+  - Notes stay queued while a block is dry or fails. A note whose dialect went away in a restart is dropped and counted.
+- **Note end.** `CLAP_EVENT_NOTE_END` from the plugin becomes host event `noteEnd` (11): the note id, the key, and `(port << 16) | channel` in the flags.
+- **C ABI.** `soloud_clapLoadInstrument`, `soloud_clapGetSourceCallbackPtr`, `soloud_clapSendNote` and `soloud_clapGetNoteDialect`.
+
+**Dart:**
+- `ClapHost.loadInstrument({bundlePath, pluginId, sampleRate, maxBlockSize, channels})`. It takes the first instrument when no id is given, and creates a `singleInstance` custom audio source. If the source fails, the plugin is unloaded.
+- `ClapInstrumentPlugin` (a `ClapPluginBase`) has:
+  - `audioSource`;
+  - `noteDialect` (`ClapNoteDialect` none/clap/midi);
+  - `noteOn`/`noteOff({pitch, velocity, channel, sampleOffset})`, which check the pitch, channel and offset ranges in Dart before the FFI call narrows them, throw for no dialect and are no-ops after `dispose`;
+  - `dispose`, which disposes the source too.
+- `ClapHostEventType.noteEnd` with the decoded note.
+- The web stub mirrors the API, and the README shows an instrument.
+
+**Mock:** three synths:
+- `mock.synth` (CLAP and MIDI, stereo);
+- `mock.synth_midi` (MIDI only, mono);
+- `mock.synth_midi2` (MIDI 2.0 only).
+
+They record each note with its block time and steady time, render `0.1 × held notes` sample-accurately, and emit `NOTE_END` on release. Their knobs switch dialects on deactivate, break or remove `note-ports`, and override the preferred dialect.
+
+**Tests:**
+- The native harness has 77 tests (`instrument_load`, `instrument_notes`, `instrument_queue`, `instrument_producers`, `instrument_midi`, `instrument_restart` and `instrument_abi` are new). `instrument_producers` races two note producers against a rendering audio thread and checks that every accepted note arrives once, in order. It passes plain, ASan+UBSan and TSan.
+- The hook matrix passes 24/24 in all four configurations, with 29 exported CLAP symbols.
+- The live example test passes 15/15. Its mock synth test covers default id, play, note on/off, a drained `noteEnd`, range errors, dispose, mono MIDI, and MIDI 2.0 giving `none`.
+- The Dart unit and stub tests pass 24/24. `flutter analyze` shows only the 3 pre-existing infos.
+
+**Mutation probes, each failing its test:**
+- the chunk window bound and the chunk-relative event time;
+- the offset clamp, the velocity clamp and the non-finite velocity check;
+- the MIDI status byte and the MIDI on-velocity floor of 1;
+- preferring MIDI, ignoring a `NAMES` rescan, and counting dropped notes;
+- staging notes in a dry block, the full ring, silence on a failed block and zeroing the extra channels;
+- the filter callback skipping instruments, silent instrument inputs, and an unknown handle ending the source;
+- the `noteEnd` flags;
+- removing `mNoteProducerMutex` (`instrument_producers` fails, and TSan reports the race).
+
+The first runs of the chunk window and prefer-MIDI probes survived. A boundary note at 128 and the `notePreferredDialect` knob now kill them.
+
+Three survivors are accepted as equivalent:
+- removing the CLAP-preferred rule (CLAP is the fallback anyway);
+- dropping MIDI 2.0 from the spoken mask (it is never chosen);
+- the end-of-block `mBlockNoteCount = 0` (staging resets the count).
+
+**Review:** Round 1, Sol ACCEPT with no blocking findings. Both of its minors were folded in before landing:
+1. `noteOn`/`noteOff` passed `pitch` and `channel` straight into 32-bit FFI arguments, so `pitch: 0x10000003c` played key 60. Dart now range-checks both, and the live test covers oversized values.
+2. Concurrent producers had no regression test. `instrument_producers` was added.

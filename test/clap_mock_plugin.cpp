@@ -1,4 +1,4 @@
-// A mock CLAP effect bundle for test/clap_host_test.cpp. Built by
+// A mock CLAP effect and instrument bundle for test/clap_host_test.cpp. Built by
 // test/run_clap_host_test.sh as MockClap.clap (and, with
 // -DMOCK_CLAP_BAD_VERSION, as MockClapBadVersion.clap).
 //
@@ -28,6 +28,8 @@ namespace
     std::string gLog;
     std::mutex gReceivedMutex;
     std::vector<MockReceived> gReceived;
+    std::mutex gNotesMutex;
+    std::vector<MockNote> gNotes;
 
     /// Counts a call into the DSO for the init/deinit overlap check.
     struct InCall
@@ -73,7 +75,43 @@ namespace
         failStart,
         badlayout,
         ext,
+        // Phase 5b instruments: no input, a note port.
+        synth,      // CLAP and MIDI, prefers CLAP; stereo out
+        synthMidi,  // MIDI only; mono out
+        synthMidi2, // MIDI 2.0 only: no dialect the host speaks
     };
+
+    bool isSynth(Kind kind)
+    {
+        return kind == Kind::synth || kind == Kind::synthMidi ||
+               kind == Kind::synthMidi2;
+    }
+
+    /// The note dialects a synth supports when created.
+    uint32_t synthDialects(Kind kind)
+    {
+        switch (kind)
+        {
+        case Kind::synth:
+            return CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
+        case Kind::synthMidi:
+            return CLAP_NOTE_DIALECT_MIDI;
+        case Kind::synthMidi2:
+            return CLAP_NOTE_DIALECT_MIDI2;
+        default:
+            return 0;
+        }
+    }
+
+    /// CLAP when supported, else MIDI, else what is left.
+    uint32_t preferredDialect(uint32_t dialects)
+    {
+        if (dialects & CLAP_NOTE_DIALECT_CLAP)
+            return CLAP_NOTE_DIALECT_CLAP;
+        if (dialects & CLAP_NOTE_DIALECT_MIDI)
+            return CLAP_NOTE_DIALECT_MIDI;
+        return dialects & CLAP_NOTE_DIALECT_MIDI2;
+    }
 
     struct Descriptor
     {
@@ -88,6 +126,9 @@ namespace
 
     const char *const kFeatures[] = {CLAP_PLUGIN_FEATURE_AUDIO_EFFECT,
                                      CLAP_PLUGIN_FEATURE_STEREO, nullptr};
+    const char *const kSynthFeatures[] = {CLAP_PLUGIN_FEATURE_INSTRUMENT,
+                                          CLAP_PLUGIN_FEATURE_SYNTHESIZER,
+                                          nullptr};
 
     const Descriptor kDescriptors[] = {
         {Kind::stereo, "mock.stereo", "Mock Stereo", 2, 2, false, true},
@@ -107,6 +148,11 @@ namespace
         {Kind::badlayout, "mock.badlayout", "Mock Bad Layout", 4, 4, false,
          true},
         {Kind::ext, "mock.ext", "Mock Extensions", 2, 2, false, true},
+        {Kind::synth, "mock.synth", "Mock Synth", 0, 2, false, true},
+        {Kind::synthMidi, "mock.synth_midi", "Mock Synth MIDI", 0, 1, false,
+         true},
+        {Kind::synthMidi2, "mock.synth_midi2", "Mock Synth MIDI2", 0, 2, false,
+         true},
     };
     constexpr uint32_t kDescriptorCount =
         sizeof(kDescriptors) / sizeof(kDescriptors[0]);
@@ -128,6 +174,7 @@ namespace
         uint32_t in = 0;
         uint32_t out = 0;
         int64_t nextSteadyTime = -1;
+        int64_t blockSteadyTime = -1;
         // mock.ext
         int variant = 0;
         std::atomic<double> values[5];
@@ -141,6 +188,19 @@ namespace
         bool guiShown = false;
         uint32_t guiWidth = 0;
         uint32_t guiHeight = 0;
+        // Synths (Phase 5b). Audio thread only, except noteDialects (main,
+        // while inactive).
+        uint32_t noteDialects = 0;
+        bool held[16][128] = {};
+        int heldCount = 0;
+        struct BlockNote
+        {
+            uint32_t time;
+            bool on;
+            int16_t channel;
+            int16_t key;
+        };
+        std::vector<BlockNote> blockNotes;
     };
 
     // --- mock.ext parameters --------------------------------------------------
@@ -289,6 +349,44 @@ namespace
 
     const clap_plugin_audio_ports_t kAudioPorts = {portsCount, portsGet};
 
+    // --- note-ports (synths) ------------------------------------------------
+
+    uint32_t CLAP_ABI notePortsCount(const clap_plugin_t *plugin, bool isInput)
+    {
+        InCall call;
+        MockPlugin *p = self(plugin);
+        if (p->threadCheck == nullptr || !p->threadCheck->is_main_thread(p->host))
+            violation(p, "note_ports_count");
+        if (p->activated)
+            violation(p, "note_ports_count while active");
+        gState.noteDialectQueries.fetch_add(1);
+        if (gState.notePortsBroken.load() == 1)
+            return 1;
+        return isInput ? 1 : 0;
+    }
+
+    bool CLAP_ABI notePortsGet(const clap_plugin_t *plugin, uint32_t index,
+                               bool isInput, clap_note_port_info_t *info)
+    {
+        InCall call;
+        MockPlugin *p = self(plugin);
+        if (p->threadCheck == nullptr || !p->threadCheck->is_main_thread(p->host))
+            violation(p, "note_ports_get");
+        if (!isInput || index != 0 || gState.notePortsBroken.load() == 1)
+            return false;
+        std::memset(info, 0, sizeof(*info));
+        info->id = 0;
+        info->supported_dialects = p->noteDialects;
+        const int preferred = gState.notePreferredDialect.load();
+        info->preferred_dialect = preferred >= 0
+                                      ? static_cast<uint32_t>(preferred)
+                                      : preferredDialect(p->noteDialects);
+        std::snprintf(info->name, sizeof(info->name), "notes");
+        return true;
+    }
+
+    const clap_plugin_note_ports_t kNotePorts = {notePortsCount, notePortsGet};
+
 
     // --- mock.ext: events --------------------------------------------------
 
@@ -298,8 +396,80 @@ namespace
         gReceived.push_back(r);
     }
 
+    void recordNote(const MockNote &n)
+    {
+        std::lock_guard<std::mutex> lock(gNotesMutex);
+        gNotes.push_back(n);
+    }
+
+    /// A note or MIDI event: checked against the synth's dialects and queued
+    /// for the block (process only).
+    void applyNoteEvent(MockPlugin *p, const clap_event_header_t *h, int path)
+    {
+        if (!isSynth(p->desc->kind))
+        {
+            violation(p, "note to an effect");
+            return;
+        }
+        if (path != 1)
+        {
+            violation(p, "note in flush");
+            return;
+        }
+        MockNote note{};
+        note.time = h->time;
+        note.steadyTime = p->blockSteadyTime;
+        if (h->type == CLAP_EVENT_MIDI)
+        {
+            if (h->size != sizeof(clap_event_midi_t))
+            {
+                violation(p, "midi size");
+                return;
+            }
+            if ((p->noteDialects & CLAP_NOTE_DIALECT_MIDI) == 0)
+                violation(p, "midi dialect");
+            const auto *e = reinterpret_cast<const clap_event_midi_t *>(h);
+            const uint8_t status = e->data[0] & 0xf0;
+            if (e->port_index != 0 || (status != 0x90 && status != 0x80) ||
+                e->data[1] > 127 || e->data[2] > 127 ||
+                (status == 0x90 && e->data[2] == 0))
+                violation(p, "midi message");
+            note.dialect = 2;
+            note.on = status == 0x90 ? 1 : 0;
+            note.channel = e->data[0] & 0x0f;
+            note.key = e->data[1];
+            note.velocity = e->data[2];
+        }
+        else
+        {
+            if (h->size != sizeof(clap_event_note_t))
+            {
+                violation(p, "note size");
+                return;
+            }
+            if ((p->noteDialects & CLAP_NOTE_DIALECT_CLAP) == 0)
+                violation(p, "note dialect");
+            const auto *e = reinterpret_cast<const clap_event_note_t *>(h);
+            if (e->note_id != -1 || e->port_index != 0 || e->channel < 0 ||
+                e->channel > 15 || e->key < 0 || e->key > 127 ||
+                !(e->velocity >= 0.0 && e->velocity <= 1.0))
+                violation(p, "note fields");
+            note.dialect = 1;
+            note.on = h->type == CLAP_EVENT_NOTE_ON ? 1 : 0;
+            note.channel = e->channel;
+            note.key = e->key;
+            note.velocity = e->velocity;
+        }
+        recordNote(note);
+        if (note.channel >= 0 && note.channel < 16 && note.key >= 0 &&
+            note.key < 128)
+            p->blockNotes.push_back({h->time, note.on != 0,
+                                     static_cast<int16_t>(note.channel),
+                                     static_cast<int16_t>(note.key)});
+    }
+
     /// Checks one incoming list: sorted, in the block, only carried param
-    /// values. Applies them for mock.ext.
+    /// values (and notes for synths). Applies them for mock.ext.
     void applyInputEvents(MockPlugin *p, const clap_input_events_t *in,
                           uint32_t frames, int path)
     {
@@ -313,6 +483,16 @@ namespace
         for (uint32_t i = 0; i < n; ++i)
         {
             const clap_event_header_t *h = in->get(in, i);
+            if (h != nullptr && h->space_id == CLAP_CORE_EVENT_SPACE_ID &&
+                (h->type == CLAP_EVENT_NOTE_ON || h->type == CLAP_EVENT_NOTE_OFF ||
+                 h->type == CLAP_EVENT_MIDI))
+            {
+                if (h->time < lastTime || (frames > 0 && h->time >= frames))
+                    violation(p, "event time");
+                lastTime = h->time;
+                applyNoteEvent(p, h, path);
+                continue;
+            }
             if (h == nullptr || h->space_id != CLAP_CORE_EVENT_SPACE_ID ||
                 h->type != CLAP_EVENT_PARAM_VALUE ||
                 h->size != sizeof(clap_event_param_value_t))
@@ -1022,6 +1202,22 @@ namespace
             violation(p, "deactivate state");
         p->activated = false;
         applyPendingLayout(p);
+        const int dialects = isSynth(p->desc->kind)
+                                 ? gState.pendingNoteDialects.exchange(-1)
+                                 : -1;
+        if (dialects >= 0)
+        {
+            p->noteDialects = static_cast<uint32_t>(dialects);
+            if (auto *notes =
+                    hostExt<clap_host_note_ports_t>(p, CLAP_EXT_NOTE_PORTS))
+            {
+                if ((notes->supported_dialects(p->host) &
+                     (CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI)) !=
+                    (CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI))
+                    violation(p, "host note dialects");
+                notes->rescan(p->host, CLAP_NOTE_PORTS_RESCAN_ALL);
+            }
+        }
         if (p->desc->kind == Kind::ext)
         {
             const int variant = gState.pendingParamVariant.exchange(-1);
@@ -1110,6 +1306,7 @@ namespace
         if (p->nextSteadyTime >= 0 && process->steady_time != p->nextSteadyTime)
             violation(p, "steady_time");
         p->nextSteadyTime = process->steady_time + frames;
+        p->blockSteadyTime = process->steady_time;
         DspScope dsp(p);
         if (process->out_events == nullptr)
             violation(p, "events");
@@ -1163,6 +1360,46 @@ namespace
         }
 
         float *const *out = process->audio_outputs[0].data32;
+        if (isSynth(p->desc->kind))
+        {
+            // Sample accurate: held notes x 0.1 from each event's frame on.
+            size_t next = 0;
+            for (uint32_t i = 0; i < frames; ++i)
+            {
+                while (next < p->blockNotes.size() &&
+                       p->blockNotes[next].time <= i)
+                {
+                    const auto &note = p->blockNotes[next++];
+                    bool &held = p->held[note.channel][note.key];
+                    if (note.on && !held)
+                    {
+                        held = true;
+                        ++p->heldCount;
+                    }
+                    else if (!note.on && held)
+                    {
+                        held = false;
+                        --p->heldCount;
+                        clap_event_note_t end{};
+                        end.header.size = sizeof(end);
+                        end.header.time = note.time;
+                        end.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+                        end.header.type = CLAP_EVENT_NOTE_END;
+                        end.note_id = -1;
+                        end.port_index = 0;
+                        end.channel = note.channel;
+                        end.key = note.key;
+                        if (process->out_events != nullptr)
+                            process->out_events->try_push(process->out_events,
+                                                          &end.header);
+                    }
+                }
+                for (uint32_t c = 0; c < p->out; ++c)
+                    out[c][i] = 0.1f * static_cast<float>(p->heldCount);
+            }
+            p->blockNotes.clear();
+            return CLAP_PROCESS_CONTINUE;
+        }
         const float *const *in =
             p->in > 0 ? process->audio_inputs[0].data32 : nullptr;
         const int every = gState.processErrorEvery.load();
@@ -1207,6 +1444,9 @@ namespace
         MockPlugin *p = self(plugin);
         if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0 && p->desc->ports)
             return &kAudioPorts;
+        if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0 &&
+            isSynth(p->desc->kind) && gState.notePortsBroken.load() != 2)
+            return &kNotePorts;
         if (p->desc->kind != Kind::ext)
             return nullptr;
         if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)
@@ -1265,6 +1505,8 @@ namespace
             p->host = host;
             p->in = p->desc->in;
             p->out = p->desc->out;
+            p->noteDialects = synthDialects(p->desc->kind);
+            p->blockNotes.reserve(2048);
             for (uint32_t s = 0; s < 5; ++s)
                 p->values[s].store(gParams[0][s].def);
             p->plugin.desc = &gClapDescriptors[i];
@@ -1312,7 +1554,8 @@ namespace
             d.support_url = "";
             d.version = "1.2.3";
             d.description = "mock";
-            d.features = kFeatures;
+            d.features =
+                isSynth(kDescriptors[i].kind) ? kSynthFeatures : kFeatures;
         }
         gState.entryInits.fetch_add(1);
         logLine("entry:entry_init:" +
@@ -1388,6 +1631,23 @@ extern "C"
         return gState.guiLive.load();
     }
 
+    /// For the Dart integration test: the note and MIDI events received
+    /// since the last reset.
+    __attribute__((visibility("default"))) int mock_clap_note_count()
+    {
+        std::lock_guard<std::mutex> lock(gNotesMutex);
+        return static_cast<int>(gNotes.size());
+    }
+
+    __attribute__((visibility("default"))) size_t mock_clap_notes(
+        MockNote *out, size_t capacity)
+    {
+        std::lock_guard<std::mutex> lock(gNotesMutex);
+        if (out != nullptr)
+            std::copy_n(gNotes.begin(), std::min(capacity, gNotes.size()), out);
+        return gNotes.size();
+    }
+
     __attribute__((visibility("default"))) int mock_clap_violations()
     {
         return gState.violations.load();
@@ -1432,6 +1692,14 @@ extern "C"
             std::lock_guard<std::mutex> lock(gReceivedMutex);
             gReceived.clear();
         }
+        {
+            std::lock_guard<std::mutex> lock(gNotesMutex);
+            gNotes.clear();
+        }
+        gState.pendingNoteDialects = -1;
+        gState.notePortsBroken = 0;
+        gState.notePreferredDialect = -1;
+        gState.noteDialectQueries = 0;
         gHook.store(nullptr);
         gState.entryInits = 0;
         gState.entryDeinits = 0;

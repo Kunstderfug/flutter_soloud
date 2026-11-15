@@ -777,8 +777,12 @@ enum ClapHostEventType {
   stateDirty(9),
 
   /// The user or the plugin closed the editor. Not reported for
-  /// `ClapEffectPlugin.closeEditorWindow`, a hidden editor or an unload.
-  editorClosed(10);
+  /// `ClapPluginBase.closeEditorWindow`, a hidden editor or an unload.
+  editorClosed(10),
+
+  /// An instrument finished a note: see `ClapHostEvent.noteKey` and the
+  /// other `note*` getters.
+  noteEnd(11);
 
   const ClapHostEventType(this.value);
 
@@ -794,5 +798,35 @@ enum ClapHostEventType {
       }
     }
     return null;
+  }
+}
+
+/// How a CLAP instrument receives notes.
+///
+/// WARNING: Keep these in sync with `ClapNoteDialect` in `src/enums.h`.
+enum ClapNoteDialect {
+  /// No note port the host speaks: notes cannot be sent.
+  none(0),
+
+  /// CLAP note events.
+  clap(1),
+
+  /// MIDI 1.0 messages.
+  midi(2);
+
+  const ClapNoteDialect(this.value);
+
+  /// The integer value representing the enum in native code.
+  final int value;
+
+  /// Returns the [ClapNoteDialect] for [value], or [none] for a value this
+  /// version does not know.
+  static ClapNoteDialect fromValue(int value) {
+    for (final dialect in values) {
+      if (dialect.value == value) {
+        return dialect;
+      }
+    }
+    return none;
   }
 }

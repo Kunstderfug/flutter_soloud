@@ -76,6 +76,7 @@ namespace
         MockClapLogFn log = nullptr;
         MockClapResetFn reset = nullptr;
         MockClapReceivedFn received = nullptr;
+        MockClapNotesFn notes = nullptr;
     };
 
     MockApi loadMockApi(const std::string &path)
@@ -102,6 +103,8 @@ namespace
         api.received = reinterpret_cast<MockClapReceivedFn>(
             CFBundleGetFunctionPointerForName(bundle,
                                               CFSTR("mock_clap_received")));
+        api.notes = reinterpret_cast<MockClapNotesFn>(
+            CFBundleGetFunctionPointerForName(bundle, CFSTR("mock_clap_notes")));
         return api;
     }
 
@@ -518,7 +521,7 @@ namespace
     {
         std::vector<ScannedPlugin> plugins;
         CHECK(mgr().scanBundle(gMockPath.c_str(), plugins) == noError);
-        CHECK(plugins.size() == 12);
+        CHECK(plugins.size() == 15);
         const ScannedPlugin *stereo = nullptr;
         for (const auto &p : plugins)
             if (p.id == "mock.stereo")
@@ -528,6 +531,9 @@ namespace
         CHECK(stereo->vendor == "Mock Vendor");
         CHECK(stereo->version == "1.2.3");
         CHECK(stereo->features == "audio-effect;stereo");
+        for (const auto &p : plugins)
+            if (p.id.rfind("mock.synth", 0) == 0)
+                CHECK(p.features == "instrument;synthesizer");
         // The scan's module reference is gone: init and deinit ran once and
         // the copied strings outlive the module.
         CHECK(gMock.state->entryInits.load() == 1);
@@ -908,7 +914,7 @@ namespace
             CHECK(pumpUntil([&] { return dsp.audible() > 3; }));
             std::vector<ScannedPlugin> plugins;
             CHECK(mgr().scanBundle(gMockPath.c_str(), plugins) == noError);
-            CHECK(plugins.size() == 12);
+            CHECK(plugins.size() == 15);
             CHECK(gMock.state->entryInits.load() == 1);
         }
         CHECK(mgr().unloadPlugin(a) == noError);
@@ -1182,7 +1188,7 @@ namespace
             loaded = mgr().loadEffect(gMockPath.c_str(), "mock.stereo",
                                       kSampleRate, 512, 2, &h);
         });
-        CHECK(scan == noError && plugins.size() == 12);
+        CHECK(scan == noError && plugins.size() == 15);
         REQUIRE(loaded == noError && h > 0);
         stereoBlock(h);
         onWorker([&] { unloaded = mgr().unloadPlugin(h); });
@@ -1686,7 +1692,7 @@ namespace
             scan = soloud_clapScanBundle(gMockPath.c_str(), &count, &ids, &names,
                                          &vendors, &versions, &features);
         });
-        REQUIRE(scan == noError && count == 12);
+        REQUIRE(scan == noError && count == 15);
         REQUIRE(ids && names && vendors && versions && features);
         // The copies outlive the module.
         onWorker([] { soloud_clapHostUnloadAll(); });
@@ -5270,6 +5276,596 @@ namespace
         CHECK(unloadAndWait(h));
     }
 
+
+    // =========================================================================
+    // Phase 5b: instruments
+    // =========================================================================
+
+    constexpr int kEvNoteEnd = static_cast<int>(HostEventType::noteEnd);
+
+    int loadSynth(const char *id, unsigned maxBlock = 512,
+                  PlayerErrors *error = nullptr, unsigned channels = 2)
+    {
+        int handle = 0;
+        const PlayerErrors e = mgr().loadInstrument(
+            gMockPath.c_str(), id, kSampleRate, maxBlock, channels, &handle);
+        if (error != nullptr)
+            *error = e;
+        return e == noError ? handle : 0;
+    }
+
+    /// One source block on a fresh thread (the audio thread), joined.
+    unsigned render(int handle, Bus &bus, unsigned samples,
+                    uint32_t *ended = nullptr)
+    {
+        unsigned rendered = 0;
+        uint32_t hasEnded = 7;
+        std::thread audio([&] {
+            std::lock_guard<std::mutex> lock(gAudioMutex);
+            rendered = clapSourceDspCallback(
+                bus.data.data(), samples, bus.size, bus.channels,
+                static_cast<float>(kSampleRate), 0.0, 0.0, &hasEnded,
+                reinterpret_cast<void *>(static_cast<uintptr_t>(handle)));
+        });
+        audio.join();
+        if (ended != nullptr)
+            *ended = hasEnded;
+        return rendered;
+    }
+
+    /// Renders a [samples]-frame block over garbage and returns it.
+    Bus renderBlock(int handle, unsigned samples, unsigned channels = 2)
+    {
+        Bus bus(channels, samples);
+        std::fill(bus.data.begin(), bus.data.end(), 9.0f);
+        CHECK(render(handle, bus, samples) == samples);
+        return bus;
+    }
+
+    std::vector<MockNote> notes()
+    {
+        std::vector<MockNote> out(gMock.notes(nullptr, 0) + 16);
+        out.resize(gMock.notes(out.data(), out.size()));
+        return out;
+    }
+
+    bool noteOn(int h, int key, double velocity = 0.5, uint32_t offset = 0,
+                int channel = 0)
+    {
+        return mgr().sendNote(h, true, channel, key, velocity, offset) ==
+               noError;
+    }
+
+    bool noteOff(int h, int key, uint32_t offset = 0, int channel = 0)
+    {
+        return mgr().sendNote(h, false, channel, key, 0.0, offset) == noError;
+    }
+
+    /// Both channels of [bus] hold [v] on frames [from, to).
+    bool level(Bus &bus, float v, unsigned from, unsigned to)
+    {
+        return bus.equals(0, v, from, to) && bus.equals(1, v, from, to);
+    }
+
+    void testInstrumentLoad()
+    {
+        captureLogs();
+        const int synth = loadSynth("mock.synth");
+        const int midi = loadSynth("mock.synth_midi");
+        const int midi2 = loadSynth("mock.synth_midi2");
+        REQUIRE(synth > 0 && midi > 0 && midi2 > 0);
+        CHECK(mgr().noteDialect(synth) == NoteDialect::clap);
+        CHECK(mgr().noteDialect(midi) == NoteDialect::midi);
+        // MIDI 2.0 only: no dialect the host speaks. It still loads and
+        // renders; notes are refused.
+        CHECK(mgr().noteDialect(midi2) == NoteDialect::none);
+        CHECK(mgr().noteDialect(0) == NoteDialect::none);
+        CHECK(mgr().getInstance(synth)->isInstrument());
+        CHECK(mgr().getInstance(synth)->layout().noteInputPorts == 1);
+        CHECK(mgr().sendNote(midi2, true, 0, 60, 0.5, 0) == invalidParameter);
+        {
+            Bus out = renderBlock(midi2, 128);
+            CHECK(level(out, 0.0f, 0, 128));
+        }
+        // Read only while inactive.
+        CHECK(gMock.state->noteDialectQueries.load() >= 3);
+
+        // The effect callback never runs an instrument: the bus is untouched
+        // and the plugin is not processed.
+        const int calls = gMock.state->processCalls.load();
+        {
+            Bus bus = stereoBlock(synth);
+            CHECK(bus.equals(0, 1.0f, 0, 256) && bus.equals(1, 0.5f, 0, 256));
+        }
+        CHECK(gMock.state->processCalls.load() == calls);
+
+        // The source callback on an effect handle: silence, not ended.
+        const int effect = load("mock.stereo");
+        REQUIRE(effect > 0);
+        CHECK(!mgr().getInstance(effect)->isInstrument());
+        CHECK(mgr().noteDialect(effect) == NoteDialect::none);
+        CHECK(mgr().sendNote(effect, true, 0, 60, 0.5, 0) == invalidParameter);
+        {
+            Bus bus(2, 64);
+            bus.fill({1.0f, 1.0f});
+            uint32_t ended = 7;
+            CHECK(render(effect, bus, 64, &ended) == 64);
+            CHECK(ended == 0);
+            CHECK(level(bus, 0.0f, 0, 64));
+        }
+        CHECK(gMock.state->processCalls.load() == calls);
+        // An unknown handle ends the source.
+        {
+            Bus bus(2, 64);
+            uint32_t ended = 7;
+            CHECK(render(0, bus, 64, &ended) == 0);
+            CHECK(ended == 1);
+        }
+        // An effect loaded as an instrument gets silent inputs.
+        const int asSource = loadSynth("mock.stereo");
+        REQUIRE(asSource > 0);
+        CHECK(mgr().noteDialect(asSource) == NoteDialect::none);
+        {
+            Bus out = renderBlock(asSource, 128);
+            CHECK(level(out, 0.0f, 0, 128));
+        }
+        CHECK(mgr().unloadPlugin(asSource) == noError);
+        CHECK(mgr().unloadPlugin(effect) == noError);
+        CHECK(mgr().unloadPlugin(midi2) == noError);
+        CHECK(mgr().unloadPlugin(midi) == noError);
+        CHECK(mgr().unloadPlugin(synth) == noError);
+
+        // A note-ports extension that fails get(): logged, no dialect.
+        gMock.state->notePortsBroken = 1;
+        const int broken = loadSynth("mock.synth");
+        REQUIRE(broken > 0);
+        CHECK(mgr().noteDialect(broken) == NoteDialect::none);
+        CHECK(sinkCount("mock.synth|" +
+                        std::to_string(CLAP_LOG_PLUGIN_MISBEHAVING)) >= 1);
+        CHECK(mgr().unloadPlugin(broken) == noError);
+        // No extension: no dialect.
+        gMock.state->notePortsBroken = 2;
+        const int none = loadSynth("mock.synth");
+        REQUIRE(none > 0);
+        CHECK(mgr().noteDialect(none) == NoteDialect::none);
+        CHECK(mgr().getInstance(none)->layout().noteInputPorts == 0);
+        CHECK(mgr().unloadPlugin(none) == noError);
+        gMock.state->notePortsBroken = 0;
+
+        // Render argument edges.
+        const int h = loadSynth("mock.synth");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        float sample = 0.0f;
+        CHECK(instance->renderInstrument(nullptr, 64, 64, 2) == 0);
+        CHECK(instance->renderInstrument(&sample, 0, 1, 1) == 0);
+        CHECK(instance->renderInstrument(&sample, 1, 1, 0) == 0);
+    }
+
+    void testInstrumentNotes()
+    {
+        // maxBlockSize 64: a 256-frame block runs in four chunks.
+        const int h = loadSynth("mock.synth", 64);
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        {
+            Bus out = renderBlock(h, 256);
+            CHECK(level(out, 0.0f, 0, 256));
+        }
+        CHECK(noteOn(h, 60, 0.5, 0));
+        {
+            Bus out = renderBlock(h, 256);
+            CHECK(level(out, 0.1f, 0, 256));
+        }
+        // Sample accurate across chunks; 128 starts a chunk.
+        CHECK(noteOn(h, 62, 1.0, 100));
+        CHECK(noteOn(h, 63, 1.0, 128));
+        CHECK(noteOff(h, 63, 192));
+        {
+            Bus out = renderBlock(h, 256);
+            CHECK(level(out, 0.1f, 0, 100));
+            CHECK(level(out, 0.2f, 100, 128));
+            CHECK(level(out, 0.3f, 128, 192));
+            CHECK(level(out, 0.2f, 192, 256));
+        }
+        // An offset past the block is clamped to its last frame.
+        CHECK(noteOff(h, 60, 300));
+        {
+            Bus out = renderBlock(h, 256);
+            CHECK(level(out, 0.2f, 0, 255));
+            CHECK(level(out, 0.1f, 255, 256));
+        }
+        // Velocity is clamped; channels and keys pass through.
+        CHECK(noteOn(h, 127, 1.5, 10, 15));
+        CHECK(noteOn(h, 0, -1.0, 10, 0));
+        CHECK(noteOff(h, 127, 20, 15));
+        CHECK(noteOff(h, 0, 20, 0));
+        CHECK(noteOff(h, 62, 30));
+        {
+            Bus out = renderBlock(h, 64);
+            CHECK(level(out, 0.1f, 0, 10));
+            CHECK(level(out, 0.3f, 10, 20));
+            CHECK(level(out, 0.1f, 20, 30));
+            CHECK(level(out, 0.0f, 30, 64));
+        }
+        const std::vector<MockNote> got = notes();
+        REQUIRE(got.size() == 10);
+        // Absolute positions: steady_time + time.
+        const int64_t base = got[0].steadyTime + got[0].time;
+        const int64_t expectAt[] = {0, 356, 384, 448, 767,
+                                    778, 778, 788, 788, 798};
+        const int expectKey[] = {60, 62, 63, 63, 60, 127, 0, 127, 0, 62};
+        const int expectOn[] = {1, 1, 1, 0, 0, 1, 1, 0, 0, 0};
+        const double expectVelocity[] = {0.5, 1.0, 1.0, 0.0, 0.0,
+                                         1.0, 0.0, 0,   0,   0};
+        for (size_t i = 0; i < got.size(); ++i)
+        {
+            CHECK(got[i].dialect == 1);
+            CHECK(got[i].steadyTime + got[i].time - base == expectAt[i] - 0);
+            CHECK(got[i].time < 64);
+            CHECK(got[i].key == expectKey[i]);
+            CHECK(got[i].on == expectOn[i]);
+            CHECK(got[i].velocity == expectVelocity[i]);
+        }
+        CHECK(got[5].channel == 15 && got[6].channel == 0);
+
+        // NOTE_END for each release, in order: note id -1, key, port 0 and
+        // channel in flags.
+        const std::vector<Ev> evs = drainAll(h);
+        CHECK(countType(evs, kEvNoteEnd) == 5);
+        std::vector<Ev> ends;
+        for (const Ev &e : evs)
+            if (e.type == kEvNoteEnd)
+                ends.push_back(e);
+        REQUIRE(ends.size() == 5);
+        CHECK(ends[0].id == 0xFFFFFFFFu && ends[0].value == 63.0 &&
+              ends[0].flags == 0);
+        CHECK(ends[1].value == 60.0 && ends[1].flags == 0);
+        CHECK(ends[2].value == 127.0 && ends[2].flags == 15);
+        CHECK(ends[3].value == 0.0 && ends[3].flags == 0);
+        CHECK(ends[4].value == 62.0);
+
+        // Invalid notes.
+        CHECK(mgr().sendNote(h, true, -1, 60, 0.5, 0) == invalidParameter);
+        CHECK(mgr().sendNote(h, true, 16, 60, 0.5, 0) == invalidParameter);
+        CHECK(mgr().sendNote(h, true, 0, -1, 0.5, 0) == invalidParameter);
+        CHECK(mgr().sendNote(h, true, 0, 128, 0.5, 0) == invalidParameter);
+        CHECK(mgr().sendNote(h, true, 0, 60, std::nan(""), 0) ==
+              invalidParameter);
+        CHECK(mgr().sendNote(h, true, 0, 60, INFINITY, 0) == invalidParameter);
+        CHECK(mgr().sendNote(0, true, 0, 60, 0.5, 0) == invalidParameter);
+        CHECK(instance->noteRingReadable() == 0);
+        CHECK(instance->droppedNotes() == 0);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testInstrumentQueue()
+    {
+        const int h = loadSynth("mock.synth", 512);
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        // Nothing renders: the queue fills.
+        for (uint32_t i = 0; i < kNoteCapacity; ++i)
+            CHECK(noteOn(h, static_cast<int>(i / 16) % 128, 0.5, 0,
+                         static_cast<int>(i % 16)));
+        CHECK(mgr().sendNote(h, true, 0, 1, 0.5, 0) == outOfMemory);
+        CHECK(instance->noteRingReadable() == kNoteCapacity);
+        // At most kMaxNotesPerBlock a block.
+        {
+            Bus out = renderBlock(h, 64);
+            CHECK(level(out, 0.1f * kMaxNotesPerBlock, 0, 64));
+        }
+        CHECK(instance->noteRingReadable() == kNoteCapacity - kMaxNotesPerBlock);
+        {
+            Bus out = renderBlock(h, 64);
+            CHECK(level(out, 0.1f * kNoteCapacity, 0, 64));
+        }
+        CHECK(instance->noteRingReadable() == 0);
+        CHECK(instance->droppedNotes() == 0);
+        CHECK(notes().size() == kNoteCapacity);
+        CHECK(noteOn(h, 1));
+
+        // A block that does not run keeps its notes and is silent.
+        CHECK(mgr().unloadPlugin(h) == noError);
+        const int g = loadSynth("mock.synth");
+        REQUIRE(g > 0);
+        auto inst = mgr().getInstance(g);
+        REQUIRE(makeInactive(*inst));
+        CHECK(noteOn(g, 64));
+        {
+            Bus out = renderBlock(g, 128);
+            CHECK(level(out, 0.0f, 0, 128));
+        }
+        CHECK(inst->noteRingReadable() == 1);
+        const clap_host_t *host = inst->host();
+        host->request_restart(host);
+        CHECK(pumpUntil(
+            [&] { return inst->disposition() == Disposition::active; }));
+        {
+            Bus out = renderBlock(g, 128);
+            CHECK(level(out, 0.1f, 0, 128));
+        }
+        CHECK(inst->noteRingReadable() == 0);
+
+        // Servicing (a restart in progress): silent, notes kept.
+        std::atomic<int> silentInDeactivate{-1};
+        std::atomic<int> readableInDeactivate{-1};
+        setHook([&](const std::string &event, const clap_host_t *) {
+            if (event != "deactivate")
+                return;
+            noteOn(g, 65);
+            Bus out(2, 64);
+            std::fill(out.data.begin(), out.data.end(), 9.0f);
+            render(g, out, 64);
+            silentInDeactivate = level(out, 0.0f, 0, 64) ? 1 : 0;
+            readableInDeactivate =
+                static_cast<int>(inst->noteRingReadable());
+        });
+        const uint64_t restarts = inst->restartCount();
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return inst->restartCount() == restarts + 1; }));
+        setHook(nullptr);
+        CHECK(silentInDeactivate.load() == 1);
+        CHECK(readableInDeactivate.load() == 1);
+        {
+            // The voice held across the restart (the mock keeps its state).
+            Bus out = renderBlock(g, 64);
+            CHECK(level(out, 0.2f, 0, 64));
+        }
+
+        // Retired: the source ends; the handle is unknown.
+        CHECK(mgr().unloadPlugin(g) == noError);
+        {
+            Bus bus(2, 64);
+            uint32_t ended = 0;
+            CHECK(render(g, bus, 64, &ended) == 0);
+            CHECK(ended == 1);
+        }
+        CHECK(mgr().sendNote(g, true, 0, 60, 0.5, 0) == invalidParameter);
+    }
+
+    void testInstrumentMidi()
+    {
+        const int h = loadSynth("mock.synth_midi", 512, nullptr, 2);
+        REQUIRE(h > 0);
+        CHECK(mgr().noteDialect(h) == NoteDialect::midi);
+        CHECK(noteOn(h, 64, 0.5, 5, 3));
+        CHECK(noteOn(h, 65, 0.0, 6, 3)); // velocity 0 is sent as 1
+        CHECK(noteOn(h, 66, 1.0, 7, 9));
+        CHECK(noteOff(h, 64, 8, 3));
+        CHECK(mgr().sendNote(h, false, 3, 65, 0.7, 9) == noError);
+        {
+            // Three channels: the mono output on both bus channels, the
+            // third zeroed.
+            Bus out = renderBlock(h, 32, 3);
+            CHECK(level(out, 0.0f, 0, 5));
+            CHECK(level(out, 0.1f, 5, 6));
+            CHECK(level(out, 0.2f, 6, 7));
+            CHECK(level(out, 0.3f, 7, 8));
+            CHECK(level(out, 0.2f, 8, 9));
+            CHECK(level(out, 0.1f, 9, 32));
+            CHECK(out.equals(2, 0.0f, 0, 32));
+        }
+        const std::vector<MockNote> got = notes();
+        REQUIRE(got.size() == 5);
+        for (const MockNote &n : got)
+            CHECK(n.dialect == 2);
+        CHECK(got[0].on == 1 && got[0].channel == 3 && got[0].key == 64 &&
+              got[0].velocity == 64 && got[0].time == 5);
+        CHECK(got[1].on == 1 && got[1].velocity == 1);
+        CHECK(got[2].on == 1 && got[2].channel == 9 && got[2].velocity == 127);
+        CHECK(got[3].on == 0 && got[3].velocity == 0 && got[3].time == 8);
+        CHECK(got[4].on == 0 && got[4].key == 65 && got[4].velocity == 89);
+        const std::vector<Ev> evs = drainAll(h);
+        CHECK(countType(evs, kEvNoteEnd) == 2);
+        // A mono render.
+        {
+            Bus out = renderBlock(h, 16, 1);
+            CHECK(out.equals(0, 0.1f, 0, 16));
+        }
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testInstrumentRestart()
+    {
+        captureLogs();
+        const int h = loadSynth("mock.synth");
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        const clap_host_t *host = instance->host();
+        const auto *notePorts =
+            hostExt<clap_host_note_ports_t>(host, CLAP_EXT_NOTE_PORTS);
+        REQUIRE(notePorts != nullptr);
+        CHECK(notePorts->supported_dialects(host) ==
+              (CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI));
+        uint32_t offMain = 7;
+        onWorker([&] { offMain = notePorts->supported_dialects(host); });
+        CHECK(offMain == 0);
+
+        // A dialect switch in a restart.
+        gMock.state->pendingNoteDialects = CLAP_NOTE_DIALECT_MIDI;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 1; }));
+        CHECK(mgr().noteDialect(h) == NoteDialect::midi);
+        CHECK(noteOn(h, 70));
+        renderBlock(h, 64);
+        {
+            const std::vector<MockNote> got = notes();
+            REQUIRE(got.size() == 1);
+            CHECK(got[0].dialect == 2 && got[0].key == 70);
+        }
+
+        // A queued note whose dialect goes away is dropped.
+        CHECK(noteOff(h, 70));
+        gMock.state->pendingNoteDialects = CLAP_NOTE_DIALECT_MIDI2;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 2; }));
+        CHECK(mgr().noteDialect(h) == NoteDialect::none);
+        CHECK(instance->noteRingReadable() == 1);
+        renderBlock(h, 64);
+        CHECK(instance->noteRingReadable() == 0);
+        CHECK(instance->droppedNotes() == 1);
+        CHECK(notes().size() == 1);
+        CHECK(mgr().sendNote(h, true, 0, 60, 0.5, 0) == invalidParameter);
+
+        // Both spoken: the preferred one wins; a preference the host does not
+        // speak falls back to CLAP.
+        gMock.state->notePreferredDialect = CLAP_NOTE_DIALECT_MIDI;
+        gMock.state->pendingNoteDialects = CLAP_NOTE_DIALECT_CLAP |
+                                           CLAP_NOTE_DIALECT_MIDI |
+                                           CLAP_NOTE_DIALECT_MIDI2;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 3; }));
+        CHECK(mgr().noteDialect(h) == NoteDialect::midi);
+        gMock.state->notePreferredDialect = CLAP_NOTE_DIALECT_MIDI2;
+        gMock.state->pendingNoteDialects = CLAP_NOTE_DIALECT_CLAP |
+                                           CLAP_NOTE_DIALECT_MIDI |
+                                           CLAP_NOTE_DIALECT_MIDI2;
+        host->request_restart(host);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 4; }));
+        CHECK(mgr().noteDialect(h) == NoteDialect::clap);
+        gMock.state->notePreferredDialect = -1;
+
+        // note_ports.rescan while active: names are ignored; anything else is
+        // misbehaving and restarts.
+        notePorts->rescan(host, CLAP_NOTE_PORTS_RESCAN_NAMES);
+        pumpFor(0.05);
+        CHECK(instance->restartCount() == 4);
+        notePorts->rescan(host, CLAP_NOTE_PORTS_RESCAN_ALL);
+        CHECK(pumpUntil([&] { return instance->restartCount() == 5; }));
+        CHECK(sinkCount("note_ports.rescan while the plugin is active") == 1);
+        onWorker([&] {
+            notePorts->rescan(host, CLAP_NOTE_PORTS_RESCAN_ALL);
+        });
+        pumpFor(0.05);
+        CHECK(instance->restartCount() == 5);
+        CHECK(sinkCount("note_ports.rescan off the main thread") == 1);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    /// Two producers race on the note queue while the audio thread renders:
+    /// every accepted note arrives exactly once, in its producer's order.
+    void testInstrumentProducers()
+    {
+        const int h = loadSynth("mock.synth", 512);
+        REQUIRE(h > 0);
+        auto instance = mgr().getInstance(h);
+        constexpr int kProducers = 2;
+        constexpr int kPerProducer = 3000;
+        std::atomic<bool> stopAudio{false};
+        std::atomic<int> rejected{0};
+        std::atomic<int> otherErrors{0};
+        // Producer p sends on channel p; note i is on for even i, off for
+        // odd i, key i % 128 and velocity i / 4096 (exact in a double).
+        std::vector<int> accepted[kProducers];
+        std::thread audio([&] {
+            Bus bus(2, 64);
+            uint32_t ended = 0;
+            while (!stopAudio.load())
+            {
+                std::lock_guard<std::mutex> lock(gAudioMutex);
+                clapSourceDspCallback(
+                    bus.data.data(), 64, bus.size, bus.channels,
+                    static_cast<float>(kSampleRate), 0.0, 0.0, &ended,
+                    reinterpret_cast<void *>(static_cast<uintptr_t>(h)));
+            }
+        });
+        std::vector<std::thread> producers;
+        for (int p = 0; p < kProducers; ++p)
+        {
+            producers.emplace_back([&, p] {
+                for (int i = 0; i < kPerProducer; ++i)
+                {
+                    const PlayerErrors e = mgr().sendNote(
+                        h, i % 2 == 0, p, i % 128, i / 4096.0, 0);
+                    if (e == noError)
+                        accepted[p].push_back(i);
+                    else if (e == outOfMemory)
+                        ++rejected;
+                    else
+                        ++otherErrors;
+                }
+            });
+        }
+        for (auto &t : producers)
+            t.join();
+        CHECK(pumpUntil([&] { return instance->noteRingReadable() == 0; }));
+        stopAudio = true;
+        audio.join();
+        CHECK(otherErrors.load() == 0);
+        CHECK(instance->droppedNotes() == 0);
+        CHECK(accepted[0].size() + accepted[1].size() +
+                  static_cast<size_t>(rejected.load()) ==
+              static_cast<size_t>(kProducers * kPerProducer));
+        std::vector<int> received[kProducers];
+        bool fieldsOk = true;
+        for (const MockNote &n : notes())
+        {
+            if (n.channel < 0 || n.channel >= kProducers)
+            {
+                fieldsOk = false;
+                continue;
+            }
+            const int i = static_cast<int>(n.velocity * 4096.0);
+            if (n.dialect != 1 || n.on != (i % 2 == 0 ? 1 : 0) ||
+                n.key != i % 128 || n.velocity != i / 4096.0)
+                fieldsOk = false;
+            received[n.channel].push_back(i);
+        }
+        CHECK(fieldsOk);
+        for (int p = 0; p < kProducers; ++p)
+            CHECK(received[p] == accepted[p]);
+        CHECK(gMock.state->violations.load() == 0);
+        CHECK(mgr().unloadPlugin(h) == noError);
+    }
+
+    void testInstrumentAbi()
+    {
+        auto callback = reinterpret_cast<SoLoudSourceDspCallback_t>(
+            soloud_clapGetSourceCallbackPtr());
+        CHECK(callback == &clapSourceDspCallback);
+        int handle = -1;
+        PlayerErrors loaded = unknownError;
+        onWorker([&] {
+            loaded = soloud_clapLoadInstrument(gMockPath.c_str(), "mock.synth",
+                                               kSampleRate, 512, 2, &handle);
+        });
+        REQUIRE(loaded == noError && handle > 0);
+        CHECK(soloud_clapGetNoteDialect(handle) == clapNoteDialectClap);
+        CHECK(soloud_clapGetNoteDialect(0) == clapNoteDialectNone);
+        CHECK(soloud_clapSendNote(handle, 1, 0, 60, 0.5, 4) == noError);
+        CHECK(soloud_clapSendNote(handle, 1, 0, 128, 0.5, 0) ==
+              invalidParameter);
+        CHECK(soloud_clapSendNote(0, 1, 0, 60, 0.5, 0) == invalidParameter);
+        void *userData = soloud_clapGetPluginUserData(handle);
+        REQUIRE(userData != nullptr);
+        Bus bus(2, 64);
+        uint32_t ended = 7;
+        unsigned rendered = 0;
+        std::thread audio([&] {
+            std::lock_guard<std::mutex> lock(gAudioMutex);
+            rendered = callback(bus.data.data(), 64, 64, 2,
+                                static_cast<float>(kSampleRate), 0.0, 0.0,
+                                &ended, userData);
+        });
+        audio.join();
+        CHECK(rendered == 64 && ended == 0);
+        CHECK(level(bus, 0.0f, 0, 4) && level(bus, 0.1f, 4, 64));
+        CHECK(notes().size() == 1);
+
+        int bad = -1;
+        PlayerErrors missing = noError;
+        onWorker([&] {
+            missing = soloud_clapLoadInstrument(gMockPath.c_str(), "mock.nope",
+                                                kSampleRate, 512, 2, &bad);
+        });
+        CHECK(missing != noError && bad == 0);
+        PlayerErrors unloaded = unknownError;
+        onWorker([&] { unloaded = soloud_clapUnloadPlugin(handle); });
+        CHECK(unloaded == noError);
+        CHECK(soloud_clapGetNoteDialect(handle) == clapNoteDialectNone);
+    }
+
     struct Test
     {
         const char *name;
@@ -5347,6 +5943,13 @@ namespace
         {"slot_mapping_race", testSlotMappingRace},
         {"slot_mapping_baseline", testSlotMappingBaseline},
         {"slot_mapping_baseline_rescan", testSlotMappingBaselineRescan},
+        {"instrument_load", testInstrumentLoad},
+        {"instrument_notes", testInstrumentNotes},
+        {"instrument_queue", testInstrumentQueue},
+        {"instrument_producers", testInstrumentProducers},
+        {"instrument_midi", testInstrumentMidi},
+        {"instrument_restart", testInstrumentRestart},
+        {"instrument_abi", testInstrumentAbi},
     };
 } // namespace
 
@@ -5368,7 +5971,7 @@ int main(int argc, char **argv)
     gBadMock = loadMockApi(gBadVersionPath);
     if (gMock.state == nullptr || gMock.setHook == nullptr ||
         gMock.log == nullptr || gMock.reset == nullptr ||
-        gMock.received == nullptr ||
+        gMock.received == nullptr || gMock.notes == nullptr ||
         gBadMock.state == nullptr)
     {
         std::fprintf(stderr, "cannot load the mock bundles in %s\n", gWork.c_str());

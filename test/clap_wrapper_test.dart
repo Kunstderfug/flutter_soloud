@@ -134,16 +134,61 @@ void main() {
       expect(event(ClapHostEventType.stateDirty, 8).rescanFlags, 0);
     });
 
+    test('note end events decode their note', () {
+      const end = ClapHostEvent(
+        type: ClapHostEventType.noteEnd,
+        paramId: 0xffffffff,
+        value: 60,
+        flags: (1 << 16) | 15,
+      );
+      expect(end.noteId, -1);
+      expect(end.noteKey, 60);
+      expect(end.noteChannel, 15);
+      expect(end.notePortIndex, 1);
+      // -1 (any) for the key, channel and port of a wildcard note.
+      const any = ClapHostEvent(
+        type: ClapHostEventType.noteEnd,
+        paramId: 7,
+        value: -1,
+        flags: 0xffffffff,
+      );
+      expect(any.noteId, 7);
+      expect(any.noteKey, -1);
+      expect(any.noteChannel, -1);
+      expect(any.notePortIndex, -1);
+      // Other types carry no note.
+      const value = ClapHostEvent(
+        type: ClapHostEventType.paramValue,
+        paramId: 3,
+        value: 60,
+        flags: 1,
+      );
+      expect(value.noteId, -1);
+      expect(value.noteKey, -1);
+      expect(value.noteChannel, -1);
+      expect(value.notePortIndex, -1);
+      expect(end.isDontRecord, isFalse);
+    });
+
+    test('note dialects map to the native values', () {
+      expect(ClapNoteDialect.values.map((d) => d.value), [0, 1, 2]);
+      for (final dialect in ClapNoteDialect.values) {
+        expect(ClapNoteDialect.fromValue(dialect.value), dialect);
+      }
+      expect(ClapNoteDialect.fromValue(3), ClapNoteDialect.none);
+      expect(ClapNoteDialect.fromValue(-1), ClapNoteDialect.none);
+    });
+
     test('event types map to the native values', () {
       expect(
         ClapHostEventType.values.map((t) => t.value),
-        List<int>.generate(10, (i) => i + 1),
+        List<int>.generate(11, (i) => i + 1),
       );
       for (final type in ClapHostEventType.values) {
         expect(ClapHostEventType.fromValue(type.value), type);
       }
       expect(ClapHostEventType.fromValue(0), isNull);
-      expect(ClapHostEventType.fromValue(11), isNull);
+      expect(ClapHostEventType.fromValue(12), isNull);
     });
 
     test('plugin features classify effects and instruments', () {
@@ -308,6 +353,19 @@ void main() {
       );
     });
 
+    test('loadInstrument needs support and an initialized engine', () {
+      expect(SoLoud.instance.isInitialized, isFalse);
+      expect(
+        () => host.loadInstrument(
+          bundlePath: '/nonexistent/Mock.clap',
+          pluginId: 'mock.synth',
+        ),
+        host.isSupported
+            ? throwsA(isA<SoLoudNotInitializedException>())
+            : throwsA(isA<SoLoudCppException>()),
+      );
+    });
+
     test('scan is empty when unsupported', () {
       if (!host.isSupported) {
         expect(host.scanBundle('/nonexistent/Mock.clap'), isEmpty);
@@ -329,6 +387,10 @@ void main() {
           bundlePath: '/any/Plugin.clap',
           slot: const CustomFilterGlobal(0),
         ),
+        throwsA(isA<SoLoudCppException>()),
+      );
+      expect(
+        () => host.loadInstrument(bundlePath: '/any/Plugin.clap'),
         throwsA(isA<SoLoudCppException>()),
       );
     });

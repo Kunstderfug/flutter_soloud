@@ -353,6 +353,23 @@ typedef enum ClapHostEventType {
   clapEventStateDirty = 9,
   /// The plugin's editor window was closed (Phase 4b).
   clapEventEditorClosed = 10,
+  /// An instrument ended a note (Phase 5b). [paramId] is the note id
+  /// (0xffffffff: none), [value] the key, flags the port index (high 16 bits)
+  /// and the channel (low 16 bits), each 0xffff for a wildcard.
+  clapEventNoteEnd = 11,
 } ClapHostEventType_t;
+
+/// The note dialect soloud_clapGetNoteDialect() reports.
+///
+/// WARNING: Keep these in sync with `NoteDialect` in
+/// `src/clap/clap_instance.h` and `ClapNoteDialect` in `lib/src/enums.dart`.
+typedef enum ClapNoteDialect {
+  /// No note port this host speaks: soloud_clapSendNote() fails.
+  clapNoteDialectNone = 0,
+  /// CLAP note events.
+  clapNoteDialectClap = 1,
+  /// MIDI 1.0 messages.
+  clapNoteDialectMidi = 2,
+} ClapNoteDialect_t;
 
 #endif // ENUMS_H

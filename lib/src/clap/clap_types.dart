@@ -155,11 +155,11 @@ class ClapParamInfo {
 }
 
 /// An event a loaded CLAP plugin reported, taken by
-/// `ClapEffectPlugin.drainEvents`.
+/// `ClapPluginBase.drainEvents`.
 ///
 /// Events arrive in order. A [ClapHostEventType.resync] means events were
 /// lost: re-read every parameter value. With [isParamsReset] the parameter
-/// list itself changed, and `ClapEffectPlugin.parameters` has been refreshed.
+/// list itself changed, and `ClapPluginBase.parameters` has been refreshed.
 @experimental
 @immutable
 class ClapHostEvent {
@@ -204,6 +204,23 @@ class ClapHostEvent {
   int get rescanFlags =>
       type == ClapHostEventType.paramsRescan ? flags : 0;
 
+  bool get _isNoteEnd => type == ClapHostEventType.noteEnd;
+
+  /// The note id of a [ClapHostEventType.noteEnd] event, or -1 (none or
+  /// any; notes sent by the host have none).
+  int get noteId => _isNoteEnd ? paramId.toSigned(32) : -1;
+
+  /// The key (`0..127`) of a [ClapHostEventType.noteEnd] event, or -1 (any).
+  int get noteKey => _isNoteEnd && value.isFinite ? value.toInt() : -1;
+
+  /// The channel (`0..15`) of a [ClapHostEventType.noteEnd] event, or -1
+  /// (any).
+  int get noteChannel => _isNoteEnd ? (flags & 0xffff).toSigned(16) : -1;
+
+  /// The note port of a [ClapHostEventType.noteEnd] event, or -1 (any).
+  int get notePortIndex =>
+      _isNoteEnd ? ((flags >> 16) & 0xffff).toSigned(16) : -1;
+
   @override
   String toString() =>
       'ClapHostEvent(type: ${type.name}, paramId: $paramId, value: $value, '
@@ -225,7 +242,7 @@ enum ClapParamEditKind {
 
 /// A parameter change a CLAP plugin made itself, usually because the user
 /// moved a control in its editor. Delivered by
-/// `ClapEffectPlugin.paramEdits`.
+/// `ClapPluginBase.paramEdits`.
 @experimental
 @immutable
 class ClapParamEditEvent {
@@ -254,7 +271,7 @@ class ClapParamEditEvent {
 
   /// [value] normalized to `0..1` with [ClapParamInfo.toNormalized], or
   /// null for a gesture or a parameter missing from
-  /// `ClapEffectPlugin.parameters` when the event was delivered.
+  /// `ClapPluginBase.parameters` when the event was delivered.
   final double? normalizedValue;
 
   /// The plugin asked not to record this change as automation

@@ -116,6 +116,33 @@ void main() {
     });
   });
 
+  test('instrument load and notes validate their arguments', () {
+    using((arena) {
+      final handle = arena<Int>()..value = 42;
+      final path = '/nonexistent/Mock.clap'.toNativeUtf8(allocator: arena);
+      final id = 'mock.synth'.toNativeUtf8(allocator: arena);
+      expect(
+        native.soloud_clapLoadInstrument(
+          path.cast(),
+          id.cast(),
+          0, // An invalid sample rate fails before any file access.
+          512,
+          2,
+          handle,
+        ),
+        rejected,
+      );
+      expect(handle.value, 0);
+    });
+    expect(native.soloud_clapSendNote(12345, 1, 0, 60, 0.5, 0), rejected);
+    expect(native.soloud_clapGetNoteDialect(12345), 0);
+    final source = native.soloud_clapGetSourceCallbackPtr();
+    expect(source == nullptr, !supported);
+    if (supported) {
+      expect(source, isNot(native.soloud_clapGetFilterCallbackPtr()));
+    }
+  });
+
   test('unload of an unknown handle and the DSP seam', () {
     expect(
       native.soloud_clapUnloadPlugin(12345),

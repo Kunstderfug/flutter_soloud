@@ -4212,6 +4212,50 @@ PlayerErrors soloud_clapLoadEffect(
   );
 }
 
+/// Like soloud_clapLoadEffect(), for the instrument [pluginId]: render it
+/// as a custom audio source with soloud_clapGetSourceCallbackPtr() and play
+/// it with soloud_clapSendNote(). Its audio inputs are silent. [channels] is
+/// the source's channel count (1..32); channels past the plugin's main
+/// output are silent.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Pointer<ffi.Char>,
+    ffi.Pointer<ffi.Char>,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.UnsignedInt,
+    ffi.Pointer<ffi.Int>,
+  )
+>(symbol: 'soloud_clapLoadInstrument')
+external int _soloud_clapLoadInstrument(
+  ffi.Pointer<ffi.Char> bundlePath,
+  ffi.Pointer<ffi.Char> pluginId,
+  int sampleRate,
+  int maxBlockSize,
+  int channels,
+  ffi.Pointer<ffi.Int> outPluginHandle,
+);
+
+PlayerErrors soloud_clapLoadInstrument(
+  ffi.Pointer<ffi.Char> bundlePath,
+  ffi.Pointer<ffi.Char> pluginId,
+  int sampleRate,
+  int maxBlockSize,
+  int channels,
+  ffi.Pointer<ffi.Int> outPluginHandle,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapLoadInstrument(
+      bundlePath,
+      pluginId,
+      sampleRate,
+      maxBlockSize,
+      channels,
+      outPluginHandle,
+    ),
+  );
+}
+
 /// Unloads [pluginHandle]: the audio thread stops using it at once and the
 /// plugin is torn down on the main thread. invalidParameter for an unknown
 /// or already unloaded handle. Callable from any non-audio thread that
@@ -4242,6 +4286,67 @@ external ffi.Pointer<ffi.Void> soloud_clapGetFilterCallbackPtr();
 /// for a non-positive handle or when CLAP hosting is not compiled in.
 @ffi.Native<ffi.Pointer<ffi.Void> Function(ffi.Int)>()
 external ffi.Pointer<ffi.Void> soloud_clapGetPluginUserData(int pluginHandle);
+
+/// Returns `clapSourceDspCallback` (a `SoLoudSourceDspCallback_t`) for
+/// `createCustomAudioSource(dspCallbackAddress: ...)` with the
+/// soloud_clapGetPluginUserData() of an instrument, or null when CLAP
+/// hosting is not compiled in. The source ends once the instrument is
+/// unloaded; it is silent for an effect handle.
+@ffi.Native<ffi.Pointer<ffi.Void> Function()>()
+external ffi.Pointer<ffi.Void> soloud_clapGetSourceCallbackPtr();
+
+/// Queues a note on ([isOn] != 0) or off for [key] (0..127) on [channel]
+/// (0..15) of note port 0, at [sampleOffset] frames into the next rendered
+/// block (clamped to the block). [velocity] (0..1, clamped) is sent as is
+/// to a CLAP-dialect plugin and scaled to 1..127 (on) or 0..127 (off) for
+/// a MIDI one. Any non-audio thread; never waits for the main thread.
+/// invalidParameter for an unknown handle, a value out of range or a
+/// plugin without a supported note dialect; outOfMemory when the queue
+/// (1024 notes) is full.
+@ffi.Native<
+  ffi.UnsignedInt Function(
+    ffi.Int,
+    ffi.Int,
+    ffi.Int,
+    ffi.Int,
+    ffi.Double,
+    ffi.UnsignedInt,
+  )
+>(symbol: 'soloud_clapSendNote')
+external int _soloud_clapSendNote(
+  int pluginHandle,
+  int isOn,
+  int channel,
+  int key,
+  double velocity,
+  int sampleOffset,
+);
+
+PlayerErrors soloud_clapSendNote(
+  int pluginHandle,
+  int isOn,
+  int channel,
+  int key,
+  double velocity,
+  int sampleOffset,
+) {
+  return PlayerErrors.fromValue(
+    _soloud_clapSendNote(
+      pluginHandle,
+      isOn,
+      channel,
+      key,
+      velocity,
+      sampleOffset,
+    ),
+  );
+}
+
+/// The dialect of note port 0 (ClapNoteDialect), or clapNoteDialectNone for
+/// an unknown handle or a plugin without a note port this host speaks. It
+/// can change when the plugin restarts. Any thread.
+@ffi.Native<ffi.Int Function(ffi.Int)>()
+external int soloud_clapGetNoteDialect(int pluginHandle);
 
 /// The plugin's latency in frames, or 0 (no latency extension, unknown
 /// handle). Any thread.

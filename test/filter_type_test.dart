@@ -4,7 +4,9 @@ import 'package:flutter_soloud/src/bindings/flutter_soloud_ffigen.dart'
     as native;
 import 'package:flutter_soloud/src/filters/amplitude_modulator_filter.dart';
 import 'package:flutter_soloud/src/filters/classical_leveler_filter.dart';
+import 'package:flutter_soloud/src/filters/custom_filter.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
+import 'package:flutter_soloud/src/sound_hash.dart';
 import 'package:test/test.dart';
 
 /// Parses the `FilterType` enumerators of `src/enums.h` in declaration order.
@@ -64,7 +66,8 @@ void main() {
       FilterType.compressorFilter: 10,
       FilterType.parametricEq: 11,
       FilterType.amplitudeModulatorFilter: 12,
-      FilterType.classicalLevelerFilter: 13,
+      FilterType.customFilter: 13,
+      FilterType.classicalLevelerFilter: 14,
     };
     for (final MapEntry(key: type, value: index) in expected.entries) {
       expect(type.index, index, reason: '$type moved');
@@ -72,7 +75,10 @@ void main() {
   });
 
   test('classical leveler ranges, defaults and transport match native', () {
-    expect(native.FilterType.fromValue(13), native.FilterType.ClassicalLevelerFilter);
+    expect(
+      native.FilterType.fromValue(14),
+      native.FilterType.ClassicalLevelerFilter,
+    );
     expect(FilterType.classicalLevelerFilter.numParameters, 57);
     expect(ClassicalLeveler.values.length, 9);
     expect(ClassicalLeveler.values.map((p) => p.def).toList(),
@@ -95,12 +101,41 @@ void main() {
       native.FilterType.fromValue(type.index),
       native.FilterType.AmplitudeModulatorFilter,
     );
-    expect(type.numParameters, 2);
+    expect(type.numParameters, 3);
     expect(type.toString(), 'Amplitude Modulator');
   });
 
+  test(
+    'custom filter maps to the native CustomFilter and supports 8 slots',
+    () {
+      const type = FilterType.customFilter;
+      expect(
+        native.FilterType.fromValue(type.index),
+        native.FilterType.CustomFilter,
+      );
+      expect(type.numParameters, 8);
+      expect(type.toString(), 'Custom Filter');
+
+      const globalFilters = FiltersGlobal();
+      final globalSlots = globalFilters.customFilters;
+      expect(globalSlots.length, CustomFilterSlot.maxSlots);
+      for (var i = 0; i < CustomFilterSlot.maxSlots; i++) {
+        expect(globalSlots[i].slotIndex, i);
+        expect(globalFilters.customFilter(i).slotIndex, i);
+        expect(globalSlots[i].wet.slotIndex, i);
+        expect(globalSlots[i].wet.attributeId, 0);
+        expect(globalSlots[i].param(3, min: -12, max: 12).attributeId, 3);
+      }
+
+      const singleFilters = FiltersSingle(soundHash: SoundHash(42));
+      final singleSlots = singleFilters.customFilters;
+      expect(singleSlots.length, CustomFilterSlot.maxSlots);
+      expect(singleFilters.customFilter(7).slotIndex, 7);
+    },
+  );
+
   test('amplitude modulator parameters', () {
-    expect(AmplitudeModulatorEnum.values.length, 2);
+    expect(AmplitudeModulatorEnum.values.length, 3);
 
     expect(AmplitudeModulatorEnum.wet.index, 0);
     expect(AmplitudeModulatorEnum.wet.toString(), 'Wet');
@@ -114,10 +149,17 @@ void main() {
     expect(AmplitudeModulatorEnum.frequency.max, 20000);
     expect(AmplitudeModulatorEnum.frequency.def, 440);
 
+    expect(AmplitudeModulatorEnum.waveform.index, 2);
+    expect(AmplitudeModulatorEnum.waveform.toString(), 'Waveform');
+    expect(AmplitudeModulatorEnum.waveform.min, 0);
+    expect(AmplitudeModulatorEnum.waveform.max, 3);
+    expect(AmplitudeModulatorEnum.waveform.def, 0);
+
     const global = AmplitudeModulatorGlobal();
     expect(global.filterType, FilterType.amplitudeModulatorFilter);
     expect(global.queryWet, AmplitudeModulatorEnum.wet);
     expect(global.queryFrequency, AmplitudeModulatorEnum.frequency);
+    expect(global.queryWaveform, AmplitudeModulatorEnum.waveform);
   });
 
   test('amplitude modulator ranges match the native filter', () {
@@ -142,6 +184,14 @@ void main() {
     expect(
       nativeBound('getParamMax', 'FREQUENCY'),
       AmplitudeModulatorEnum.frequency.max,
+    );
+    expect(
+      nativeBound('getParamMin', 'WAVEFORM'),
+      AmplitudeModulatorEnum.waveform.min,
+    );
+    expect(
+      nativeBound('getParamMax', 'WAVEFORM'),
+      AmplitudeModulatorEnum.waveform.max,
     );
   });
 }

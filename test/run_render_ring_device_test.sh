@@ -6,38 +6,49 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
-source test/native_decoder_build_flags.sh
 
 OUT="${TMPDIR:-/tmp}/render_ring_device_test"
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-# pffft.c is C99: compile it as C, matching the production CMake build.
-cc -std=gnu99 -O2 -c \
-    -I src/pffft \
-    -o "$WORK_DIR/pffft.o" \
-    src/pffft/pffft.c
+# The analyzer the device callback feeds uses pffft, which is C.
+cc -std=gnu99 -O2 -c -I src/pffft -o "$WORK_DIR/pffft.o" src/pffft/pffft.c
 
-c++ -std=c++17 -O2 -Wall -Wextra -pthread \
+# The Wav source pulls in the decoders.
+EXTRA_SRC=()
+EXTRA_LDFLAGS=()
+if [ "$(uname -s)" = "Darwin" ]; then
+    EXTRA_SRC+=("src/native_decoder/os_decoder_apple.mm")
+    EXTRA_SRC+=("src/audiobuffer/aac_stream_decoder_apple.mm")
+    EXTRA_LDFLAGS+=("-framework" "AudioToolbox" "-framework" "CoreFoundation" "-framework" "Foundation")
+else
+    EXTRA_SRC+=("src/audiobuffer/aac_stream_decoder_linux.cpp")
+fi
+
+c++ -std=c++17 -O2 -Wall -Wextra -pthread ${EXTRA_CXXFLAGS:-} \
     -DWITH_MINIAUDIO \
     -DNO_XIPH_LIBS \
     -I src/soloud/include \
     -I src \
-    "${NATIVE_DECODER_FLAGS[@]}" \
-    "${NATIVE_DECODER_PLATFORM_SOURCES[@]}" \
+    -I src/native_decoder \
+    -I src/audiobuffer \
     -o "$OUT" \
     test/render_ring_device_test.cpp \
-    "$WORK_DIR/pffft.o" \
     src/soloud_common.cpp \
     src/analyzer.cpp \
     src/soloud/src/core/*.cpp \
+    src/soloud/src/filter/soloud_biquadresonantfilter.cpp \
     src/soloud/src/audiosource/wav/*.cpp \
     src/audiobuffer/mp3_stream_decoder.cpp \
-    src/audiobuffer/aac_stream_decoder.cpp \
     src/audiobuffer/m4a_metadata.cpp \
+    src/audiobuffer/aac_stream_decoder.cpp \
+    src/native_decoder/*.cpp \
+    "${EXTRA_SRC[@]}" \
     src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp \
     src/mixeroutput/*.cpp \
-    -ldl -lm
+    "$WORK_DIR/pffft.o" \
+    -ldl -lm \
+    "${EXTRA_LDFLAGS[@]}"
 
 "$OUT"

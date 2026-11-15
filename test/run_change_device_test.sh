@@ -15,11 +15,13 @@ OUT="${TMPDIR:-/tmp}/change_device_test"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-# pffft.c is C99: compile it as C, matching the production CMake build.
-cc -std=gnu99 -O2 -c \
-    -I src/pffft \
-    -o "$WORK_DIR/pffft.o" \
-    src/pffft/pffft.c
+# The analyzer the device callback feeds uses pffft, which is C.
+cc -std=gnu99 -O2 -c -I src/pffft -o "$WORK_DIR/pffft.o" src/pffft/pffft.c
+
+EXTRA_LDFLAGS=()
+if [ "$(uname -s)" = "Darwin" ]; then
+    EXTRA_LDFLAGS+=(-framework AudioToolbox -framework CoreFoundation -framework CoreAudio -framework Foundation)
+fi
 
 c++ -std=c++17 -O2 -Wall -Wextra -pthread \
     -DWITH_MINIAUDIO \
@@ -28,12 +30,13 @@ c++ -std=c++17 -O2 -Wall -Wextra -pthread \
     -I src \
     -o "$OUT" \
     test/change_device_test.cpp \
-    "$WORK_DIR/pffft.o" \
     src/soloud_common.cpp \
     src/analyzer.cpp \
     src/soloud/src/core/*.cpp \
     src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp \
     src/mixeroutput/*.cpp \
-    -ldl -lm
+    "$WORK_DIR/pffft.o" \
+    -ldl -lm \
+    "${EXTRA_LDFLAGS[@]}"
 
 "$OUT"

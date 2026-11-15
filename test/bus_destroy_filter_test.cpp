@@ -27,12 +27,22 @@
 #include "soloud_bus.h"
 
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <thread>
 #include <vector>
 
 namespace {
+
+// The value of ClassicalLeveler parameter [attribute], or NaN when it cannot
+// be read.
+float readParam(Filters &filters, int attribute) {
+  float value = NAN;
+  if (!filters.getFilterParams(0, ClassicalLevelerFilter, attribute, &value))
+    return NAN;
+  return value;
+}
 
 constexpr unsigned int kSampleRate = 44100;
 constexpr unsigned int kBufferSize = 512;
@@ -118,13 +128,13 @@ void busParameterReadsUseTheBusVoice() {
         bus.handle = soloud.play(bus.bus);
         EXPECT(bus.filters.addFilter(ClassicalLevelerFilter) == noError, "bus add failed");
         bus.filters.setFilterParams(0, ClassicalLevelerFilter, 1, 75);
-        EXPECT(bus.filters.getFilterParams(0, ClassicalLevelerFilter, 1) == 75,
+        EXPECT(readParam(bus.filters, 1) == 75,
             "bus parameter read used a global slot");
-        EXPECT(global.getFilterParams(0, ClassicalLevelerFilter, 1) == 10,
+        EXPECT(readParam(global, 1) == 10,
             "bus parameter update affected global filter");
-        EXPECT(bus.filters.getFilterParams(0, ClassicalLevelerFilter, 9) == 0,
+        EXPECT(readParam(bus.filters, 9) == 0,
             "new bus gain must be zero");
-        EXPECT(bus.filters.getFilterParams(0, ClassicalLevelerFilter, 10) == 0,
+        EXPECT(readParam(bus.filters, 10) == 0,
             "new bus look-ahead must be inactive");
         global.removeFilter(ClassicalLevelerFilter);
     }

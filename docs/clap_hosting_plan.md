@@ -607,3 +607,20 @@ GPhil (`/Volumes/DEV/gphil-flutter`, `v2_daw`) now hosts CLAP effects in its exp
 - The resize expectation was derived from the observed `AXSize` capability, so a resizable editor that regressed to fixed size would still pass.
 - Fix: each probe now declares its expected resizability, and the test asserts the reported value against it.
 - Re-run: all four editors pass. A deliberately wrong declaration (ZeroEQ.clap marked fixed) fails on `resizability`.
+
+**Rebase and landing (2026-11-15):** the first push of `v2_daw` was rejected because another thread had landed VST3 rescan work on it (11 commits). The CLAP commit was rebased onto `origin/v2_daw` `7381ed69` and landed as `80b2a547`. Integration decisions:
+- `Vst3ChainBackend.load` takes the full `Vst3BundleRef`, because it needs `format`. The other thread's fakes and debug-bridge test were adapted.
+- Newer-copy detection keys by format and bundle id, so a VST3 and a CLAP build of one plugin are not copies of each other.
+- `readVst3Bundle` reads Info.plist for both formats and `moduleinfo.json` only for VST3. A CLAP bundle's kind stays unknown until it is loaded.
+- A CLAP bundle whose plugins are all instruments throws `Vst3NoEffectClassError`, so it is learned and hidden like a VST3 instrument. An empty scan throws a `StateError`.
+- The debug command bridge reports `format` on bundles and chain entries.
+- The add dialog keeps the rescan tile and shows a VST3 or CLAP badge on each bundle.
+
+Post-rebase evidence, run serially:
+- Analyze shows only the 13 pre-existing infos.
+- The vst3, debug-bridge and tab tests pass (54).
+- The full suite has 4171 passed and 1 skipped. One failure, `user_pdf_dialog_test`, passes 3/3 alone and is untouched by this commit, so it is a full-suite flake.
+- Panel live test: 150 visible plugins and 40 hidden instruments. TDR Nova VST3 (184 samples) and ZeroEQ CLAP (0 samples) load, and every probe reloads after Rescan.
+- Editor driver: all four editors open, resize (Airwindows stays fixed, as declared), close and reopen.
+
+Sol reviewed the integration delta in a fresh round and returned ACCEPT with no findings. `v2_daw` was pushed as `80b2a547`.

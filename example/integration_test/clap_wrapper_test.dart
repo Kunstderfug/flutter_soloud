@@ -8,7 +8,9 @@
 //   flutter test integration_test/clap_wrapper_test.dart -d macos
 //
 // It uses ZeroEQ.clap (or CLAP_TEST_BUNDLE) from the standard CLAP folders
-// and skips when none is installed. The mock bundle group runs with
+// and skips when none is installed. Every bundle in those folders is also
+// loaded once: processed on the master chain, its state round-tripped and
+// its editor opened. The mock bundle group runs with
 // CLAP_MOCK_BUNDLE set to the MockClap.clap that test/run_clap_host_test.sh
 // builds (in $TMPDIR/clap_host_test).
 import 'dart:ffi' as ffi;
@@ -51,6 +53,18 @@ Future<double> _waitForValue(
     value = plugin.getParameterValue(paramId);
   }
   return value;
+}
+
+/// Polls [done] for up to [timeout] and returns its last result.
+Future<bool> _waitUntil(
+  bool Function() done, {
+  Duration timeout = const Duration(seconds: 3),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!done() && DateTime.now().isBefore(deadline)) {
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
+  return done();
 }
 
 void main() {
@@ -416,6 +430,219 @@ void main() {
     });
   });
 
+  // Every bundle in the standard CLAP folders, so a plugin that misbehaves
+  // in this host shows up here before it does in an app.
+  final installed = !Platform.isMacOS
+      ? <String>[]
+      : [
+          for (final dir in host.standardSearchPaths)
+            if (Directory(dir).existsSync())
+              for (final entry in Directory(dir).listSync())
+                if (entry.path.endsWith('.clap')) entry.path,
+        ];
+  final installedSkip = !Platform.isMacOS
+      ? 'CLAP hosting is macOS-only'
+      : installed.isEmpty
+      ? 'no CLAP bundles are installed'
+      : null;
+
+  group('installed CLAP plugins', skip: installedSkip, () {
+    late AudioSource tone;
+    late SoundHandle voice;
+
+    setUpAll(() async {
+      await SoLoud.instance.init(sampleRate: 48000, bufferSize: 512);
+      SoLoud.instance.setVisualizationEnabled(true);
+      tone = await SoLoud.instance.loadWaveform(WaveForm.sin, false, 1, 0);
+      SoLoud.instance.setWaveformFreq(tone, 440);
+      voice = SoLoud.instance.play(tone, volume: 0.05);
+    });
+
+    tearDownAll(() async {
+      host.unloadAll();
+      await SoLoud.instance.stop(voice);
+      await SoLoud.instance.disposeSource(tone);
+      SoLoud.instance
+        ..setVisualizationEnabled(false)
+        ..deinit();
+    });
+
+    /// The output peak once the loaded plugin has run for a while. A meter
+    /// smoke check only: it is read after the engine's clipper and output
+    /// scaler, and arbitrary plugins may be silent or loud at their
+    /// defaults. The mock bundle group proves processing.
+    Future<double> settledPeak() async {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      return SoLoud.instance.getApproximateVolume(0);
+    }
+
+    /// Opens and closes the editor of [plugin] when it has one. Checks the
+    /// lifecycle the API reports, not what is on screen.
+    Future<void> exerciseEditor(ClapPluginBase plugin, String name) async {
+      if (!plugin.hasEditor) {
+        return;
+      }
+      expect(plugin.openEditorWindow(title: name), isTrue, reason: name);
+      expect(plugin.isEditorOpen, isTrue, reason: name);
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      plugin.closeEditorWindow();
+      expect(plugin.isEditorOpen, isFalse, reason: name);
+    }
+
+    /// Round-trips the state of [plugin] and says how far that was checked:
+    /// `none` without a CLAP state extension (it is optional), `smoke` when
+    /// no parameter takes an observable edit, else `verified`: a writable
+    /// parameter moved well away from its saved value comes back to it.
+    Future<String> roundTripState(ClapPluginBase plugin, String name) async {
+      final Uint8List state;
+      try {
+        state = plugin.saveState();
+      } on SoLoudNotImplementedException {
+        return 'none';
+      }
+      final candidates = plugin.parameters
+          .where(
+            (p) =>
+                !p.isStepped &&
+                !p.isReadOnly &&
+                !p.isHidden &&
+                p.maxValue > p.minValue,
+          )
+          .take(4);
+      // A parameter linked to another (a low cutoff below a high one) may
+      // clamp an edit: try both directions, then the next parameter.
+      for (final param in candidates) {
+        final id = param.paramId;
+        final span = param.maxValue - param.minValue;
+        final saved = plugin.getParameterValue(id);
+        final savedNormalized = param.toNormalized(saved);
+        final targets = savedNormalized < 0.5 ? [0.8, 0.0] : [0.2, 1.0];
+        var moved = false;
+        for (final target in targets) {
+          // At least 0.3 of the range away, so rounding cannot hide it.
+          if ((target - savedNormalized).abs() < 0.3) {
+            continue;
+          }
+          plugin.setParameterValue(id, param.fromNormalized(target));
+          moved = await _waitUntil(
+            () => (plugin.getParameterValue(id) - saved).abs() > span * 0.1,
+            timeout: const Duration(seconds: 1),
+          );
+          if (moved) {
+            break;
+          }
+        }
+        if (!moved) {
+          continue;
+        }
+        // Once an edit is seen, the restore must bring it back.
+        plugin.restoreState(state);
+        expect(
+          await _waitUntil(
+            () => (plugin.getParameterValue(id) - saved).abs() <= span * 1e-3,
+          ),
+          isTrue,
+          reason:
+              '$name ${param.name}: ${plugin.getParameterValue(id)} after '
+              'restoring $saved',
+        );
+        return 'verified';
+      }
+      plugin.restoreState(state);
+      return 'smoke';
+    }
+
+    /// An effect in a global slot, with the group's tone playing.
+    Future<void> checkEffect(String bundle, ClapPluginInfo info) async {
+      final name = '${info.name} (${info.pluginId})';
+      const slot = CustomFilterGlobal(0);
+      final effect = host.loadEffect(
+        bundlePath: bundle,
+        pluginId: info.pluginId,
+        slot: slot,
+      );
+      try {
+        expect(effect.latencySamples, greaterThanOrEqualTo(0), reason: name);
+        final peak = await settledPeak();
+        expect(peak.isFinite, isTrue, reason: '$name peak $peak');
+        final state = await roundTripState(effect, name);
+        await exerciseEditor(effect, name);
+        debugPrint(
+          'CLAP installed: $name effect, params ${effect.parameters.length}, '
+          'latency ${effect.latencySamples}, editor ${effect.hasEditor}, '
+          'state $state, peak $peak',
+        );
+      } finally {
+        effect.dispose();
+      }
+      expect(slot.index, lessThan(0), reason: name);
+    }
+
+    /// An instrument playing one held note, with the group's tone paused.
+    Future<void> checkInstrument(String bundle, ClapPluginInfo info) async {
+      final name = '${info.name} (${info.pluginId})';
+      final synth = host.loadInstrument(
+        bundlePath: bundle,
+        pluginId: info.pluginId,
+      );
+      SoundHandle? synthVoice;
+      SoLoud.instance.setPause(voice, true);
+      try {
+        synthVoice = SoLoud.instance.play(synth.audioSource);
+        final dialect = synth.noteDialect;
+        // A plugin without a dialect this host speaks gets no notes.
+        if (dialect != ClapNoteDialect.none) {
+          synth.noteOn(pitch: 60);
+        }
+        // Measured while the note is held; finite only, since arbitrary
+        // instruments may need more than a note to sound. The mock bundle
+        // group proves a source is mixed.
+        final peak = await settledPeak();
+        if (dialect != ClapNoteDialect.none) {
+          synth.noteOff(pitch: 60);
+        }
+        expect(peak.isFinite, isTrue, reason: '$name peak $peak');
+        final state = await roundTripState(synth, name);
+        await exerciseEditor(synth, name);
+        debugPrint(
+          'CLAP installed: $name instrument, dialect $dialect'
+          '${dialect == ClapNoteDialect.none ? ' (no notes sent)' : ''}, '
+          'editor ${synth.hasEditor}, state $state, held-note peak $peak',
+        );
+      } finally {
+        // Nested, so a throwing step still lets the others run.
+        try {
+          if (synthVoice != null) {
+            await SoLoud.instance.stop(synthVoice);
+          }
+        } finally {
+          try {
+            synth.dispose();
+          } finally {
+            SoLoud.instance.setPause(voice, false);
+          }
+        }
+      }
+    }
+
+    testWidgets('each one loads, processes, round-trips state and opens its '
+        'editor', (_) async {
+      debugPrint('CLAP installed: ${installed.length} bundles');
+      var checked = 0;
+      for (final bundle in installed) {
+        for (final info in host.scanBundle(bundle)) {
+          if (info.isInstrument) {
+            await checkInstrument(bundle, info);
+          } else {
+            await checkEffect(bundle, info);
+          }
+          checked++;
+        }
+      }
+      expect(checked, greaterThan(0));
+    });
+  });
+
   final mockBundle = Platform.environment['CLAP_MOCK_BUNDLE'];
   final mockSkip = !Platform.isMacOS
       ? 'CLAP hosting is macOS-only'
@@ -744,6 +971,79 @@ void main() {
         setGuiApis(0);
       }
       expect(slot.index, lessThan(0));
+    });
+
+    testWidgets('plugin audio reaches the engine output', (_) async {
+      // Tear-downs run last first, and also after a failed expectation, so
+      // later tests get the tone back with nothing loaded.
+      SoLoud.instance.setVisualizationEnabled(true);
+      addTearDown(() => SoLoud.instance.setVisualizationEnabled(false));
+      double peak() => SoLoud.instance.getApproximateVolume(0);
+      // Polls the output peak until [ok] holds, and returns whether it did.
+      Future<bool> settles(bool Function(double) ok) async {
+        final deadline = DateTime.now().add(const Duration(seconds: 3));
+        while (!ok(peak()) && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        return ok(peak());
+      }
+
+      // The group's tone alone: a quiet sine.
+      SoLoud.instance.setWaveformFreq(tone, 440);
+      expect(
+        await settles((p) => p > 0.005 && p < 0.1),
+        isTrue,
+        reason: 'dry peak ${peak()}',
+      );
+      final dry = peak();
+      debugPrint('CLAP output: dry peak $dry');
+      bool isDry(double p) => (p - dry).abs() < dry * 0.3;
+
+      // mock.stereo halves its input.
+      const slot = CustomFilterGlobal(0);
+      final half = host.loadEffect(
+        bundlePath: mockBundle!,
+        slot: slot,
+        pluginId: 'mock.stereo',
+      );
+      addTearDown(half.dispose);
+      expect(
+        await settles((p) => (p - dry / 2).abs() < dry * 0.15),
+        isTrue,
+        reason: 'halved peak ${peak()}',
+      );
+      // Wet 0 bypasses the plugin; wet 1 brings it back.
+      slot.wet.value = 0;
+      expect(await settles(isDry), isTrue, reason: 'bypassed ${peak()}');
+      slot.wet.value = 1;
+      expect(await settles((p) => (p - dry / 2).abs() < dry * 0.15), isTrue);
+      half.dispose();
+      expect(await settles(isDry), isTrue, reason: 'disposed ${peak()}');
+
+      // An instrument's source is mixed like any other: the mock synth
+      // renders 0.1 per held note.
+      SoLoud.instance.setPause(voice, true);
+      addTearDown(() => SoLoud.instance.setPause(voice, false));
+      expect(await settles((p) => p < 1e-4), isTrue);
+      final synth = host.loadInstrument(
+        bundlePath: mockBundle,
+        pluginId: 'mock.synth',
+      );
+      addTearDown(synth.dispose);
+      final synthVoice = SoLoud.instance.play(synth.audioSource);
+      addTearDown(() => SoLoud.instance.stop(synthVoice));
+      synth
+        ..noteOn(pitch: 60)
+        ..noteOn(pitch: 64);
+      expect(
+        await settles((p) => p > 0.14 && p < 0.25),
+        isTrue,
+        reason: 'two notes ${peak()}',
+      );
+      synth
+        ..noteOff(pitch: 60)
+        ..noteOff(pitch: 64);
+      expect(await settles((p) => p < 1e-4), isTrue, reason: 'released');
     });
 
     testWidgets('an instrument plays notes as an audio source', (_) async {

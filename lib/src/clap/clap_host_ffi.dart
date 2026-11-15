@@ -553,8 +553,9 @@ abstract class ClapPluginBase {
 
   /// Saves the plugin's state.
   ///
-  /// Throws a [SoLoudCppException] when the plugin cannot save its state,
-  /// for example when it has no CLAP `state` extension.
+  /// Throws a [SoLoudNotImplementedException] when the plugin has no CLAP
+  /// `state` extension, and another [SoLoudCppException] when it fails to
+  /// save.
   Uint8List saveState() {
     _checkNotDisposed();
     return using((arena) {
@@ -577,8 +578,9 @@ abstract class ClapPluginBase {
   /// Loads a state saved by [saveState]. Parameter values queued before the
   /// call are dropped, and a [ClapHostEventType.paramsRescan] follows.
   ///
-  /// Throws a [SoLoudCppException] when the plugin rejects the state, or has
-  /// no CLAP `state` extension.
+  /// Throws a [SoLoudNotImplementedException] when the plugin has no CLAP
+  /// `state` extension, and another [SoLoudCppException] when it rejects the
+  /// state.
   void restoreState(Uint8List state) {
     _checkNotDisposed();
     using((arena) {

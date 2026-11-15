@@ -528,3 +528,43 @@ Three survivors are accepted as equivalent:
 **Review:** Round 1, Sol ACCEPT with no blocking findings. Both of its minors were folded in before landing:
 1. `noteOn`/`noteOff` passed `pitch` and `channel` straight into 32-bit FFI arguments, so `pitch: 0x10000003c` played key 60. Dart now range-checks both, and the live test covers oversized values.
 2. Concurrent producers had no regression test. `instrument_producers` was added.
+
+### Phase 6: tests (2026-11-15, Sol 6.1 ACCEPT in round 2)
+
+Most of the planned coverage already landed with the earlier phases:
+- Dart unit tests against the stubs (`test/clap_wrapper_test.dart` and `test/clap_stub_test.dart`, 24 tests).
+- The native harness (77 tests, plain, ASan+UBSan and TSan).
+- The ZeroEQ live group: scan, load, values, state round-trip, latency, slot mapping, the editor, and an engine restart.
+
+Phase 6 adds the two things still missing. Both are in `example/integration_test/clap_wrapper_test.dart`.
+- **"installed CLAP plugins".** Every bundle in the standard CLAP folders is scanned, and each of its plugins is checked. This is the counterpart of GPhil's `vst3_master_chain_probe_test.dart`, run here over all installed plugins, and it is a smoke test for arbitrary third-party plugins.
+  - An effect is loaded into a global slot with a 440 Hz tone playing. The test checks for a non-negative latency and a finite output peak. The peak is a meter smoke check only: it is read after the engine's hard clipper and 0.95 scaler, and plugins may be silent or loud at their defaults.
+  - An instrument plays a held note into its audio source, and its peak is read while the note is held. A plugin with dialect `none` gets no notes, and the log says so.
+  - **State** is reported as one of three levels, because the CLAP `state` extension is optional:
+    - `none`: `saveState` throws `SoLoudNotImplementedException`, which is now documented.
+    - `smoke`: no writable continuous parameter takes an observable edit. Up to four candidates are tried, each in both directions, because a linked parameter may clamp an edit.
+    - `verified`: a parameter must first move at least 10% of its range away from the saved value (polled), then come back within 0.1% of the range after `restoreState`.
+  - The editor is opened and closed when the plugin has one. This checks the lifecycle the API reports, not what is on screen. `dispose` must free the slot.
+  - Each plugin is cleaned up in nested `finally` blocks, so one failure, even in a cleanup step, leaves nothing loaded or paused.
+  - On this machine ZeroLimit, ZeroComp, Airwindows Consolidated and ZeroEQ all report `state verified`.
+- **"plugin audio reaches the engine output"** (mock bundle). It measures the real output peak with `getApproximateVolume`, with visualization on. Earlier live tests only proved that values reached a plugin; this proves the plugin's audio is what plays.
+  - `mock.stereo` halves the dry peak. The dry and halved ranges do not overlap.
+  - Slot wet 0 bypasses it and wet 1 brings it back.
+  - `dispose` restores the dry peak.
+  - With the tone paused, two held notes on `mock.synth` give its 0.2 level in the mix, and releasing them gives silence.
+  - Its cleanup runs as tear-downs, so it also runs after a failed expectation.
+
+**Verification:**
+- The live example test passes 17/17. It passed twice before the round-1 fixes, once after them and once after the round-2 minors.
+- `flutter analyze` shows only the 3 pre-existing infos.
+- A no-op `restoreState` fails the installed sweep (ZeroLimit's Threshold stays at 0.2 after restoring 1.0).
+- Native code is unchanged, so the native harness and the matrix still stand from Phase 5b.
+
+**Review:**
+- **Round 1, Sol REVISE.**
+  - (1) Blocking: state support was treated as mandatory. Fix: the `none`/`smoke`/`verified` levels.
+  - (2) Blocking: the round-trip could pass with a no-op restore, because the edit was never confirmed. Fix: polled move and return, with tolerances relative to the range.
+  - Minors folded in: (3) the peak is now described as a meter smoke check; (4) cleanup runs on failure; (5) instrument coverage is described as smoke, with a held-note peak and dialect `none` reported.
+- **Round 2, Sol ACCEPT.** No blocking findings. Two minors, both folded in:
+  - The first eligible parameter may not take an edit (for example, clamped by a linked one). Fix: try both directions and up to four parameters, report `smoke` when none moves, and keep a failed restore fatal once a move is seen.
+  - A throwing cleanup step could skip the rest. Fix: the instrument cleanup is nested `try`/`finally`. The effect cleanup is a single `dispose`.

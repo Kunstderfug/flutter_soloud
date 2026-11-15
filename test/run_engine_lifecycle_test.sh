@@ -31,6 +31,14 @@ elif [ "$1" == "--tsan" ]; then
     OUT="${OUT}_tsan"
 fi
 
+# On macOS the CLAP host is compiled in too, for the dispose lock-order test.
+PLUGIN_HOST_FLAGS=()
+PLUGIN_HOST_SOURCES=()
+if [ "$(uname -s)" == "Darwin" ]; then
+    PLUGIN_HOST_FLAGS=(-DSOLOUD_ENABLE_CLAP -isystem src/clap/third_party/clap/include)
+    PLUGIN_HOST_SOURCES=(src/clap/*.cpp src/clap_bindings.cpp)
+fi
+
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -45,6 +53,7 @@ c++ -std=c++17 -O2 -w -pthread "${SANITIZER[@]}" \
     -DWITH_MINIAUDIO \
     -DNO_XIPH_LIBS \
     -DSOLOUD_LIFECYCLE_TEST_HOOKS \
+    "${PLUGIN_HOST_FLAGS[@]}" \
     -I src/soloud/include \
     -I src/soloud/src \
     -I src/pffft \
@@ -57,6 +66,7 @@ c++ -std=c++17 -O2 -w -pthread "${SANITIZER[@]}" \
     src/soloud_common.cpp \
     src/device_lifecycle_test_hooks.cpp \
     src/bindings.cpp \
+    "${PLUGIN_HOST_SOURCES[@]}" \
     src/player.cpp \
     src/analyzer.cpp \
     src/synth/*.cpp \

@@ -1903,9 +1903,65 @@ extern "C"
       unsigned int *outMinor,
       unsigned int *outRevision);
 
-  /// Synchronously unloads all hosted CLAP plugins and releases their modules.
-  /// Main thread only. A no-op when nothing is loaded.
+  /// Lists the plugins of the .clap bundle at [bundlePath] as parallel arrays
+  /// of [outCount] strings: plugin ids, names, vendors, versions and features
+  /// (joined with ';'). Free them with soloud_clapFreeScanResults(). Every
+  /// output is cleared first. Callable from any non-audio thread that holds
+  /// no lock the main thread may need: the scan runs on, and waits for, the
+  /// main thread.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapScanBundle(
+      const char *bundlePath,
+      int *outCount,
+      char ***outIds,
+      char ***outNames,
+      char ***outVendors,
+      char ***outVersions,
+      char ***outFeatures);
+
+  /// Frees the arrays returned by soloud_clapScanBundle(). Null arrays are
+  /// skipped.
+  FFI_PLUGIN_EXPORT void soloud_clapFreeScanResults(
+      int count,
+      char **ids,
+      char **names,
+      char **vendors,
+      char **versions,
+      char **features);
+
+  /// Creates, inits and activates the audio effect [pluginId] of the bundle
+  /// at [bundlePath] for [sampleRate] Hz, blocks of up to [maxBlockSize]
+  /// (1..65536) frames and a bus of [channels] (1..32). Writes a positive
+  /// handle to [outPluginHandle] on success and 0 otherwise. Callable from any
+  /// non-audio thread that holds no lock the main thread may need: the plugin
+  /// calls run on, and wait for, the main thread.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapLoadEffect(
+      const char *bundlePath,
+      const char *pluginId,
+      unsigned int sampleRate,
+      unsigned int maxBlockSize,
+      unsigned int channels,
+      int *outPluginHandle);
+
+  /// Unloads [pluginHandle]: the audio thread stops using it at once and the
+  /// plugin is torn down on the main thread. invalidParameter for an unknown
+  /// or already unloaded handle. Callable from any non-audio thread that
+  /// holds no lock the main thread may need: it waits for the audio-thread
+  /// barrier and the main thread.
+  FFI_PLUGIN_EXPORT enum PlayerErrors soloud_clapUnloadPlugin(int pluginHandle);
+
+  /// Unloads all hosted CLAP plugins and releases their modules. Same thread
+  /// rules as soloud_clapUnloadPlugin(). A no-op when nothing is loaded.
   FFI_PLUGIN_EXPORT void soloud_clapHostUnloadAll(void);
+
+  /// Returns `clapFilterDspCallback` (a `SoLoudFilterDspCallback_t`) for
+  /// `CustomFilterSlot.setNativeCallback(callbackAddress: ...)`, or null when
+  /// CLAP hosting is not compiled in.
+  FFI_PLUGIN_EXPORT void *soloud_clapGetFilterCallbackPtr(void);
+
+  /// Returns the `userdataAddress` for `CustomFilterSlot.setNativeCallback`
+  /// of [pluginHandle] (the handle itself, so a stale one is a no-op), or null
+  /// for a non-positive handle or when CLAP hosting is not compiled in.
+  FFI_PLUGIN_EXPORT void *soloud_clapGetPluginUserData(int pluginHandle);
 
 #ifdef __cplusplus
 }

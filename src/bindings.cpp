@@ -24,6 +24,10 @@
 #ifdef SOLOUD_ENABLE_VST3
 #include "vst3/vst3_host.h"
 #endif
+#ifdef SOLOUD_ENABLE_CLAP
+#include "clap/clap_host.h"
+#endif
+#include "plugin_audio_barrier.h"
 
 #ifndef SOLOUD_COMMON_H
 #include "soloud_common.h"
@@ -259,6 +263,11 @@ extern "C"
 #if defined(SOLOUD_LIFECYCLE_TEST_HOOKS)
   /// Defined with the other test hooks, far below. Inert unless a test arms it.
   static void soloudTestInitBarrier();
+  /// Dispose calls these, inert unless a test arms them: the first while it
+  /// holds player_lifetime_mutex exclusively, the second where it shuts the
+  /// plugin hosts down after releasing it.
+  static void soloudTestDisposeUnderLifetimeLock();
+  static void soloudTestDisposePluginShutdown();
 #endif
 
   // Deliberately allocate on the heap and hold via reference so no static destructor
@@ -279,7 +288,9 @@ extern "C"
   /// Lock ordering: `init_deinit_mutex -> loadMutex -> player_lifetime_mutex
   /// -> sounds_mutex -> audio mutex`. A leased call never takes
   /// init_deinit_mutex or loadMutex, and the exclusive holder never waits for
-  /// anything a leased call holds.
+  /// anything a leased call holds. Nor does it wait for the main thread: the
+  /// plugin audio barrier takes this lock shared on main (a CLAP unload or
+  /// restart), so plugin shutdown in dispose runs after releasing it.
   std::shared_mutex player_lifetime_mutex;
 
   /// Raised before player_lifetime_mutex is taken exclusively. New leases see
@@ -2165,13 +2176,31 @@ extern "C"
       PlayerLifetimeWriteGuard lifetime;
       player.get()->dispose();
 #ifdef SOLOUD_ENABLE_VST3
-      // The device is stopped: no mix can be using a plugin, so no barrier.
       SoLoud::Vst3HostManager::instance().setParameterEditCallback(nullptr);
-      SoLoud::Vst3HostManager::instance().unloadAll();
+#endif
+#ifdef SOLOUD_ENABLE_CLAP
+      // Retire-only: CLAP lifecycle calls belong to the main thread, so the
+      // teardown is posted there. No mix can reach a retired instance.
+      soloud_clap::ClapHostManager::instance().retireAllForDispose();
+#endif
+#if defined(SOLOUD_LIFECYCLE_TEST_HOOKS)
+      soloudTestDisposeUnderLifetimeLock();
 #endif
       player.reset();
       player = std::make_unique<Player>();
     }
+    // Plugin shutdown never runs under player_lifetime_mutex. VST3 shutdown
+    // can wait for the main thread to close an editor, while the main thread
+    // may be waiting for that lock in a plugin audio barrier (a CLAP unload,
+    // or a restart from the CLAP pump): holding it here would deadlock both.
+    // No barrier is needed: the old device is stopped, and init_deinit_mutex
+    // (held) keeps the new Player from initializing, so nothing is mixing.
+#ifdef SOLOUD_ENABLE_VST3
+    SoLoud::Vst3HostManager::instance().unloadAll();
+#endif
+#if defined(SOLOUD_LIFECYCLE_TEST_HOOKS)
+    soloudTestDisposePluginShutdown();
+#endif
     // Bump the engine session counter only now that the old engine is fully
     // torn down: voiceEnded events posted while it was stopping its voices
     // keep the old generation, and the Dart side (which reads the counter
@@ -2363,6 +2392,30 @@ extern "C"
   /// init_deinit_mutex. That mutex is internal and no exported call holds it
   /// for a controllable length of time, so without a hook a test can only hope
   /// the scheduler puts the teardown inside that window.
+
+  static std::atomic<void (*)()> gDisposeUnderLifetimeLockHook{nullptr};
+  static std::atomic<void (*)()> gDisposePluginShutdownHook{nullptr};
+
+  static void soloudTestDisposeUnderLifetimeLock()
+  {
+    if (auto hook = gDisposeUnderLifetimeLockHook.load(std::memory_order_acquire))
+      hook();
+  }
+
+  static void soloudTestDisposePluginShutdown()
+  {
+    if (auto hook = gDisposePluginShutdownHook.load(std::memory_order_acquire))
+      hook();
+  }
+
+  /// Arms (or, with nulls, disarms) the two dispose hooks above.
+  FFI_PLUGIN_EXPORT void soloudTestSetDisposeHooks(void (*underLifetimeLock)(),
+                                                   void (*pluginShutdown)())
+  {
+    gDisposeUnderLifetimeLockHook.store(underLifetimeLock,
+                                        std::memory_order_release);
+    gDisposePluginShutdownHook.store(pluginShutdown, std::memory_order_release);
+  }
 
   /// Peak number of deferred idle-timeout workers alive at once. The
   /// coalescing is only meaningful if this stays at 1 no matter how many times
@@ -5448,6 +5501,32 @@ extern "C"
     return player.get()->busGetActiveVoiceCount(busId);
   }
 
+#if defined(SOLOUD_ENABLE_VST3) || defined(SOLOUD_ENABLE_CLAP)
+  /// Audio-thread barrier for plugin unloading (VST3 and CLAP): returns once
+  /// no mix that may have loaded a plugin pointer from a lookup table is
+  /// still running. Holds the lifetime lock only for the barrier itself,
+  /// never across plugin shutdown (which can close editor windows).
+  ///
+  /// Deliberately not a PlayerLease: a lease gives up while a teardown is
+  /// pending, and a barrier must never give up -- the device may still be
+  /// mixing until the teardown actually stops it. Taking the shared lock
+  /// unconditionally guarantees one of two outcomes: either this runs before
+  /// the teardown and synchronizes with the live mixer, or it waits for the
+  /// teardown to finish, by which point the device is stopped and the new
+  /// Player is not initialized, so nothing is mixing.
+  void soloud_pluginAudioThreadBarrier(void * /*userData*/)
+  {
+    std::shared_lock<std::shared_mutex> lifetime(player_lifetime_mutex);
+    Player *p = player.get();
+    if (p != nullptr && p->isInited())
+    {
+      // Mixing (render worker or device callback) and the post-ring global
+      // filters (device callback) each run under their own lock.
+      p->soloud.audioThreadBarrier_internal();
+    }
+  }
+#endif
+
   /////////////////////////////////////////
   /// VST3 Plugin Hosting API
   /////////////////////////////////////////
@@ -5569,28 +5648,10 @@ extern "C"
         outPluginHandle);
   }
 
-  /// Audio-thread barrier for VST3 unloading: returns once no mix that may
-  /// have loaded a plugin pointer from the lookup table is still running.
-  /// Holds the lifetime lock only for the barrier itself, never across plugin
-  /// shutdown (which can close editor windows).
-  ///
-  /// Deliberately not a PlayerLease: a lease gives up while a teardown is
-  /// pending, and a barrier must never give up -- the device may still be
-  /// mixing until the teardown actually stops it. Taking the shared lock
-  /// unconditionally guarantees one of two outcomes: either this runs before
-  /// the teardown and synchronizes with the live mixer, or it waits for the
-  /// teardown to finish, by which point the device is stopped and the new
-  /// Player is not initialized, so nothing is mixing.
-  static void vst3AudioThreadBarrier(void * /*userData*/)
+  /// The VST3 host's barrier (see soloud_pluginAudioThreadBarrier).
+  static void vst3AudioThreadBarrier(void *userData)
   {
-    std::shared_lock<std::shared_mutex> lifetime(player_lifetime_mutex);
-    Player *p = player.get();
-    if (p != nullptr && p->isInited())
-    {
-      // Mixing (render worker or device callback) and the post-ring global
-      // filters (device callback) each run under their own lock.
-      p->soloud.audioThreadBarrier_internal();
-    }
+    soloud_pluginAudioThreadBarrier(userData);
   }
 
   FFI_PLUGIN_EXPORT enum PlayerErrors soloud_vst3UnloadPlugin(int pluginHandle)

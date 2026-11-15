@@ -45,7 +45,11 @@
 //     the engine never waits for a decode, and a sound decoded for an engine
 //     that was torn down meanwhile is dropped;
 //   * an M4A loaded with LoadMode.disk streams (one decoder worker per voice)
-//     and disposing it, or the engine, never waits for those workers.
+//     and disposing it, or the engine, never waits for those workers;
+//   * with plugin hosting (CLAP, macOS), dispose shuts the plugin hosts down
+//     after releasing the lifetime lock, so a plugin shutdown that waits for
+//     the main thread cannot deadlock against main waiting in a plugin
+//     audio barrier.
 //
 // Build and run from the flutter_soloud repository root with:
 //
@@ -74,6 +78,11 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#if defined(SOLOUD_ENABLE_CLAP)
+#include <CoreFoundation/CoreFoundation.h>
+#include <dispatch/dispatch.h>
+#endif
 
 extern "C"
 {
@@ -170,6 +179,11 @@ extern "C"
     void soloudTestWaitInitBarrierReached();
     void soloudTestReleaseInitBarrier();
     int soloudTestSoundCount();
+#if defined(SOLOUD_ENABLE_CLAP)
+    void soloudTestSetDisposeHooks(void (*underLifetimeLock)(),
+                                   void (*pluginShutdown)());
+    void soloud_pluginAudioThreadBarrier(void *userData);
+#endif
 }
 
 namespace
@@ -2263,6 +2277,78 @@ void testDisposeSoundWithSeveralVoices()
     resetGlobalState();
 }
 
+#if defined(SOLOUD_ENABLE_CLAP)
+/// 0: dispose has not reached the lifetime lock; 1: it holds it exclusively;
+/// 2: its plugin shutdown got the main thread.
+std::atomic<int> gDisposePhase{0};
+
+void markDisposeHoldsLifetimeLock() { gDisposePhase.store(1); }
+
+/// Waits for the main thread, as VST3 shutdown does to close an editor.
+void waitForMainInPluginShutdown()
+{
+    dispatch_sync_f(dispatch_get_main_queue(), nullptr, [](void *) {});
+    gDisposePhase.store(2);
+}
+
+/// Dispose runs in `Isolate.run`, off main, while the main thread can be in a
+/// plugin audio barrier: a CLAP unload, or a restart from the CLAP pump. The
+/// barrier takes the lifetime lock shared. If plugin shutdown waited for main
+/// while dispose held that lock exclusively, neither could ever proceed. The
+/// interleaving is forced: main enters the barrier only once dispose holds
+/// the lock, and does not service its queue until the barrier returns.
+void testDisposeShutsPluginsDownOutsideTheLifetimeLock()
+{
+    std::printf("dispose shuts plugin hosts down outside the lifetime lock\n");
+    resetGlobalState();
+    if (!initEngineAs(kEngineA))
+    {
+        EXPECT(false, "the engine should initialize");
+        return;
+    }
+    gDisposePhase.store(0);
+    soloudTestSetDisposeHooks(markDisposeHoldsLifetimeLock,
+                              waitForMainInPluginShutdown);
+
+    std::atomic<bool> finished{false};
+    std::thread deadlockWatch(
+        [&finished]
+        {
+            const auto start = std::chrono::steady_clock::now();
+            while (!finished.load())
+            {
+                if (millisSince(start) > 10000)
+                {
+                    std::fprintf(stderr,
+                                 "\n  FAIL: dispose and the main thread's "
+                                 "plugin barrier deadlocked.\n");
+                    std::fflush(stderr);
+                    std::_Exit(1);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        });
+
+    std::thread disposer([] { dispose(); });
+    while (gDisposePhase.load() == 0)
+        std::this_thread::yield();
+    soloud_pluginAudioThreadBarrier(nullptr);
+    const auto start = std::chrono::steady_clock::now();
+    while (gDisposePhase.load() != 2 && millisSince(start) < 5000)
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, true);
+    EXPECT(gDisposePhase.load() == 2,
+           "plugin shutdown should get the main thread, phase %d",
+           gDisposePhase.load());
+    disposer.join();
+    finished.store(true);
+    deadlockWatch.join();
+
+    soloudTestSetDisposeHooks(nullptr, nullptr);
+    EXPECT(soloudTestPlayerIsInited() == 0, "the engine should be disposed");
+    resetGlobalState();
+}
+#endif
+
 } // namespace
 
 int main()
@@ -2320,6 +2406,9 @@ int main()
     testTeardownDuringDecodeDropsTheSound();
     testDiskStreamedM4aNeverBlocksLifecycle();
     testDisposeSoundWithSeveralVoices();
+#if defined(SOLOUD_ENABLE_CLAP)
+    testDisposeShutsPluginsDownOutsideTheLifetimeLock();
+#endif
 
     {
         std::lock_guard<std::mutex> lock(gDartLoopMutex);

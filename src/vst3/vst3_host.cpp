@@ -799,7 +799,9 @@ bool Vst3PluginInstance::setState(const uint8_t *data, size_t size) {
   const uint8_t *ptr = data + headerSize;
   if (compSize > 0) {
     Steinberg::MemoryStream compStream(const_cast<uint8_t *>(ptr), compSize);
-    mComponent->setState(&compStream);
+    if (mComponent->setState(&compStream) != Steinberg::kResultOk) {
+      return false;
+    }
     if (mController) {
       compStream.seek(0, Steinberg::IBStream::kIBSeekSet, nullptr);
       mController->setComponentState(&compStream);
@@ -809,7 +811,14 @@ bool Vst3PluginInstance::setState(const uint8_t *data, size_t size) {
 
   if (ctrlSize > 0 && mController) {
     Steinberg::MemoryStream ctrlStream(const_cast<uint8_t *>(ptr), ctrlSize);
-    mController->setState(&ctrlStream);
+    // Controller state is optional in VST3. Unsupported/false is common,
+    // but explicit errors must not turn saved settings into defaults.
+    const auto result = mController->setState(&ctrlStream);
+    if (result != Steinberg::kResultOk &&
+        result != Steinberg::kNotImplemented &&
+        result != Steinberg::kResultFalse) {
+      return false;
+    }
     ptr += ctrlSize;
   }
 

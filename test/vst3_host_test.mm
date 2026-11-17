@@ -9,6 +9,7 @@
 
 #include "vst3/vst3_host.h"
 #include "vst3_mock_plugin.h"
+#include "pluginterfaces/base/funknown.h"
 
 #import <Cocoa/Cocoa.h>
 
@@ -335,6 +336,36 @@ static void testExitUnloadWaitsForAudioThread() {
     Vst3HostManager::instance().setAudioThreadBarrier(nullptr, nullptr);
 }
 
+static void testRejectedState() {
+    std::printf("Test: rejected component state never reports success\n");
+    const int handle = loadMock(gBundle, "Mock Effect");
+    auto plugin = Vst3HostManager::instance().getPlugin(handle);
+    auto *state = mockState(gBundle);
+    EXPECT(plugin != nullptr && state != nullptr, "mock missing");
+    if (!plugin || !state) return;
+    std::vector<uint8_t> bytes;
+    EXPECT(plugin->getState(bytes), "capture failed");
+    // Replace the empty component with one byte in the host envelope.
+    uint32_t one = 1;
+    std::memcpy(bytes.data() + 4, &one, 4);
+    bytes.insert(bytes.begin() + 16, 7);
+    EXPECT(plugin->setState(bytes.data(), bytes.size()), "valid state rejected");
+    state->stateResult.store(Steinberg::kResultFalse);
+    EXPECT(!plugin->setState(bytes.data(), bytes.size()), "rejected state accepted");
+    // A controller-only stream is optional: false/not-implemented are allowed,
+    // while an explicit controller error rejects the saved envelope.
+    uint32_t zero = 0;
+    std::memcpy(bytes.data() + 4, &zero, 4);
+    std::memcpy(bytes.data() + 8, &one, 4);
+    EXPECT(plugin->setState(bytes.data(), bytes.size()), "optional controller false rejected");
+    state->stateResult.store(Steinberg::kNotImplemented);
+    EXPECT(plugin->setState(bytes.data(), bytes.size()), "optional controller unsupported rejected");
+    state->stateResult.store(Steinberg::kInvalidArgument);
+    EXPECT(!plugin->setState(bytes.data(), bytes.size()), "controller error accepted");
+    plugin.reset();
+    Vst3HostManager::instance().unloadPlugin(handle);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: %s <directory of the mock bundles> [test]\n", argv[0]);
@@ -344,6 +375,7 @@ int main(int argc, char **argv) {
     gRemoteBundle = std::string(argv[1]) + "/MockVst3Remote.vst3";
     const std::string only = argc > 2 ? argv[2] : "";
     const std::pair<const char *, void (*)()> tests[] = {
+        {"state", testRejectedState},
         {"params", testParameterChangesReachProcessor},
         {"instrument", testInstrumentOutputIsNeverStale},
         {"editor", testEditorOpenCloseWhileProcessing},

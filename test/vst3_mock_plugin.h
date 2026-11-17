@@ -23,6 +23,7 @@ struct State {
   std::atomic<long> processCalls{0};
   // process() writes kGarbage into its outputs and returns kResultFalse.
   std::atomic<bool> failProcess{false};
+  std::atomic<int> stateResult{0};
   // Parameter changes handed to process(): the last point of each queue,
   // per parameter id (-1 until one arrives), and totals.
   std::atomic<double> lastValue[kParamCount];
@@ -34,6 +35,7 @@ struct State {
     setupMaxBlock.store(0);
     processCalls.store(0);
     failProcess.store(false);
+    stateResult.store(0);
     for (auto &v : lastValue) {
       v.store(-1.0);
     }

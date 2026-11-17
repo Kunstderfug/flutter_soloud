@@ -112,7 +112,7 @@ public:
   }
   tresult PLUGIN_API setActive(TBool) override { return kResultOk; }
   // Component and controller state (one object): nothing to save.
-  tresult PLUGIN_API setState(IBStream *) override { return kResultOk; }
+  tresult PLUGIN_API setState(IBStream *) override { return gState.stateResult.load(); }
   tresult PLUGIN_API getState(IBStream *) override { return kResultOk; }
 
   // IAudioProcessor -----------------------------------------------------------

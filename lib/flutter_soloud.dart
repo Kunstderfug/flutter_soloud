@@ -14,7 +14,7 @@ export 'src/helpers/capture_device.dart';
 export 'src/helpers/playback_device.dart';
 export 'src/metadata.dart';
 export 'src/mixing_bus.dart';
-export 'src/realtime_stream.dart';
+export 'src/realtime_stream.dart' hide refillRealtimeStreamBuffer;
 export 'src/soloud.dart';
 export 'src/soloud_isolate.dart';
 export 'src/sound_handle.dart';

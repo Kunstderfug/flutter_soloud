@@ -25,11 +25,23 @@ abstract class _ClassicalLevelerInternal extends FilterBase {
   const _ClassicalLevelerInternal(SoundHash? soundHash, int? busId)
     : super(FilterType.classicalLevelerFilter, soundHash, busId);
 
-  FilterParam _parameter(int index, {SoundHandle? soundHandle}) => FilterParam(
-    soundHandle, busId, filterType, index,
-    index < 9 ? ClassicalLeveler.values[index].min : -200,
-    index < 9 ? ClassicalLeveler.values[index].max : 100,
-  );
+  // A sound's leveler needs a voice handle: like the other filters,
+  // FilterParam.ofSource throws instead of changing the global leveler.
+  FilterParam _parameter(int index, {SoundHandle? soundHandle}) {
+    final min = index < 9 ? ClassicalLeveler.values[index].min : -200.0;
+    final max = index < 9 ? ClassicalLeveler.values[index].max : 100.0;
+    if (soundHash == null && busId == null) {
+      return FilterParam(soundHandle, busId, filterType, index, min, max);
+    }
+    return FilterParam.ofSource(
+      soundHandle,
+      busId,
+      filterType,
+      index,
+      min,
+      max,
+    );
+  }
 
   /// Commits an entire look-ahead plan together. Refresh at least every 100 ms;
   /// stale plans automatically fall back to the real-time loudness detector.
@@ -83,7 +95,8 @@ abstract class _ClassicalLevelerInternal extends FilterBase {
 
   ClassicalLeveler get queryDownwardEnabled => ClassicalLeveler.downwardEnabled;
 
-  ClassicalLeveler get queryDownwardThresholdLufs => ClassicalLeveler.downwardThresholdLufs;
+  ClassicalLeveler get queryDownwardThresholdLufs =>
+      ClassicalLeveler.downwardThresholdLufs;
 
   ClassicalLeveler get queryDownwardRatio => ClassicalLeveler.downwardRatio;
 }

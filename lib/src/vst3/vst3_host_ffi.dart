@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_soloud/src/audio_source.dart';
 import 'package:flutter_soloud/src/bindings/flutter_soloud_ffigen.dart'
     as ffigen;
@@ -199,6 +199,10 @@ class Vst3Host {
   ///
   /// The plugin is set up for [sampleRate], which must be the rate of the
   /// audio it filters: it defaults to the engine's ([SoLoud.sampleRate]).
+  ///
+  /// Throws [ArgumentError] if [slot] belongs to a single sound
+  /// (`sound.filters.customFilter(...)`): a filter of a sound has one
+  /// instance per voice, and the plugin is a single instance.
   @experimental
   Vst3EffectPlugin loadEffect({
     required String bundlePath,
@@ -208,6 +212,14 @@ class Vst3Host {
     int maxBlockSize = 2048,
     Channels channels = Channels.stereo,
   }) {
+    if (slot.soundHash != null) {
+      throw ArgumentError.value(
+        slot,
+        'slot',
+        'A VST3 effect needs a global or bus filter slot, not the slot of a '
+            'single sound.',
+      );
+    }
     if (!isSupported) {
       throw SoLoudCppException.fromPlayerError(PlayerErrors.invalidParameter);
     }
@@ -596,9 +608,9 @@ class Vst3EffectPlugin extends Vst3PluginBase {
   /// The [CustomFilterSlot] (`0..7`) hosting this VST3 effect.
   final CustomFilterSlot slot;
 
-  /// Maps a [CustomFilterSlot] parameter index (`1..7`) to a VST3 [vst3ParamId]
-  /// so you can call `.fadeFilterParameter()` and `.oscillateFilterParameter()`
-  /// on the returned [CustomFilterParam].
+  /// Maps a [CustomFilterSlot] parameter index (`1..15`) to a VST3
+  /// [vst3ParamId] so you can call `.fadeFilterParameter()` and
+  /// `.oscillateFilterParameter()` on the returned [CustomFilterParam].
   @experimental
   CustomFilterParam mapToSlotParameter({
     required int slotParamIndex,

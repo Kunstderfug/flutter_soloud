@@ -1,6 +1,6 @@
 import 'dart:async';
+import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_soloud/src/audio_source.dart';
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
@@ -135,7 +135,7 @@ class Vst3EffectPlugin extends Vst3PluginBase {
   /// The [CustomFilterSlot] hosting this VST3 effect.
   final CustomFilterSlot slot;
 
-  /// Maps a [CustomFilterSlot] parameter index (`1..7`) to a VST3
+  /// Maps a [CustomFilterSlot] parameter index (`1..15`) to a VST3
   /// [vst3ParamId].
   @experimental
   CustomFilterParam mapToSlotParameter({

@@ -362,57 +362,91 @@ void Filters::removeAllFilters() {
   }
 }
 
-void Filters::setFilterParams(SoLoud::handle handle, FilterType filterType,
-                              int attributeId, float value,
-                              int customFilterId) {
-  int index = isFilterActive(filterType, customFilterId);
+PlayerErrors Filters::findParam(SoLoud::handle handle, FilterType filterType,
+                               int attributeId, int customFilterId,
+                               int &index) {
+  index = isFilterActive(filterType, customFilterId);
   if (index < 0)
-    return;
-  if (mBusData != nullptr) {
-    /// bus filter, on the bus's voice. A bus that has not been played has no
-    /// voice (handle 0), and handle 0 would set the global filter instead.
-    if (mBusData->handle == 0)
-      return;
-    mSoloud->setFilterParameter(mBusData->handle, index, attributeId, value);
-  } else {
-    /// global or single sound filter
-    mSoloud->setFilterParameter(handle, index, attributeId, value);
-  }
+    return filterNotFound;
+  // For a bus, handle 0 would address the global filters instead: a bus that
+  // has not been played has no voice to reach.
+  if (mBusData != nullptr && handle == 0)
+    return soundHandleNotFound;
+  // SoLoud ignores an out-of-range attribute silently (and reads 0 for it).
+  if (attributeId < 0 || attributeId >= filters[index]->filter->getParamCount())
+    return invalidParameter;
+  return noError;
 }
 
-bool Filters::getFilterParams(SoLoud::handle handle, FilterType filterType,
-                              int attributeId, float *value,
-                              int customFilterId) {
-  int index = isFilterActive(filterType, customFilterId);
+PlayerErrors Filters::setFilterParams(SoLoud::handle handle,
+                                      FilterType filterType, int attributeId,
+                                      float value, int customFilterId) {
   // A bus filter lives on the bus's own voice. Until the bus is played it has
   // none, and handle 0 would address the global filters instead.
-  if (index < 0 || (mBusData != nullptr && mBusData->handle == 0))
-    return false;
-
-  const auto target = mBusData != nullptr ? mBusData->handle : handle;
-  *value = mSoloud->getFilterParameter(target, index, attributeId);
-  return true;
+  if (mBusData != nullptr) {
+    if (mBusData->handle == 0)
+      return soundHandleNotFound;
+    handle = mBusData->handle;
+  }
+  int index = -1;
+  const PlayerErrors e =
+      findParam(handle, filterType, attributeId, customFilterId, index);
+  if (e != noError)
+    return e;
+  mSoloud->setFilterParameter(handle, index, attributeId, value);
+  return noError;
 }
 
-void Filters::fadeFilterParameter(SoLoud::handle handle, FilterType filterType,
-                                  int attributeId, float to, float time,
-                                  int customFilterId) {
-  int index = isFilterActive(filterType, customFilterId);
-  // For a bus, handle 0 would address the global filters (see above).
-  if (index < 0 || (mBusData != nullptr && handle == 0))
-    return;
+PlayerErrors Filters::getFilterParams(SoLoud::handle handle,
+                                      FilterType filterType, int attributeId,
+                                      float *value, int customFilterId) {
+  if (value == nullptr)
+    return nullPointer;
+  // A bus filter lives on the bus's own voice (see setFilterParams).
+  if (mBusData != nullptr) {
+    if (mBusData->handle == 0)
+      return soundHandleNotFound;
+    handle = mBusData->handle;
+  }
+  int index = -1;
+  const PlayerErrors e =
+      findParam(handle, filterType, attributeId, customFilterId, index);
+  if (e != noError)
+    return e;
+  *value = mSoloud->getFilterParameter(handle, index, attributeId);
+  return noError;
+}
 
+PlayerErrors Filters::fadeFilterParameter(SoLoud::handle handle,
+                                          FilterType filterType,
+                                          int attributeId, float to,
+                                          float time, int customFilterId) {
+  // For a bus, handle 0 would address the global filters (see above).
+  if (mBusData != nullptr && handle == 0)
+    return soundHandleNotFound;
+  int index = -1;
+  const PlayerErrors e =
+      findParam(handle, filterType, attributeId, customFilterId, index);
+  if (e != noError)
+    return e;
   mSoloud->fadeFilterParameter(handle, index, attributeId, to, time);
+  return noError;
 }
 
-void Filters::oscillateFilterParameter(SoLoud::handle handle,
-                                       FilterType filterType, int attributeId,
-                                       float from, float to, float time,
-                                       int customFilterId) {
-  int index = isFilterActive(filterType, customFilterId);
+PlayerErrors Filters::oscillateFilterParameter(SoLoud::handle handle,
+                                               FilterType filterType,
+                                               int attributeId, float from,
+                                               float to, float time,
+                                               int customFilterId) {
   // For a bus, handle 0 would address the global filters (see above).
-  if (index < 0 || (mBusData != nullptr && handle == 0))
-    return;
-
-  mSoloud->oscillateFilterParameter(handle, index, attributeId, from, to, time);
+  if (mBusData != nullptr && handle == 0)
+    return soundHandleNotFound;
+  int index = -1;
+  const PlayerErrors e =
+      findParam(handle, filterType, attributeId, customFilterId, index);
+  if (e != noError)
+    return e;
+  mSoloud->oscillateFilterParameter(handle, index, attributeId, from, to,
+                                    time);
+  return noError;
 }

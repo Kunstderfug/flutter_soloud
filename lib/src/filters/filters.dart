@@ -6,7 +6,7 @@ import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/amplitude_modulator_filter.dart';
 import 'package:flutter_soloud/src/filters/bassboost_filter.dart';
 import 'package:flutter_soloud/src/filters/biquad_resonant_filter.dart';
-import 'package:flutter_soloud/src/filters/classical_leveler_filter.dart';
+import 'package:flutter_soloud/src/filters/classical_leveler_filter.dart'; // fork:
 import 'package:flutter_soloud/src/filters/compressor.dart';
 import 'package:flutter_soloud/src/filters/custom_filter.dart';
 import 'package:flutter_soloud/src/filters/echo_filter.dart';
@@ -220,6 +220,7 @@ final class FiltersSingle {
   ParametricEqSingle get parametricEqFilter =>
       ParametricEqSingle(soundHash, busId);
 
+  // fork:
   /// Lifts soft passages with optional prepared, latency-free look-ahead.
   ClassicalLevelerSingle get classicalLevelerFilter =>
       ClassicalLevelerSingle(soundHash, busId);
@@ -405,6 +406,7 @@ final class FiltersGlobal {
   /// [here](https://github.com/alnitak/flutter_soloud/blob/main/src/soloud/src/filter/parametric_eq.cpp)
   ParametricEqGlobal get parametricEqFilter => const ParametricEqGlobal();
 
+  // fork:
   /// Lifts soft passages with optional prepared, latency-free look-ahead.
   ClassicalLevelerGlobal get classicalLevelerFilter =>
       const ClassicalLevelerGlobal();
@@ -670,8 +672,9 @@ enum FilterType {
 
   /// A user-programmable custom DSP filter.
   @experimental
-  customFilter,
+  customFilter, // fork: `;` upstream
 
+  // fork: the same index as in src/enums.h; see FORK_MAINTENANCE.md.
   /// A BS.1770 classical passage leveler.
   classicalLevelerFilter;
 
@@ -691,7 +694,7 @@ enum FilterType {
     FilterType.parametricEq => 'Parametric EQ',
     FilterType.amplitudeModulatorFilter => 'Amplitude Modulator',
     FilterType.customFilter => 'Custom Filter',
-    FilterType.classicalLevelerFilter => 'Classical Leveler',
+    FilterType.classicalLevelerFilter => 'Classical Leveler', // fork:
   };
 
   /// The number of parameters this filter owns.
@@ -710,7 +713,7 @@ enum FilterType {
     FilterType.parametricEq => 195,
     FilterType.amplitudeModulatorFilter => 3,
     FilterType.customFilter => 8,
-    FilterType.classicalLevelerFilter => 57,
+    FilterType.classicalLevelerFilter => 57, // fork:
   };
 
   /// Activate this filter. If [soundHash] is null this filter is applied

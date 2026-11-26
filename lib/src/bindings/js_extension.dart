@@ -584,6 +584,7 @@ external void wasmDestroyVoiceGroup(int handle);
 @JS('Module_soloud._addVoiceToGroup')
 external void wasmAddVoiceToGroup(int voiceGroupHandle, int voiceHandle);
 
+// fork: atomic voice-group start.
 @JS('Module_soloud._scheduleVoiceGroupStartAt')
 external int wasmScheduleVoiceGroupStartAt(
   int voiceGroupHandle,

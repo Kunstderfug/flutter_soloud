@@ -2,6 +2,7 @@
 // throws SoLoudNotInitializedException, or is listed in _exempt with the
 // reason it does not. The list of members is checked against the public
 // members parsed from lib/src/soloud.dart, so a new method cannot be left out.
+// The parse also reads the mixins SoLoud applies from its part files.
 @Tags(['device'])
 library;
 
@@ -10,6 +11,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_soloud/flutter_soloud.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 
 import '../support/sounds.dart';
 
@@ -222,8 +224,59 @@ const _exempt = {
 /// its doc comment and its body.
 typedef _Member = ({String doc, String body});
 
-/// The public instance members of `class SoLoud` in [source].
-Map<String, _Member> _publicMembers(String source) {
+/// The public instance members of SoLoud: those of `class SoLoud` in
+/// [_soloudPath] and of the mixins in its `with` clause that are declared in
+/// its part files. A member whose body calls a private mixin member gets that
+/// member's body appended, so a forwarder counts as checking init when the
+/// code it forwards to does.
+Map<String, _Member> _soloudMembers() {
+  final source = File(_soloudPath).readAsStringSync();
+  final members = _members(source, 'class SoLoud');
+  final helpers = <String, _Member>{};
+  final mixins = RegExp(
+    r'class SoLoud\s+with\s+([\w\s,]+?)\s*\{',
+  ).firstMatch(source)?[1]!.split(',').map((m) => m.trim());
+  for (final part in RegExp(
+    "^part '([^']+)';",
+    multiLine: true,
+  ).allMatches(source)) {
+    final partSource = File(
+      p.join(p.dirname(_soloudPath), part[1]),
+    ).readAsStringSync();
+    for (final mixin in mixins ?? const <String>[]) {
+      if (!partSource.contains(RegExp('mixin $mixin\\b'))) continue;
+      for (final MapEntry(:key, :value) in _members(
+        partSource,
+        'mixin $mixin',
+        includePrivate: true,
+      ).entries) {
+        (key.contains(RegExp('(^| )_')) ? helpers : members)[key] = value;
+      }
+    }
+  }
+  return {
+    for (final MapEntry(:key, :value) in members.entries)
+      key: (
+        doc: value.doc,
+        body: [
+          value.body,
+          for (final id in RegExp(
+            r'\b_\w+',
+          ).allMatches(value.body).map((m) => m[0]!).toSet())
+            ?(helpers[id] ?? helpers['get $id'])?.body,
+        ].join('\n'),
+      ),
+  };
+}
+
+/// The instance members of the class or mixin declared by [declaration]
+/// (for example `class SoLoud`) in [source]. Private members only when
+/// [includePrivate] is set.
+Map<String, _Member> _members(
+  String source,
+  String declaration, {
+  bool includePrivate = false,
+}) {
   // Blank out comments and string contents, keeping offsets, so braces in
   // them do not count. Doc comments are read from [source] afterwards.
   final code = source
@@ -235,7 +288,7 @@ Map<String, _Member> _publicMembers(String source) {
         RegExp(r"'(?:\\.|[^'\\\n])*'"),
         (m) => "'${' ' * (m[0]!.length - 2)}'",
       );
-  final start = code.indexOf(RegExp(r'class SoLoud\s*\{'));
+  final start = code.indexOf(RegExp('$declaration\\b[^{]*\\{'));
   final open = code.indexOf('{', start);
   final out = <String, _Member>{};
   var headerStart = open + 1;
@@ -246,7 +299,7 @@ Map<String, _Member> _publicMembers(String source) {
   var pendingStart = 0;
 
   void add(String header, int at, String body) {
-    final name = _memberName(header);
+    final name = _memberName(header, includePrivate: includePrivate);
     if (name == null) return;
     // The doc comment: the `///` lines right before the declaration.
     final before = source.substring(0, at).trimRight().split('\n');
@@ -298,8 +351,9 @@ Map<String, _Member> _publicMembers(String source) {
 }
 
 /// The member a declaration header declares, or null for fields,
-/// constructors, static and private members.
-String? _memberName(String header) {
+/// constructors, static members and, unless [includePrivate] is set, private
+/// members.
+String? _memberName(String header, {bool includePrivate = false}) {
   final t = header
       .replaceAll(RegExp(r'@\w+(\([^)]*\))?'), ' ')
       .replaceAll(RegExp(r'\s+'), ' ')
@@ -307,7 +361,7 @@ String? _memberName(String header) {
   if (t.isEmpty || t.startsWith('static ')) return null;
   final accessor = RegExp(r'\b(get|set) ([A-Za-z_]\w*)').firstMatch(t);
   if (accessor != null && !t.substring(0, accessor.start).contains('=')) {
-    return accessor[2]!.startsWith('_')
+    return accessor[2]!.startsWith('_') && !includePrivate
         ? null
         : '${accessor[1]} ${accessor[2]}';
   }
@@ -321,7 +375,9 @@ String? _memberName(String header) {
     return null; // a field initialized with a call
   }
   final name = m[1]!;
-  if (name.startsWith('_') || name == 'SoLoud') return null;
+  if (name.startsWith('_') && !includePrivate || name == 'SoLoud') {
+    return null;
+  }
   return name;
 }
 
@@ -363,7 +419,7 @@ void main() {
     late Map<String, _Member> members;
     setUpAll(() {
       if (!kIsWeb) {
-        members = _publicMembers(File(_soloudPath).readAsStringSync());
+        members = _soloudMembers();
       }
     });
 

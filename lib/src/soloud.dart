@@ -286,8 +286,8 @@ enum AndroidAAudioAttributes {
 ///
 /// This class has a singleton [instance] which represents the (also singleton)
 /// instance of the SoLoud (C++) engine.
+// fork: _SoLoudForkApi holds the fork's code.
 interface class SoLoud with _SoLoudForkApi {
-  // fork:
   /// The private constructor of [SoLoud]. This prevents developers from
   /// instantiating new instances.
   SoLoud._();

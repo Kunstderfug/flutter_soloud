@@ -1,9 +1,12 @@
-part of 'bindings_player_ffi.dart';
+// fork: the native side of GPhil's additions to the bindings: microphone
+// capture with its Dart-owned output storage, the domain idle stop and atomic
+// voice-group start. See FORK_MAINTENANCE.md.
+part of '../bindings/bindings_player_ffi.dart';
 
 // ignore_for_file: omit_local_variable_types
 
-/// Native microphone-capture bindings and their Dart-owned output storage.
-mixin _FlutterSoLoudFfiCapture on FlutterSoLoud {
+/// The fork's overrides of [FlutterSoLoud] for native platforms.
+mixin _FlutterSoLoudFfiFork on FlutterSoLoud {
   ffi.Pointer<ffi.Float>? _captureLevelCurrentPeak;
   ffi.Pointer<ffi.Float>? _captureLevelCurrentRms;
   ffi.Pointer<ffi.Float>? _captureLevelPeakSinceLastRead;
@@ -395,5 +398,24 @@ mixin _FlutterSoLoudFfiCapture on FlutterSoLoud {
       calloc.free(frameCount);
       _captureLevelFrameCount = null;
     }
+  }
+
+  @override
+  bool requestAudioDeviceIdleStop() => native.requestAudioDeviceIdleStop();
+
+  @override
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  ) {
+    final result = native.scheduleVoiceGroupStartAt(
+      voiceGroupHandle.id,
+      requiredMain.id,
+      expectedMemberCount,
+      engineDeadline.toDouble(),
+    );
+    return VoiceGroupStartResult.fromValue(result.value);
   }
 }

@@ -9,17 +9,19 @@ import 'dart:typed_data';
 import 'package:flutter_soloud/src/audio_visualization_data.dart';
 import 'package:flutter_soloud/src/bindings/bindings_player.dart';
 import 'package:flutter_soloud/src/bindings/js_extension.dart';
-import 'package:flutter_soloud/src/capture/soloud_capture.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart'; // fork:
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
-import 'package:flutter_soloud/src/helpers/capture_device.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart'; // fork:
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/sound_handle.dart';
 import 'package:flutter_soloud/src/sound_hash.dart';
 import 'package:flutter_soloud/src/worker/worker.dart';
 import 'package:logging/logging.dart';
 import 'package:meta/meta.dart';
+
+part '../fork/bindings_player_web_fork.dart'; // fork:
 
 /// https://kapadia.github.io/emscripten/2013/09/13/emscripten-pointers-and-pointers.html
 /// https://emscripten.org/docs/porting/connecting_cpp_and_javascript/Interacting-with-code.html#access-memory-from-javascript
@@ -35,7 +37,9 @@ typedef OnMetadataCallbackTFunction = void Function(int metadataPtr);
 
 /// JS/WASM bindings to SoLoud
 @internal
-class FlutterSoLoudWeb extends FlutterSoLoud {
+// fork: the fork's overrides are provided by _FlutterSoLoudWebFork.
+// ignore: missing_override_of_must_be_overridden
+class FlutterSoLoudWeb extends FlutterSoLoud with _FlutterSoLoudWebFork {
   static final Logger _log = Logger('flutter_soloud.FlutterSoLoudFfi');
 
   /// How many names [getFilterParamNames] leaves room for. The module's
@@ -630,9 +634,6 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
-  bool requestAudioDeviceIdleStop() => false;
-
-  @override
   Future<PlayerErrors> startAudioDevice() async {
     // Web is single-threaded (no isolates) and the device change is instant,
     // so call the wasm function directly.
@@ -689,11 +690,6 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
     wasmFree(namesPtr);
 
     return devices;
-  }
-
-  @override
-  List<CaptureDevice> listCaptureDevices() {
-    return const [];
   }
 
   @override
@@ -1762,22 +1758,6 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   @override
-  VoiceGroupStartResult scheduleVoiceGroupStartAt(
-    SoundHandle voiceGroupHandle,
-    SoundHandle requiredMain,
-    int expectedMemberCount,
-    Duration engineDeadline,
-  ) {
-    final result = wasmScheduleVoiceGroupStartAt(
-      voiceGroupHandle.id,
-      requiredMain.id,
-      expectedMemberCount,
-      engineDeadline.toDouble(),
-    );
-    return VoiceGroupStartResult.fromValue(result);
-  }
-
-  @override
   bool isVoiceGroup(SoundHandle handle) {
     return wasmIsVoiceGroup(handle.id) == 1;
   }
@@ -2438,67 +2418,6 @@ class FlutterSoLoudWeb extends FlutterSoLoud {
   }
 
   /////////////////////////////////////////
-  @override
-  ({PlayerErrors error, SoLoudCaptureStartResult? result}) startCapture(
-    String path,
-    int sampleRate,
-    int channels,
-    int bufferSizeFrames,
-    double inputGainDb,
-    CaptureDevice? device,
-    String? mirrorPath,
-    SoLoudCaptureMirrorFormat mirrorFormat,
-    int mirrorBitsPerSample,
-  ) {
-    return (error: PlayerErrors.notImplemented, result: null);
-  }
-
-  @override
-  ({PlayerErrors error, SoLoudCapturePlaybackStartResult? result})
-  startCaptureAndPlay(
-    String path,
-    SoundHash soundHash, {
-    int busId = 0,
-    int sampleRate = 48000,
-    int channels = 2,
-    int bufferSizeFrames = 256,
-    double volume = 1,
-    double pan = 0,
-    Duration startAt = Duration.zero,
-    bool looping = false,
-    Duration loopingStartAt = Duration.zero,
-    double inputGainDb = 0,
-    CaptureDevice? device,
-    String? mirrorPath,
-    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
-    int mirrorBitsPerSample = 0,
-  }) {
-    return (error: PlayerErrors.notImplemented, result: null);
-  }
-
-  @override
-  ({PlayerErrors error, SoLoudCaptureStopResult? result}) stopCapture() {
-    return (error: PlayerErrors.notImplemented, result: null);
-  }
-
-  @override
-  PlayerErrors cancelCapture() => PlayerErrors.notImplemented;
-
-  @override
-  bool isCaptureRecording() => false;
-
-  @override
-  ({PlayerErrors error, SoLoudCaptureClockSnapshot? result})
-  getCaptureClockSnapshot() {
-    return (error: PlayerErrors.notImplemented, result: null);
-  }
-
-  @override
-  ({PlayerErrors error, SoLoudCaptureLevelSnapshot? result})
-  getCaptureLevelSnapshot() {
-    return (error: PlayerErrors.notImplemented, result: null);
-  }
-
   /// Mixing Bus
   /// https://solhsa.com/soloud/mixbus.html
   /// https://solhsa.com/soloud/soloud_20200207.html#mixing-bus

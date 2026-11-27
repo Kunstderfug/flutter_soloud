@@ -53,6 +53,7 @@ namespace soloud_test
     /// policy but before it decides whether to go idle. This is the window a
     /// naive "clear the queued flag after applying" scheme loses a write in.
     idleTimeoutWorkerApplied,
+    // fork: the two domain-idle stop barriers.
     /// Domain-idle request dequeued, before taking the device-operation lock.
     domainIdleStopDequeued,
     /// Domain-idle request evaluated, before the scheduler admits later work.

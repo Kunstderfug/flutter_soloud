@@ -21,7 +21,7 @@
 #include "limiter.h"
 #include "parametric_eq_filter.h"
 #include "amplitude_modulator_filter.h"
-#include "classical_leveler_filter.h"
+#include "classical_leveler_filter.h" // fork
 #include "custom_filter.h"
 
 Filters::Filters(SoLoud::Soloud *soloud, ActiveSound *sound, BusData *busData)
@@ -152,7 +152,7 @@ std::vector<std::string> Filters::getFilterParamNames(FilterType filterType) {
       ret.push_back(f.getParamName(i));
     }
   } break;
-  case ClassicalLevelerFilter: {
+  case ClassicalLevelerFilter: { // fork
     ClassicalLeveler f;
     for (int i = 0; i < f.getParamCount(); ++i) {
       ret.push_back(f.getParamName(i));
@@ -246,7 +246,7 @@ PlayerErrors Filters::addFilter(FilterType filterType, int customFilterId) {
   case ParametricEQFilter:
     newFilter = new ParametricEq(mSoloud);
     break;
-  case ClassicalLevelerFilter:
+  case ClassicalLevelerFilter: // fork
     newFilter = new ClassicalLeveler();
     break;
   case AmplitudeModulatorFilter:
@@ -381,8 +381,8 @@ PlayerErrors Filters::findParam(SoLoud::handle handle, FilterType filterType,
 PlayerErrors Filters::setFilterParams(SoLoud::handle handle,
                                       FilterType filterType, int attributeId,
                                       float value, int customFilterId) {
-  // A bus filter lives on the bus's own voice. Until the bus is played it has
-  // none, and handle 0 would address the global filters instead.
+  // fork: a bus filter lives on the bus's own voice. Until the bus is played
+  // it has none, and handle 0 would address the global filters instead.
   if (mBusData != nullptr) {
     if (mBusData->handle == 0)
       return soundHandleNotFound;
@@ -402,7 +402,7 @@ PlayerErrors Filters::getFilterParams(SoLoud::handle handle,
                                       float *value, int customFilterId) {
   if (value == nullptr)
     return nullPointer;
-  // A bus filter lives on the bus's own voice (see setFilterParams).
+  // fork: a bus filter lives on the bus's own voice (see setFilterParams).
   if (mBusData != nullptr) {
     if (mBusData->handle == 0)
       return soundHandleNotFound;
@@ -421,7 +421,7 @@ PlayerErrors Filters::fadeFilterParameter(SoLoud::handle handle,
                                           FilterType filterType,
                                           int attributeId, float to,
                                           float time, int customFilterId) {
-  // For a bus, handle 0 would address the global filters (see above).
+  // fork: for a bus, handle 0 would address the global filters (see above).
   if (mBusData != nullptr && handle == 0)
     return soundHandleNotFound;
   int index = -1;
@@ -438,7 +438,7 @@ PlayerErrors Filters::oscillateFilterParameter(SoLoud::handle handle,
                                                int attributeId, float from,
                                                float to, float time,
                                                int customFilterId) {
-  // For a bus, handle 0 would address the global filters (see above).
+  // fork: for a bus, handle 0 would address the global filters (see above).
   if (mBusData != nullptr && handle == 0)
     return soundHandleNotFound;
   int index = -1;

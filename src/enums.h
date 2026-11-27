@@ -87,6 +87,8 @@ typedef enum PlayerErrors {
   hashIsNotARealtimeStream = 36,
 } PlayerErrors_t;
 
+// fork: the voice-group start result (src/fork/player_voice_group.cpp).
+
 /// Result of atomically scheduling a prepared voice group.
 typedef enum VoiceGroupStartResult {
   voiceGroupStartSuccess = 0,
@@ -200,6 +202,7 @@ typedef enum FilterType
   AmplitudeModulatorFilter,
   CustomFilter,
   ClassicalLevelerFilter
+  // fork: ClassicalLevelerFilter, the fork's leveler filter.
 } FilterType_t;
 
 /// WARNING: Keep these in sync with `lib/src/enums.dart`.
@@ -334,6 +337,8 @@ typedef void (*dartVst3ParameterEditCallback_t)(
 typedef void (*dartVst3RestartComponentCallback_t)(
     int pluginHandle,
     int flags);
+
+// fork: the CLAP host enums (src/clap/), to the end of the file.
 
 /// Event types soloud_clapDrainEvents() reports.
 ///

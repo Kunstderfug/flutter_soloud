@@ -799,6 +799,7 @@ bool Vst3PluginInstance::setState(const uint8_t *data, size_t size) {
   const uint8_t *ptr = data + headerSize;
   if (compSize > 0) {
     Steinberg::MemoryStream compStream(const_cast<uint8_t *>(ptr), compSize);
+    // fork: a rejected component state fails the restore.
     if (mComponent->setState(&compStream) != Steinberg::kResultOk) {
       return false;
     }
@@ -811,7 +812,7 @@ bool Vst3PluginInstance::setState(const uint8_t *data, size_t size) {
 
   if (ctrlSize > 0 && mController) {
     Steinberg::MemoryStream ctrlStream(const_cast<uint8_t *>(ptr), ctrlSize);
-    // Controller state is optional in VST3. Unsupported/false is common,
+    // fork: controller state is optional in VST3. Unsupported/false is common,
     // but explicit errors must not turn saved settings into defaults.
     const auto result = mController->setState(&ctrlStream);
     if (result != Steinberg::kResultOk &&

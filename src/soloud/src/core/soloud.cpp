@@ -138,7 +138,7 @@ namespace SoLoud
 #endif
 		mResampler = SOLOUD_DEFAULT_RESAMPLER;
 		mInsideAudioThreadMutex = false;
-#ifdef SOLOUD_TEST
+#ifdef SOLOUD_TEST // fork: test-only mix hook
 		mBeforeMixMutexLockCallback = NULL;
 #endif
 		mScratchSize = 0;
@@ -3617,6 +3617,8 @@ namespace SoLoud
 
 		soloud_simd::ScopedFlushDenormals scopedFtz((mFlags & NO_FPU_REGISTER_CHANGE) == 0);
 
+		// fork: the audio mutex is taken here, before the clock math below,
+		// with a test-only hook just before it.
 #ifdef SOLOUD_TEST
 		if (mBeforeMixMutexLockCallback)
 			mBeforeMixMutexLockCallback();

@@ -117,7 +117,8 @@ namespace SoLoud
 	typedef unsigned int handle;
 	typedef double time;
 
-	// Result of atomically scheduling a prepared voice group.
+	// fork: result of atomically scheduling a prepared voice group
+	// (soloud_core_voicegroup_start.cpp).
 	enum VoiceGroupStartResult
 	{
 		VOICE_GROUP_START_SUCCESS = 0,
@@ -197,7 +198,7 @@ namespace SoLoud
 		// Flag for when we're inside the mutex, used for debugging.
 		bool mInsideAudioThreadMutex;
 #ifdef SOLOUD_TEST
-		// Test-only synchronization point immediately before mix_internal
+		// fork: test-only synchronization point immediately before mix_internal
 		// acquires the audio mutex.
 		void (*mBeforeMixMutexLockCallback)();
 #endif
@@ -617,7 +618,7 @@ namespace SoLoud
 		result destroyVoiceGroup(handle aVoiceGroupHandle);
 		// Add a voice handle to a voice group
 		result addVoiceToGroup(handle aVoiceGroupHandle, handle aVoiceHandle);
-		// Atomically assign one absolute engine deadline and unpause every
+		// fork: atomically assign one absolute engine deadline and unpause every
 		// prepared member of a voice group. Failures leave all voices and the
 		// group unchanged.
 		VoiceGroupStartResult scheduleVoiceGroupStartAt(handle aVoiceGroupHandle, handle aRequiredMainHandle, int aExpectedMemberCount, time aEngineDeadline);

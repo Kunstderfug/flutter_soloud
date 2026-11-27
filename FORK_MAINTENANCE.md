@@ -25,7 +25,7 @@ fails with a message that names the cause.
 | Other native changes | none | `src/filters/filters.cpp`, `src/vst3/vst3_host.cpp`, `src/vst3/vst3_editor_macos.mm`, `src/device_lifecycle_test_hooks.h`. |
 | Vendored SoLoud changes | none | `src/soloud/`: marked `// ###### flutter_soloud local patch (...) ######`. |
 | Build | none | `hook/build.dart`, `src/CMakeLists.txt`, `web/compile_wasm.sh`, the test build helpers in `test/support/`. |
-| Tests | `test/fork/` (Dart and native tests, `fork_registry.dart`, `fork_symbols.dart`, `all.sh`) | One spread line each in `test/common/api_before_init_test.dart`, `filters_api_test.dart` and `web_bindings_sync_test.dart`; the header list in `ffigen_bindings_sync_test.dart`; one `#include` in `test/common/device_coordinator_test.cpp`. |
+| Tests | `test/fork/` (Dart and native tests, `fork_registry.dart`, `fork_symbols.dart`, `all.sh`) | One spread line each in `test/common/api_before_init_test.dart`, `filters_api_test.dart` and `web_bindings_sync_test.dart`; the header list in `ffigen_bindings_sync_test.dart`; the leveler's index in `filter_type_test.dart`; one `#include` in `test/common/device_coordinator_test.cpp`. |
 | Example app | `example/tests/idle_engine`, `example/tests/input_capture`, `example/integration_test/clap_wrapper_test.dart` | Microphone permissions in the example's platform files. |
 
 ### Finding every hook

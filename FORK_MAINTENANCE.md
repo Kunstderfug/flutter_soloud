@@ -128,12 +128,19 @@ conflict. Each has a test that fails, named in brackets.
   [`test/fork/filter_type_contract_test.dart` activates every `FilterType` on
   the real engine and checks the native parameter count, so an index that
   points at another filter fails too.]
-- **Hand-written source lists.** Several build files list the native sources
-  by hand: `hook/build.dart`, `src/CMakeLists.txt`, `web/compile_wasm.sh`,
+- **Native test source list.** The native test builds take the plugin's
+  sources from one list, `test/support/plugin_sources.txt` (read by
   `test/support/engine_sources.sh`, `test/support/plugin_build.sh`,
-  `test/support/native_build.ps1`, and some `test/common/*.sh` scripts. A new
-  upstream script may miss `src/capture/`, `src/fork/` or the WavPack flags
-  (`-DNO_WAVPACK_LIBS`). [the native test fails to link]
+  `test/support/native_build.ps1` and `test/docker/windows_native.sh`). The
+  fork's `src/fork/` and `src/capture/` are one marked block at its end, and
+  the test builds get `-DNO_WAVPACK_LIBS` from one marked line in
+  `plugin_sources()` (plus `Get-PluginDefines` in `native_build.ps1` and the
+  plugin library line in `windows_native.sh`). A new upstream script that
+  lists sources by hand instead of calling `plugin_sources` misses them.
+  `hook/build.dart`, `src/CMakeLists.txt` and `web/compile_wasm.sh` still
+  list the sources themselves. [`test/common/plugin_sources_test.dart` fails
+  when the list misses a source the hook builds; a native test that misses
+  the define fails to link]
 - **Registry tests.** `test/common/api_before_init_test.dart`,
   `filters_api_test.dart` and `web_bindings_sync_test.dart` check that every
   member, filter or export is listed. The fork's entries are in
@@ -150,8 +157,6 @@ conflict. Each has a test that fails, named in brackets.
   5.4.0. The fork's tests are in `test/fork/` and their runners find the repo
   root from their own path. `test/common/device_coordinator_test.cpp`
   includes `../fork/device_domain_idle_stop_test.inc`; keep that line.
-  `test/native_decoder_build_flags.sh` stays at the top of `test/` because
-  `test/common/engine_lifecycle_test.sh` sources it.
 - **Native return types.** Upstream may change what an export returns (for
   example `getFilterParams` returns a `PlayerErrors` code, not a bool). The
   fork's native tests must follow. [`test/fork/all.sh`]

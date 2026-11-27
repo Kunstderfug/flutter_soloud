@@ -220,11 +220,6 @@ if(NOT WIN32)
     ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
     ${REPO_ROOT}/src/bindings.cpp
     ${REPO_ROOT}/src/player.cpp
-    ${REPO_ROOT}/src/capture/capture_mirror.cpp
-    ${REPO_ROOT}/src/capture/capture_processing.cpp
-    ${REPO_ROOT}/src/capture/capture_session.cpp
-    ${REPO_ROOT}/src/capture/capture_writer.cpp
-    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
     ${REPO_ROOT}/src/analyzer.cpp
     ${REPO_ROOT}/src/synth/basic_wave.cpp
     ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -325,6 +320,14 @@ if(NOT WIN32)
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+    ${REPO_ROOT}/src/fork/fork_bindings.cpp
+    ${REPO_ROOT}/src/fork/player_voice_group.cpp
+    ${REPO_ROOT}/src/capture/capture_mirror.cpp
+    ${REPO_ROOT}/src/capture/capture_processing.cpp
+    ${REPO_ROOT}/src/capture/capture_session.cpp
+    ${REPO_ROOT}/src/capture/capture_writer.cpp
+    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+    ${REPO_ROOT}/src/clap_bindings.cpp
     ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
     ${SOLOUD_AAC_DECODER_SOURCE}
     ${SOLOUD_OS_DECODER_SOURCE}
@@ -347,11 +350,6 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
     ${REPO_ROOT}/src/bindings.cpp
     ${REPO_ROOT}/src/player.cpp
-    ${REPO_ROOT}/src/capture/capture_mirror.cpp
-    ${REPO_ROOT}/src/capture/capture_processing.cpp
-    ${REPO_ROOT}/src/capture/capture_session.cpp
-    ${REPO_ROOT}/src/capture/capture_writer.cpp
-    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
     ${REPO_ROOT}/src/analyzer.cpp
     ${REPO_ROOT}/src/synth/basic_wave.cpp
     ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -452,12 +450,20 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+    ${REPO_ROOT}/src/fork/fork_bindings.cpp
+    ${REPO_ROOT}/src/fork/player_voice_group.cpp
+    ${REPO_ROOT}/src/capture/capture_mirror.cpp
+    ${REPO_ROOT}/src/capture/capture_processing.cpp
+    ${REPO_ROOT}/src/capture/capture_session.cpp
+    ${REPO_ROOT}/src/capture/capture_writer.cpp
+    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+    ${REPO_ROOT}/src/clap_bindings.cpp
     ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
     ${SOLOUD_AAC_DECODER_SOURCE}
     ${SOLOUD_OS_DECODER_SOURCE}
     $<TARGET_OBJECTS:buffer_stream_format_test_obj0>
   )
-  target_compile_definitions(buffer_stream_format_test PRIVATE WITH_MINIAUDIO NO_WAVPACK_LIBS MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL)
+  target_compile_definitions(buffer_stream_format_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_WAVPACK_LIBS)
   target_include_directories(buffer_stream_format_test PRIVATE ${XIPH_INCLUDE_DIR} ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
   target_link_libraries(buffer_stream_format_test PRIVATE ${XIPH_VORBISFILE_LIB} ${XIPH_VORBISENC_LIB} ${XIPH_VORBIS_LIB} ${XIPH_OGG_LIB} ${XIPH_OPUS_LIB} ${XIPH_FLAC_LIB} ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
  add_test(NAME buffer_stream_format_test COMMAND buffer_stream_format_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -474,11 +480,6 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
     ${REPO_ROOT}/src/bindings.cpp
     ${REPO_ROOT}/src/player.cpp
-    ${REPO_ROOT}/src/capture/capture_mirror.cpp
-    ${REPO_ROOT}/src/capture/capture_processing.cpp
-    ${REPO_ROOT}/src/capture/capture_session.cpp
-    ${REPO_ROOT}/src/capture/capture_writer.cpp
-    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
     ${REPO_ROOT}/src/analyzer.cpp
     ${REPO_ROOT}/src/synth/basic_wave.cpp
     ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -579,12 +580,20 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+    ${REPO_ROOT}/src/fork/fork_bindings.cpp
+    ${REPO_ROOT}/src/fork/player_voice_group.cpp
+    ${REPO_ROOT}/src/capture/capture_mirror.cpp
+    ${REPO_ROOT}/src/capture/capture_processing.cpp
+    ${REPO_ROOT}/src/capture/capture_session.cpp
+    ${REPO_ROOT}/src/capture/capture_writer.cpp
+    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+    ${REPO_ROOT}/src/clap_bindings.cpp
     ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
     ${SOLOUD_AAC_DECODER_SOURCE}
     ${SOLOUD_OS_DECODER_SOURCE}
     $<TARGET_OBJECTS:buffer_stream_race_test_obj0>
   )
-  target_compile_definitions(buffer_stream_race_test PRIVATE WITH_MINIAUDIO NO_WAVPACK_LIBS MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL SOLOUD_LIFECYCLE_TEST_HOOKS)
+  target_compile_definitions(buffer_stream_race_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
   target_include_directories(buffer_stream_race_test PRIVATE ${XIPH_INCLUDE_DIR} ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
   target_link_libraries(buffer_stream_race_test PRIVATE ${XIPH_VORBISFILE_LIB} ${XIPH_VORBISENC_LIB} ${XIPH_VORBIS_LIB} ${XIPH_OGG_LIB} ${XIPH_OPUS_LIB} ${XIPH_FLAC_LIB} ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
  add_test(NAME buffer_stream_race_test COMMAND buffer_stream_race_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -690,11 +699,6 @@ add_executable(bus_samplerate_test
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -795,13 +799,21 @@ add_executable(bus_samplerate_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${REPO_ROOT}/src/soloud/src/backend/null/soloud_null.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:bus_samplerate_test_obj0>
 )
-target_compile_definitions(bus_samplerate_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL WITH_NULL NO_XIPH_LIBS NO_WAVPACK_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS)
+target_compile_definitions(bus_samplerate_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL WITH_NULL NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
 target_include_directories(bus_samplerate_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(bus_samplerate_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME bus_samplerate_test COMMAND bus_samplerate_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -1115,11 +1127,6 @@ add_executable(device_coordinator_test
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -1220,12 +1227,20 @@ add_executable(device_coordinator_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:device_coordinator_test_obj0>
 )
-target_compile_definitions(device_coordinator_test PRIVATE WITH_MINIAUDIO NO_XIPH_LIBS NO_WAVPACK_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS)
+target_compile_definitions(device_coordinator_test PRIVATE WITH_MINIAUDIO NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
 target_include_directories(device_coordinator_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(device_coordinator_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME device_coordinator_test COMMAND device_coordinator_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -1240,11 +1255,6 @@ add_executable(device_list_test
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -1345,12 +1355,20 @@ add_executable(device_list_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:device_list_test_obj0>
 )
-target_compile_definitions(device_list_test PRIVATE WITH_MINIAUDIO NO_XIPH_LIBS NO_WAVPACK_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS)
+target_compile_definitions(device_list_test PRIVATE WITH_MINIAUDIO NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
 target_include_directories(device_list_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(device_list_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME device_list_test COMMAND device_list_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -1364,11 +1382,6 @@ add_executable(engine_lifecycle_test
   ${REPO_ROOT}/src/soloud_common.cpp
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
-  ${REPO_ROOT}/src/clap/clap_editor.cpp
-  ${REPO_ROOT}/src/clap/clap_host.cpp
-  ${REPO_ROOT}/src/clap/clap_instance.cpp
-  ${REPO_ROOT}/src/clap/clap_module.cpp
-  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/player.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
@@ -1397,11 +1410,6 @@ add_executable(engine_lifecycle_test
   ${REPO_ROOT}/src/native_stream/native_stream_decoder_apple.cpp
   ${REPO_ROOT}/src/native_stream/native_stream_source.cpp
   ${REPO_ROOT}/src/native_decoder/native_audio_decoder.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/filters/amplitude_modulator_filter.cpp
   ${REPO_ROOT}/src/filters/classical_leveler_filter.cpp
   ${REPO_ROOT}/src/filters/classical_leveler_processor.cpp
@@ -1475,6 +1483,18 @@ add_executable(engine_lifecycle_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
+  ${REPO_ROOT}/src/clap/clap_editor.cpp
+  ${REPO_ROOT}/src/clap/clap_host.cpp
+  ${REPO_ROOT}/src/clap/clap_instance.cpp
+  ${REPO_ROOT}/src/clap/clap_module.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
@@ -1623,11 +1643,6 @@ add_executable(filter_params_test
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -1728,12 +1743,20 @@ add_executable(filter_params_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:filter_params_test_obj0>
 )
-target_compile_definitions(filter_params_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS NO_WAVPACK_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS)
+target_compile_definitions(filter_params_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
 target_include_directories(filter_params_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(filter_params_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME filter_params_test COMMAND filter_params_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -1810,11 +1833,6 @@ add_executable(load_mem_ownership_test
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -1915,12 +1933,20 @@ add_executable(load_mem_ownership_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:load_mem_ownership_test_obj0>
 )
-target_compile_definitions(load_mem_ownership_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS NO_WAVPACK_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS)
+target_compile_definitions(load_mem_ownership_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
 target_include_directories(load_mem_ownership_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(load_mem_ownership_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME load_mem_ownership_test COMMAND load_mem_ownership_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -2286,11 +2312,6 @@ if(NOT WIN32)
     ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
     ${REPO_ROOT}/src/bindings.cpp
     ${REPO_ROOT}/src/player.cpp
-    ${REPO_ROOT}/src/capture/capture_mirror.cpp
-    ${REPO_ROOT}/src/capture/capture_processing.cpp
-    ${REPO_ROOT}/src/capture/capture_session.cpp
-    ${REPO_ROOT}/src/capture/capture_writer.cpp
-    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
     ${REPO_ROOT}/src/analyzer.cpp
     ${REPO_ROOT}/src/synth/basic_wave.cpp
     ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -2391,13 +2412,21 @@ if(NOT WIN32)
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+    ${REPO_ROOT}/src/fork/fork_bindings.cpp
+    ${REPO_ROOT}/src/fork/player_voice_group.cpp
+    ${REPO_ROOT}/src/capture/capture_mirror.cpp
+    ${REPO_ROOT}/src/capture/capture_processing.cpp
+    ${REPO_ROOT}/src/capture/capture_session.cpp
+    ${REPO_ROOT}/src/capture/capture_writer.cpp
+    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+    ${REPO_ROOT}/src/clap_bindings.cpp
     ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
     ${REPO_ROOT}/src/soloud/src/backend/null/soloud_null.cpp
     ${SOLOUD_AAC_DECODER_SOURCE}
     ${SOLOUD_OS_DECODER_SOURCE}
     $<TARGET_OBJECTS:out_of_memory_test_obj0>
   )
-  target_compile_definitions(out_of_memory_test PRIVATE WITH_MINIAUDIO WITH_NULL MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_WAVPACK_LIBS NO_XIPH_LIBS)
+  target_compile_definitions(out_of_memory_test PRIVATE WITH_MINIAUDIO WITH_NULL MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS NO_WAVPACK_LIBS)
   target_include_directories(out_of_memory_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
   target_link_libraries(out_of_memory_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
  add_test(NAME out_of_memory_test COMMAND out_of_memory_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -2519,11 +2548,6 @@ add_executable(play_missing_file_test
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -2624,12 +2648,20 @@ add_executable(play_missing_file_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:play_missing_file_test_obj0>
 )
-target_compile_definitions(play_missing_file_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS NO_WAVPACK_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS)
+target_compile_definitions(play_missing_file_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
 target_include_directories(play_missing_file_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(play_missing_file_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME play_missing_file_test COMMAND play_missing_file_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -2644,11 +2676,6 @@ add_executable(player_concurrency_test
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -2749,12 +2776,20 @@ add_executable(player_concurrency_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:player_concurrency_test_obj0>
 )
-target_compile_definitions(player_concurrency_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_WAVPACK_LIBS NO_XIPH_LIBS)
+target_compile_definitions(player_concurrency_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS NO_WAVPACK_LIBS)
 target_include_directories(player_concurrency_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(player_concurrency_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME player_concurrency_test COMMAND player_concurrency_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -2770,11 +2805,6 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
     ${REPO_ROOT}/src/bindings.cpp
     ${REPO_ROOT}/src/player.cpp
-    ${REPO_ROOT}/src/capture/capture_mirror.cpp
-    ${REPO_ROOT}/src/capture/capture_processing.cpp
-    ${REPO_ROOT}/src/capture/capture_session.cpp
-    ${REPO_ROOT}/src/capture/capture_writer.cpp
-    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
     ${REPO_ROOT}/src/analyzer.cpp
     ${REPO_ROOT}/src/synth/basic_wave.cpp
     ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -2875,12 +2905,20 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+    ${REPO_ROOT}/src/fork/fork_bindings.cpp
+    ${REPO_ROOT}/src/fork/player_voice_group.cpp
+    ${REPO_ROOT}/src/capture/capture_mirror.cpp
+    ${REPO_ROOT}/src/capture/capture_processing.cpp
+    ${REPO_ROOT}/src/capture/capture_session.cpp
+    ${REPO_ROOT}/src/capture/capture_writer.cpp
+    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+    ${REPO_ROOT}/src/clap_bindings.cpp
     ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
     ${SOLOUD_AAC_DECODER_SOURCE}
     ${SOLOUD_OS_DECODER_SOURCE}
     $<TARGET_OBJECTS:pull_buffer_stream_test_obj0>
   )
-  target_compile_definitions(pull_buffer_stream_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_WAVPACK_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS)
+  target_compile_definitions(pull_buffer_stream_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
   target_include_directories(pull_buffer_stream_test PRIVATE ${XIPH_INCLUDE_DIR} ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
   target_link_libraries(pull_buffer_stream_test PRIVATE ${XIPH_VORBISFILE_LIB} ${XIPH_VORBISENC_LIB} ${XIPH_VORBIS_LIB} ${XIPH_OGG_LIB} ${XIPH_OPUS_LIB} ${XIPH_FLAC_LIB} ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
  add_test(NAME pull_buffer_stream_test COMMAND pull_buffer_stream_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -2903,11 +2941,6 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
     ${REPO_ROOT}/src/bindings.cpp
     ${REPO_ROOT}/src/player.cpp
-    ${REPO_ROOT}/src/capture/capture_mirror.cpp
-    ${REPO_ROOT}/src/capture/capture_processing.cpp
-    ${REPO_ROOT}/src/capture/capture_session.cpp
-    ${REPO_ROOT}/src/capture/capture_writer.cpp
-    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
     ${REPO_ROOT}/src/analyzer.cpp
     ${REPO_ROOT}/src/synth/basic_wave.cpp
     ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -3008,12 +3041,20 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+    ${REPO_ROOT}/src/fork/fork_bindings.cpp
+    ${REPO_ROOT}/src/fork/player_voice_group.cpp
+    ${REPO_ROOT}/src/capture/capture_mirror.cpp
+    ${REPO_ROOT}/src/capture/capture_processing.cpp
+    ${REPO_ROOT}/src/capture/capture_session.cpp
+    ${REPO_ROOT}/src/capture/capture_writer.cpp
+    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+    ${REPO_ROOT}/src/clap_bindings.cpp
     ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
     ${SOLOUD_AAC_DECODER_SOURCE}
     ${SOLOUD_OS_DECODER_SOURCE}
     $<TARGET_OBJECTS:pull_ogg_seek_test_obj0>
   )
-  target_compile_definitions(pull_ogg_seek_test PRIVATE WITH_MINIAUDIO NO_WAVPACK_LIBS MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL SOLOUD_LIFECYCLE_TEST_HOOKS)
+  target_compile_definitions(pull_ogg_seek_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
   target_include_directories(pull_ogg_seek_test PRIVATE ${XIPH_INCLUDE_DIR} ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
   target_link_libraries(pull_ogg_seek_test PRIVATE ${XIPH_VORBISFILE_LIB} ${XIPH_VORBISENC_LIB} ${XIPH_VORBIS_LIB} ${XIPH_OGG_LIB} ${XIPH_OPUS_LIB} ${XIPH_FLAC_LIB} ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
  add_test(NAME pull_ogg_seek_test COMMAND pull_ogg_seek_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -3030,11 +3071,6 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
     ${REPO_ROOT}/src/bindings.cpp
     ${REPO_ROOT}/src/player.cpp
-    ${REPO_ROOT}/src/capture/capture_mirror.cpp
-    ${REPO_ROOT}/src/capture/capture_processing.cpp
-    ${REPO_ROOT}/src/capture/capture_session.cpp
-    ${REPO_ROOT}/src/capture/capture_writer.cpp
-    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
     ${REPO_ROOT}/src/analyzer.cpp
     ${REPO_ROOT}/src/synth/basic_wave.cpp
     ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -3135,12 +3171,20 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
     ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+    ${REPO_ROOT}/src/fork/fork_bindings.cpp
+    ${REPO_ROOT}/src/fork/player_voice_group.cpp
+    ${REPO_ROOT}/src/capture/capture_mirror.cpp
+    ${REPO_ROOT}/src/capture/capture_processing.cpp
+    ${REPO_ROOT}/src/capture/capture_session.cpp
+    ${REPO_ROOT}/src/capture/capture_writer.cpp
+    ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+    ${REPO_ROOT}/src/clap_bindings.cpp
     ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
     ${SOLOUD_AAC_DECODER_SOURCE}
     ${SOLOUD_OS_DECODER_SOURCE}
     $<TARGET_OBJECTS:pull_stream_race_test_obj0>
   )
-  target_compile_definitions(pull_stream_race_test PRIVATE WITH_MINIAUDIO NO_WAVPACK_LIBS MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL SOLOUD_LIFECYCLE_TEST_HOOKS)
+  target_compile_definitions(pull_stream_race_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
   target_include_directories(pull_stream_race_test PRIVATE ${XIPH_INCLUDE_DIR} ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
   target_link_libraries(pull_stream_race_test PRIVATE ${XIPH_VORBISFILE_LIB} ${XIPH_VORBISENC_LIB} ${XIPH_VORBIS_LIB} ${XIPH_OGG_LIB} ${XIPH_OPUS_LIB} ${XIPH_FLAC_LIB} ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
  add_test(NAME pull_stream_race_test COMMAND pull_stream_race_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -3633,13 +3677,6 @@ target_include_directories(stress_soak_test_obj0 PRIVATE ${REPO_ROOT}/src/pffft)
 add_executable(stress_soak_test
   ${REPO_ROOT}/test/common/stress_soak_test.cpp
   ${REPO_ROOT}/src/soloud_common.cpp
-  ${REPO_ROOT}/src/fork/fork_bindings.cpp
-  ${REPO_ROOT}/src/fork/player_voice_group.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
@@ -3743,12 +3780,20 @@ add_executable(stress_soak_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:stress_soak_test_obj0>
 )
-target_compile_definitions(stress_soak_test PRIVATE WITH_MINIAUDIO NO_XIPH_LIBS MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_WAVPACK_LIBS)
+target_compile_definitions(stress_soak_test PRIVATE WITH_MINIAUDIO NO_XIPH_LIBS NO_WAVPACK_LIBS MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL)
 target_include_directories(stress_soak_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(stress_soak_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME stress_soak_test COMMAND stress_soak_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -3972,11 +4017,6 @@ add_executable(waveform_synth_test
   ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
   ${REPO_ROOT}/src/bindings.cpp
   ${REPO_ROOT}/src/player.cpp
-  ${REPO_ROOT}/src/capture/capture_mirror.cpp
-  ${REPO_ROOT}/src/capture/capture_processing.cpp
-  ${REPO_ROOT}/src/capture/capture_session.cpp
-  ${REPO_ROOT}/src/capture/capture_writer.cpp
-  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -4077,12 +4117,20 @@ add_executable(waveform_synth_test
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/mb_ogg.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wav.cpp
   ${REPO_ROOT}/src/soloud/src/audiosource/wav/soloud_wavstream.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
+  ${REPO_ROOT}/src/capture/capture_mirror.cpp
+  ${REPO_ROOT}/src/capture/capture_processing.cpp
+  ${REPO_ROOT}/src/capture/capture_session.cpp
+  ${REPO_ROOT}/src/capture/capture_writer.cpp
+  ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/clap_bindings.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:waveform_synth_test_obj0>
 )
-target_compile_definitions(waveform_synth_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS NO_WAVPACK_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS)
+target_compile_definitions(waveform_synth_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
 target_include_directories(waveform_synth_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(waveform_synth_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME waveform_synth_test COMMAND waveform_synth_test WORKING_DIRECTORY ${REPO_ROOT})

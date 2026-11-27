@@ -20,7 +20,6 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
-source test/native_decoder_build_flags.sh
 
 SANITIZER=()
 OUT="${TMPDIR:-/tmp}/engine_lifecycle_test"
@@ -32,12 +31,13 @@ elif [ "$1" == "--tsan" ]; then
     OUT="${OUT}_tsan"
 fi
 
-# On macOS the CLAP host is compiled in too, for the dispose lock-order test.
+# fork: on macOS the CLAP host is compiled in too, for the dispose lock-order
+# test.
 PLUGIN_HOST_FLAGS=()
 PLUGIN_HOST_SOURCES=()
 if [ "$(uname -s)" == "Darwin" ]; then
     PLUGIN_HOST_FLAGS=(-DSOLOUD_ENABLE_CLAP -isystem src/clap/third_party/clap/include)
-    PLUGIN_HOST_SOURCES=(src/clap/*.cpp src/clap_bindings.cpp)
+    PLUGIN_HOST_SOURCES=(src/clap/*.cpp)
 fi
 
 WORK_DIR="$(mktemp -d)"
@@ -50,49 +50,25 @@ cc -std=gnu99 -O2 -c "${SANITIZER[@]}" \
     -o "$WORK_DIR/pffft.o" \
     src/pffft/pffft.c
 
+# The plugin's sources, shared by the native test builds
+# (test/support/plugin_sources.txt).
+. test/support/engine_sources.sh
+plugin_sources
+
 c++ -std=c++17 -O2 -w -pthread "${SANITIZER[@]}" \
     -DWITH_MINIAUDIO \
     -DMA_ENABLE_ONLY_SPECIFIC_BACKENDS -DMA_ENABLE_NULL \
     -DNO_XIPH_LIBS \
     -DSOLOUD_LIFECYCLE_TEST_HOOKS \
     "${PLUGIN_HOST_FLAGS[@]}" \
-    -I src/soloud/include \
-    -I src/soloud/src \
-    -I src/pffft \
-    -I src \
-    "${NATIVE_DECODER_FLAGS[@]}" \
-    -DNO_WAVPACK_LIBS \
+    "${PLUGIN_INCLUDES[@]}" \
     -o "$OUT" \
     test/common/engine_lifecycle_test.cpp \
     "$WORK_DIR/pffft.o" \
-    src/soloud_common.cpp \
-    src/device_lifecycle_test_hooks.cpp \
-    src/bindings.cpp \
+    "${PLUGIN_SOURCES[@]}" \
     "${PLUGIN_HOST_SOURCES[@]}" \
-    src/player.cpp \
-    src/analyzer.cpp \
-    src/synth/*.cpp \
-    src/waveform/waveform.cpp \
-    src/waveform/miniaudio_libvorbis.cpp \
-    src/audiobuffer/*.cpp \
-    src/native_stream/*.cpp \
-    src/native_decoder/native_audio_decoder.cpp \
-    "${NATIVE_DECODER_PLATFORM_SOURCES[@]}" \
-    src/capture/*.cpp \
-    src/filters/*.cpp \
-    src/mixeroutput/*.cpp \
-    src/soloud/src/core/*.cpp \
-    src/soloud/src/filter/*.cpp \
-    src/soloud/src/audiosource/ay/*.cpp \
-    src/soloud/src/audiosource/monotone/*.cpp \
-    src/soloud/src/audiosource/noise/*.cpp \
-    src/soloud/src/audiosource/sfxr/*.cpp \
-    src/soloud/src/audiosource/speech/*.cpp \
-    src/soloud/src/audiosource/tedsid/*.cpp \
-    src/soloud/src/audiosource/vic/*.cpp \
-    src/soloud/src/audiosource/vizsn/*.cpp \
-    src/soloud/src/audiosource/wav/*.cpp \
     src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp \
+    "${PLUGIN_LIBS[@]}" \
     -ldl -lm
 
 "$OUT"

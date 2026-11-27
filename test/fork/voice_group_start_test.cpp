@@ -2,7 +2,7 @@
 //
 // Build and run from the flutter_soloud repository root with:
 //
-//   ./test/run_voice_group_start_test.sh
+//   ./test/fork/run_voice_group_start_test.sh
 
 #include "soloud.h"
 #include "soloud_audiosource.h"

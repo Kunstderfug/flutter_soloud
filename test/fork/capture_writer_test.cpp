@@ -1,5 +1,5 @@
-#include "../src/capture/capture_processing.h"
-#include "../src/capture/capture_writer.h"
+#include "../../src/capture/capture_processing.h"
+#include "../../src/capture/capture_writer.h"
 
 #include <cassert>
 #include <cmath>

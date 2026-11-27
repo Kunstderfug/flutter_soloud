@@ -12,7 +12,7 @@ const _expectClap = String.fromEnvironment('EXPECT_CLAP');
 
 // Only calls that return before the host marshals to the main thread: a
 // plain `dart test` process need not service the main dispatch queue. Real
-// bundles are covered by test/run_clap_host_test.sh.
+// bundles are covered by test/fork/run_clap_host_test.sh.
 void main() {
   final supported = native.soloud_clapIsSupported() == 1;
   // What a rejected call returns: invalid arguments when CLAP is compiled

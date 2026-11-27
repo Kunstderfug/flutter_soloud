@@ -1,9 +1,9 @@
 // A fake SoLoud::PluginHostWindow for the native CLAP host harness
-// (test/clap_host_test.cpp): records what the CLAP editor asks of its window
+// (test/fork/clap_host_test.cpp): records what the CLAP editor asks of its window
 // and lets a test act as the user. Main thread only, like the real window.
 #pragma once
 
-#include "../src/plugin_ui/plugin_host_window.h"
+#include "../../src/plugin_ui/plugin_host_window.h"
 
 #include <cstdint>
 #include <string>

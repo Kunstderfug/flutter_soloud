@@ -71,6 +71,8 @@ set (CORE_SOURCES
 	${CORE_PATH}/soloud_core_looping.cpp
 	${CORE_PATH}/soloud_core_setters.cpp
 	${CORE_PATH}/soloud_core_voicegroup.cpp
+	# fork: Soloud::scheduleVoiceGroupStartAt
+	${CORE_PATH}/soloud_core_voicegroup_start.cpp
 	${CORE_PATH}/soloud_core_voiceops.cpp
 	${CORE_PATH}/soloud_fader.cpp
 	${CORE_PATH}/soloud_fft.cpp

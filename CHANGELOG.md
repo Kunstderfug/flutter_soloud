@@ -1,5 +1,6 @@
-##### Unreleased (4 Nov 2026)
+##### Unreleased (26 Nov 2026)
 - feat: Classical Leveler with BS.1770 passage lift, gentle downward, applied-gain meter and prepared source-envelope look-ahead without audio delay. Available globally, per sound and per bus.
+- fix: a bus's filter parameter read, faded or oscillated with a `soundHandle` (for example of a sound playing on the bus) now acts on the bus, as setting it already did (offered upstream as branch `pr/bus-filter-params`).
 
 ## 5.4.0 (26 Nov 2026)
 A bug-fix release: a new, much larger test suite found many bugs, now fixed.

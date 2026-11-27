@@ -15,9 +15,9 @@
 # or $env:VST3_PREBUILD_DIR. Prints SKIPPED without either. No audio device,
 # no assets.
 #   -Asan  build with /fsanitize=address.
-# Verification: NOT YET VERIFIED ON WINDOWS (written on macOS, where the same
-# test source passes against the macOS host; the test, mock and helper
-# sources were syntax-checked with mingw-w64).
+# Verification: passes on Windows 11 x64 with MSVC 14.50 (27 Nov 2026, commit
+# 5cd0a8ab): 122 assertions, 0 failures, against the prebuild downloaded by
+# building example\ with enable_vst3. arm64 and -Asan not yet run.
 
 param([switch]$Asan, [string]$Test = '')
 $ErrorActionPreference = 'Stop'

@@ -14,8 +14,9 @@
 # or $env:VST3_PREBUILD_DIR, see vst3_host_test.ps1). Prints SKIPPED without
 # them. No audio device, no assets.
 #   -Asan  build with /fsanitize=address.
-# Verification: NOT VERIFIED ON WINDOWS. Cross-compiled with mingw-w64 and run
-# under Wine + Xvfb (test/docker/windows_native.sh, which links
+# Verification: passes on Windows 11 x64 with MSVC 14.50 (27 Nov 2026, commit
+# 5cd0a8ab): 34 checks, 0 failed, at 96 DPI. Also cross-compiled with mingw-w64
+# and run under Wine + Xvfb (test/docker/windows_native.sh, which links
 # test\windows\vst3_sdk_mingw_stubs.cpp instead of the MSVC-only SDK library).
 
 param([switch]$Asan)

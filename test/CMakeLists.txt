@@ -143,6 +143,7 @@ add_executable(adsr_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -190,6 +191,7 @@ add_executable(analyzer_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -279,6 +281,7 @@ if(NOT WIN32)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -405,6 +408,7 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -531,6 +535,7 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -601,6 +606,7 @@ add_executable(bus_annex_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -644,6 +650,7 @@ add_executable(bus_destroy_filter_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -744,6 +751,7 @@ add_executable(bus_samplerate_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -825,6 +833,7 @@ add_executable(bus_visualization_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -870,6 +879,7 @@ add_executable(checkpoint_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -913,6 +923,7 @@ add_executable(compressor_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -958,6 +969,7 @@ add_executable(custom_filter_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1004,6 +1016,7 @@ add_executable(custom_source_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1063,6 +1076,7 @@ add_executable(dc_removal_eq_filter_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1162,6 +1176,7 @@ add_executable(device_coordinator_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1286,6 +1301,7 @@ add_executable(device_list_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1415,6 +1431,7 @@ add_executable(engine_lifecycle_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1487,6 +1504,7 @@ add_executable(fader_ops_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1521,6 +1539,7 @@ add_executable(fft_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1564,6 +1583,7 @@ add_executable(filter_ops_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1664,6 +1684,7 @@ add_executable(filter_params_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1850,6 +1871,7 @@ add_executable(load_mem_ownership_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -1919,6 +1941,7 @@ add_executable(loop_end_point_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2116,6 +2139,7 @@ add_executable(native_stream_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2151,6 +2175,7 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2322,6 +2347,7 @@ if(NOT WIN32)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2411,6 +2437,7 @@ add_executable(parametric_eq_filter_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2465,6 +2492,7 @@ add_executable(pitch_shift_filter_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2552,6 +2580,7 @@ add_executable(play_missing_file_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2676,6 +2705,7 @@ add_executable(player_concurrency_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2801,6 +2831,7 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -2933,6 +2964,7 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3059,6 +3091,7 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3134,6 +3167,7 @@ add_executable(realtime_and_custom_dsp_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3194,6 +3228,7 @@ add_executable(render_ring_device_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3251,6 +3286,7 @@ add_executable(render_ring_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3283,6 +3319,7 @@ add_executable(resampler_carry_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3318,6 +3355,7 @@ add_executable(resampler_quality_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3350,6 +3388,7 @@ add_executable(retroactive_remix_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3426,6 +3465,7 @@ add_executable(soloud_filters_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3470,6 +3510,7 @@ add_executable(soloud_queue_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3503,6 +3544,7 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3545,6 +3587,7 @@ add_executable(speech_source_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3590,14 +3633,16 @@ target_include_directories(stress_soak_test_obj0 PRIVATE ${REPO_ROOT}/src/pffft)
 add_executable(stress_soak_test
   ${REPO_ROOT}/test/common/stress_soak_test.cpp
   ${REPO_ROOT}/src/soloud_common.cpp
-  ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
-  ${REPO_ROOT}/src/bindings.cpp
-  ${REPO_ROOT}/src/player.cpp
+  ${REPO_ROOT}/src/fork/fork_bindings.cpp
+  ${REPO_ROOT}/src/fork/player_voice_group.cpp
   ${REPO_ROOT}/src/capture/capture_mirror.cpp
   ${REPO_ROOT}/src/capture/capture_processing.cpp
   ${REPO_ROOT}/src/capture/capture_session.cpp
   ${REPO_ROOT}/src/capture/capture_writer.cpp
   ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
+  ${REPO_ROOT}/src/device_lifecycle_test_hooks.cpp
+  ${REPO_ROOT}/src/bindings.cpp
+  ${REPO_ROOT}/src/player.cpp
   ${REPO_ROOT}/src/analyzer.cpp
   ${REPO_ROOT}/src/synth/basic_wave.cpp
   ${REPO_ROOT}/src/synth/custom_source.cpp
@@ -3654,6 +3699,7 @@ add_executable(stress_soak_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3702,7 +3748,7 @@ add_executable(stress_soak_test
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:stress_soak_test_obj0>
 )
-target_compile_definitions(stress_soak_test PRIVATE WITH_MINIAUDIO NO_XIPH_LIBS NO_WAVPACK_LIBS MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL)
+target_compile_definitions(stress_soak_test PRIVATE WITH_MINIAUDIO NO_XIPH_LIBS MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_WAVPACK_LIBS)
 target_include_directories(stress_soak_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
 target_link_libraries(stress_soak_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME stress_soak_test COMMAND stress_soak_test WORKING_DIRECTORY ${REPO_ROOT})
@@ -3723,6 +3769,7 @@ add_executable(voice_allocation_failure_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3755,6 +3802,7 @@ add_executable(voice_ended_callback_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3787,6 +3835,7 @@ add_executable(voice_tail_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3819,6 +3868,7 @@ add_executable(voice_virtualization_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -3983,6 +4033,7 @@ add_executable(waveform_synth_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -4072,6 +4123,7 @@ if(SOLOUD_XIPH_FOUND)
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+    ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
     ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp
@@ -4109,6 +4161,7 @@ add_executable(wavstream_seek_test
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_looping.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_setters.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup.cpp
+  ${REPO_ROOT}/src/soloud/src/core/soloud_core_voicegroup_start.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_core_voiceops.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fader.cpp
   ${REPO_ROOT}/src/soloud/src/core/soloud_fft.cpp

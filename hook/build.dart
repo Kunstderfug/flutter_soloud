@@ -578,7 +578,7 @@ List<String> collectSources(
   // Each file compiles to nothing on platforms it doesn't serve.
   addDir('native_stream/');
   addDir('waveform/');
-  // Miniaudio input capture. WavPack C sources are built separately:
+  // fork: miniaudio input capture. WavPack C sources are built separately:
   // CBuilder language.cpp force-feeds `-x c++`.
   addDir('capture/');
   // fork: the fork's entry points and Player methods.

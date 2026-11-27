@@ -15,15 +15,15 @@ fails with a message that names the cause.
 
 | Area | Files the fork owns | Hooks in upstream files |
 |---|---|---|
-| Public Dart API (capture, idle stop, voice-group start, engine session, CLAP) | `lib/src/fork/soloud_fork_api.dart` (a part of `soloud.dart`: the private mixin `_SoLoudForkApi`) | `lib/src/soloud.dart`: the `part` line, two lifecycle calls, and one `// fork: begin` ... `// fork: end` block of public forwarders. The forwarders keep the dartdoc pages and let mocktail mocks see the members. |
+| Public Dart API (capture, idle stop, voice-group start, engine session) | `lib/src/fork/soloud_fork_api.dart` (a part of `soloud.dart`: the private mixin `_SoLoudForkApi`) | `lib/src/soloud.dart`: the `part` line, two lifecycle calls, and one `// fork: begin` ... `// fork: end` block of public forwarders. The forwarders keep the dartdoc pages and let mocktail mocks see the members. |
 | Dart bindings | `lib/src/fork/bindings_player_fork.dart`, `bindings_ffi_fork.dart`, `bindings_player_web_fork.dart` (mixins, parts of the binding files) | `bindings_player.dart`, `bindings_player_ffi.dart`, `bindings_player_web.dart`: `part` lines and `with` clauses. `js_extension.dart`: the web binding of `scheduleVoiceGroupStartAt`. |
 | Fork enums | `lib/src/fork/fork_enums.dart` (`VoiceGroupStartResult`, `ClapHostEventType`, `ClapNoteDialect`) | `lib/src/enums.dart`: one export line. |
 | Input capture | `lib/src/capture/`, `lib/src/helpers/capture_device.dart`, `src/capture/`, `src/wavpack/` (vendored WavPack encoder) | Exports in `lib/flutter_soloud.dart`; the native exports (see below). |
-| CLAP plugin hosting (desktop) | `lib/src/clap/`, `src/clap/`, `src/clap_bindings.cpp`, `src/plugin_ui/`, `src/plugin_audio_barrier.h` | Declarations in `src/bindings.h` inside `#ifndef __EMSCRIPTEN__`; `hook/build.dart` (`enable_clap`). |
+| CLAP plugin hosting (desktop) | `lib/src/clap/` (its own API, not part of the mixin), `src/clap/`, `src/clap_bindings.cpp`, `src/plugin_ui/`, `src/plugin_audio_barrier.h`; declarations in `src/fork/fork_bindings.h` | `src/bindings.h` includes `fork/fork_bindings.h`; `hook/build.dart` (`enable_clap`). |
 | Classical Leveler filter | `lib/src/filters/classical_leveler_filter.dart`, `src/filters/classical_leveler_*`, `src/filters/classical_k_weighting.h` | `FilterType.classicalLevelerFilter` in `lib/src/filters/filters.dart` and `ClassicalLevelerFilter` in `src/enums.h` (both after `customFilter`); `isValidFilterType` in `src/bindings.cpp`; `src/filters/filters.{h,cpp}`. |
 | Native fork exports | `src/fork/` (`fork_bindings.h` is an ffigen entry point in `ffigen.yaml`) | `src/bindings.{h,cpp}`, `src/player.{h,cpp}`: marked `// fork:`. |
 | Other native changes | none | `src/filters/filters.cpp`, `src/vst3/vst3_host.cpp`, `src/vst3/vst3_editor_macos.mm`, `src/device_lifecycle_test_hooks.h`. |
-| Vendored SoLoud changes | none | `src/soloud/`: marked `// ###### flutter_soloud local patch (...) ######`. |
+| Vendored SoLoud changes | `src/soloud/src/core/soloud_core_voicegroup_start.cpp` (voice-group start at one deadline) | `src/soloud/`: marked `// ###### flutter_soloud local patch (...) ######`. |
 | Build | none | `hook/build.dart`, `src/CMakeLists.txt`, `web/compile_wasm.sh`, the test build helpers in `test/support/`. |
 | Tests | `test/fork/` (Dart and native tests, `fork_registry.dart`, `fork_symbols.dart`, `all.sh`) | One spread line each in `test/common/api_before_init_test.dart`, `filters_api_test.dart` and `web_bindings_sync_test.dart`; the header list in `ffigen_bindings_sync_test.dart`; the leveler's index in `filter_type_test.dart`; one `#include` in `test/common/device_coordinator_test.cpp`. |
 | Example app | `example/tests/idle_engine`, `example/tests/input_capture`, `example/integration_test/clap_wrapper_test.dart` | Microphone permissions in the example's platform files. |
@@ -31,7 +31,7 @@ fails with a message that names the cause.
 ### Finding every hook
 
 ```bash
-git grep -n "// fork:"                          # Dart, C++ and test hooks
+git grep -nE "(//|#) fork:"                   # Dart, C++, shell and test hooks
 git grep -n "flutter_soloud local patch" src/soloud   # vendored SoLoud changes
 git diff --stat --diff-filter=M vX.Y.Z        # every upstream file the fork changes
 ```

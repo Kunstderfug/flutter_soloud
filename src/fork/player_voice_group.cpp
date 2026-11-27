@@ -1,7 +1,7 @@
 // Player::scheduleVoiceGroupStartAt, the fork's one-deadline voice-group
 // start. Kept out of the upstream src/player.cpp; declared in
 // player_fork_methods.inc. The engine side is
-// src/soloud/src/core/soloud_core_voicegroup.cpp.
+// src/soloud/src/core/soloud_core_voicegroup_start.cpp.
 #include "../player.h"
 
 // The FFI enum must mirror SoLoud's result codes value for value.

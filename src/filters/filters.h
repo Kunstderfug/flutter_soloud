@@ -129,7 +129,7 @@ struct BusData {
 
   explicit BusData(unsigned int busId, SoLoud::Soloud *soloud)
       : id(busId), filters(soloud, nullptr, this) {
-    syncSampleRate(soloud); // fork
+    syncSampleRate(soloud); // fork: bus mixes at the backend rate
   }
 
   // fork: the bus mixes at the backend rate, once the backend has one.

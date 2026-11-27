@@ -284,7 +284,7 @@ static PlayerErrors fromSoLoudError(SoLoud::result result)
 }
 
 Player::Player() : mFilters(&soloud, nullptr, nullptr),
-                   mCaptureSession(std::make_unique<CaptureSession>(*this)), // fork
+                   mCaptureSession(std::make_unique<CaptureSession>(*this)), // fork: input capture
                    mPauseThreadRunning(false),
                    mIdleTimeoutMs(
                        gAudioDeviceIdleTimeoutMs.load(
@@ -2400,7 +2400,7 @@ bool Player::requestDeviceLifecycle(DeviceLifecycleRequest request)
             shouldNotify = true;
             break;
 
-        case DeviceLifecycleRequest::domainIdleStop: // fork
+        case DeviceLifecycleRequest::domainIdleStop: // fork: idle stop
             // Domain idle supersedes earlier playback intent, but must not
             // displace the system's higher-priority interruption cleanup.
             if (mPendingDeviceRequest == DeviceLifecycleRequest::interruptionStop ||
@@ -2530,7 +2530,7 @@ void Player::pauseEngineScheduler()
         {
             mImmediateDeviceRequestInFlight = request;
             lock.unlock();
-            if (request == DeviceLifecycleRequest::domainIdleStop) // fork
+            if (request == DeviceLifecycleRequest::domainIdleStop) // fork: idle stop
                 SOLOUD_TEST_BARRIER(domainIdleStopDequeued);
 
             std::lock_guard<std::mutex> operationLock(
@@ -2560,7 +2560,7 @@ void Player::pauseEngineScheduler()
                     performAudioDeviceStop(true);
                 }
             }
-            if (request == DeviceLifecycleRequest::domainIdleStop) // fork
+            if (request == DeviceLifecycleRequest::domainIdleStop) // fork: idle stop
                 SOLOUD_TEST_BARRIER(domainIdleStopCompleted);
 
             bool shouldNotify = false;

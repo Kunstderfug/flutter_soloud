@@ -232,7 +232,7 @@ long long millisSince(std::chrono::steady_clock::time_point start)
         .count();
 }
 
-#include "device_domain_idle_stop_test.inc"
+#include "../fork/device_domain_idle_stop_test.inc" // fork:
 
 // ---------------------------------------------------------------------------
 

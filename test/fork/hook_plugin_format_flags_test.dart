@@ -9,7 +9,7 @@ import 'dart:io';
 import 'package:code_assets/code_assets.dart';
 import 'package:test/test.dart';
 
-import '../hook/build.dart' as hook;
+import '../../hook/build.dart' as hook;
 
 final _vst3Platforms = {OS.macOS, OS.windows, OS.linux};
 final _clapPlatforms = {OS.macOS};

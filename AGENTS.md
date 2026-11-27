@@ -27,6 +27,19 @@ These rules are for agents that change the plugin itself. Agents that only
 The user documentation is a separate repository, `flutter_soloud_docs`
 (MDX for docs.page).
 
+## This fork
+
+This checkout is GPhil's fork of upstream `alnitak/flutter_soloud`. Read
+[`FORK_MAINTENANCE.md`](FORK_MAINTENANCE.md) before merging an upstream
+release or changing fork code.
+
+- Fork code goes in files upstream does not have (`lib/src/fork/`,
+  `src/fork/`, `test/fork/`, ...). In an upstream file, keep the fork's part
+  to one short line or block marked `// fork:` (`git grep -n "// fork:"`).
+- Fork members of `SoLoud` stay instance members: GPhil mocks `SoLoud` with
+  `implements SoLoud`.
+- Fork tests: `flutter test test/fork` and `./test/fork/all.sh`.
+
 ## Hard rules
 
 - Never modify `miniaudio.h`, `dr_flac.h`, `dr_mp3.h` or `dr_wav.h` (under

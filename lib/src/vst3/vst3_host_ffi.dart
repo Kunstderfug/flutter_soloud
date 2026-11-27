@@ -181,9 +181,9 @@ class Vst3Host {
   void unloadAll() {
     if (!isSupported) return;
     ffigen.soloud_vst3HostUnloadAll();
-    // The native unload clears both callbacks, but the Dart callables stay
-    // alive, so plugins loaded afterwards would never report edits or
-    // restarts unless the callbacks are attached again.
+    // fork: the native unload clears both callbacks, but the Dart callables
+    // stay alive, so plugins loaded afterwards would never report edits or
+    // restarts unless the callbacks are attached again. An upstream candidate.
     final guiEdit = _guiEditNativeCallable;
     if (guiEdit != null) {
       ffigen.soloud_vst3SetParameterEditCallback(guiEdit.nativeFunction);

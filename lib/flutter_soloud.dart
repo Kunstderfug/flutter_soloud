@@ -3,14 +3,14 @@ library;
 
 export 'src/audio_source.dart';
 export 'src/audio_visualization_data.dart';
-export 'src/capture/soloud_capture.dart';
-export 'src/clap/clap_host.dart';
+export 'src/capture/soloud_capture.dart'; // fork:
+export 'src/clap/clap_host.dart'; // fork:
 export 'src/enums.dart' hide PlayerErrors, PlayerStateNotification;
 export 'src/exceptions/exceptions.dart';
-export 'src/filters/classical_leveler_filter.dart';
+export 'src/filters/classical_leveler_filter.dart'; // fork:
 export 'src/filters/custom_filter.dart';
 export 'src/filters/filters.dart' show FilterType;
-export 'src/helpers/capture_device.dart';
+export 'src/helpers/capture_device.dart'; // fork:
 export 'src/helpers/playback_device.dart';
 export 'src/metadata.dart';
 export 'src/mixing_bus.dart';

@@ -1,5 +1,5 @@
-// Shared between the mock CLAP plugin (test/clap_mock_plugin.cpp) and the
-// native CLAP host harness (test/clap_host_test.cpp). The harness finds these
+// Shared between the mock CLAP plugin (test/fork/clap_mock_plugin.cpp) and the
+// native CLAP host harness (test/fork/clap_host_test.cpp). The harness finds these
 // hooks in the loaded bundle with CFBundleGetFunctionPointerForName.
 #pragma once
 

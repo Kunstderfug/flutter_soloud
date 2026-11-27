@@ -19,7 +19,54 @@ import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
 const _generatedPath = 'lib/src/bindings/flutter_soloud_ffigen.dart';
-const _headerPath = 'src/bindings.h';
+
+// fork: every header ffigen reads (ffigen.yaml), not only src/bindings.h.
+final _headers = _ffigenHeaders();
+final _headerPath = _headers.join(', ');
+
+/// The items of the YAML block list under [key] in [yaml], unquoted.
+List<String> _yamlList(String yaml, String key) {
+  final m = RegExp(
+    '^([ \\t]*)$key:[ \\t]*\\n((?:\\1[ \\t]+- .*\\n?)+)',
+    multiLine: true,
+  ).firstMatch(yaml);
+  if (m == null) return [];
+  return [
+    for (final line in m[2]!.trim().split('\n'))
+      line.trim().substring(1).trim().replaceAll(RegExp('^[\'"]|[\'"]\$'), ''),
+  ];
+}
+
+/// The headers whose declarations ffigen binds: the entry points of
+/// ffigen.yaml, plus the local headers they include (directly or not) that
+/// match its include-directives.
+List<String> _ffigenHeaders() {
+  final config = _readText('ffigen.yaml');
+  final directives = [
+    for (final glob in _yamlList(config, 'include-directives'))
+      RegExp(
+        '(^|/)${RegExp.escape(glob).replaceAll(r'\*\*', '.*').replaceAll(r'\*', '[^/]*')}\$',
+      ),
+  ];
+  final headers = <String>[];
+  void visit(String path, {required bool entryPoint}) {
+    final normalized = p.posix.normalize(path);
+    if (headers.contains(normalized) || !File(normalized).existsSync()) return;
+    if (!entryPoint && !directives.any((d) => d.hasMatch(normalized))) return;
+    headers.add(normalized);
+    for (final m in RegExp(
+      r'^\s*#\s*include\s*"([^"]+)"',
+      multiLine: true,
+    ).allMatches(_readText(normalized))) {
+      visit(p.posix.join(p.posix.dirname(normalized), m[1]), entryPoint: false);
+    }
+  }
+
+  for (final entryPoint in _yamlList(config, 'entry-points')) {
+    visit(entryPoint, entryPoint: true);
+  }
+  return headers;
+}
 
 /// Macros that are undefined when ffigen parses the header on the host.
 const _undefinedMacros = {'__EMSCRIPTEN__', 'SOLOUD_LIFECYCLE_TEST_HOOKS'};
@@ -183,7 +230,7 @@ Set<String> _declarations(String dart) {
 }
 
 void main() {
-  final header = _readText(_headerPath);
+  final header = _headers.map(_readText).join('\n');
   final generated = _readText(_generatedPath);
 
   group('generated bindings match the exports of src/bindings.h', () {
@@ -243,13 +290,22 @@ void main() {
       final output = p.join(temp.path, 'flutter_soloud_ffigen.dart');
 
       // Same config, absolute paths, output redirected to the temp dir.
-      final config = File('ffigen.yaml')
-          .readAsStringSync()
-          .replaceFirst(RegExp("output: '[^']*'"), "output: '$output'")
-          .replaceFirst(
-            "- 'src/bindings.h'",
-            "- '${p.join(root, _headerPath)}'",
-          );
+      var config = File('ffigen.yaml').readAsStringSync().replaceFirst(
+        RegExp("output: '[^']*'"),
+        "output: '$output'",
+      );
+      // fork: every entry point, not only src/bindings.h.
+      final entryPoints = _yamlList(config, 'entry-points');
+      expect(entryPoints, contains('src/bindings.h'));
+      for (final entryPoint in entryPoints) {
+        config = config.replaceFirst(
+          RegExp(
+            "- ['\"]?${RegExp.escape(entryPoint)}['\"]?\$",
+            multiLine: true,
+          ),
+          "- '${p.join(root, entryPoint)}'",
+        );
+      }
       expect(config, contains(output));
       final configFile = File(p.join(temp.path, 'ffigen.yaml'))
         ..writeAsStringSync(config);

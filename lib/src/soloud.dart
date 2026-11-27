@@ -11,12 +11,12 @@ import 'package:flutter_soloud/src/bindings/bindings_player.dart';
 import 'package:flutter_soloud/src/bindings/native_metadata_ffi.dart'
     if (dart.library.js_interop) 'package:flutter_soloud/src/bindings/native_metadata_web.dart';
 import 'package:flutter_soloud/src/bindings/soloud_controller.dart';
-import 'package:flutter_soloud/src/capture/soloud_capture.dart';
+import 'package:flutter_soloud/src/capture/soloud_capture.dart'; // fork:
 import 'package:flutter_soloud/src/enums.dart';
 import 'package:flutter_soloud/src/exceptions/exceptions.dart';
 import 'package:flutter_soloud/src/filters/filters.dart';
 import 'package:flutter_soloud/src/helpers/argument_checks.dart';
-import 'package:flutter_soloud/src/helpers/capture_device.dart';
+import 'package:flutter_soloud/src/helpers/capture_device.dart'; // fork:
 import 'package:flutter_soloud/src/helpers/looping_region.dart';
 import 'package:flutter_soloud/src/helpers/playback_device.dart';
 import 'package:flutter_soloud/src/metadata.dart';
@@ -29,6 +29,8 @@ import 'package:flutter_soloud/src/utils/loader.dart';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 import 'package:meta/meta.dart';
+
+part 'fork/soloud_fork_api.dart'; // fork:
 
 @pragma('vm:entry-point')
 void _loadFile(Map<String, dynamic> args) {
@@ -284,7 +286,8 @@ enum AndroidAAudioAttributes {
 ///
 /// This class has a singleton [instance] which represents the (also singleton)
 /// instance of the SoLoud (C++) engine.
-interface class SoLoud {
+// fork: _SoLoudForkApi holds the fork's code.
+interface class SoLoud with _SoLoudForkApi {
   /// The private constructor of [SoLoud]. This prevents developers from
   /// instantiating new instances.
   SoLoud._();
@@ -415,15 +418,6 @@ interface class SoLoud {
   /// Invalidates initialization continuations after deinitialization starts.
   int _lifecycleGeneration = 0;
 
-  /// Counts the engine teardowns of this isolate, including the one an
-  /// [init] runs after a hot restart.
-  int _engineSession = 0;
-
-  /// Changes whenever the engine is torn down: native state bound under an
-  /// earlier value (filter slots, callbacks) is gone.
-  @internal
-  int get engineSession => _engineSession;
-
   /// The single in-flight asynchronous native teardown, if any.
   Future<void>? _pendingAsyncDeinit;
 
@@ -475,9 +469,6 @@ interface class SoLoud {
   /// The channels the engine was initialized with.
   Channels _channels = Channels.stereo;
 
-  /// Path of the active native miniaudio capture, if any.
-  String? _capturePath;
-  String? _captureMirrorPath;
   /// The mix quantum (`bufferSize`) the engine was initialized with.
   int _bufferSize = 2048;
 
@@ -938,27 +929,6 @@ interface class SoLoud {
     }
   }
 
-  /// Queues a one-shot output-device stop after the app has established that
-  /// no user-intended audio work remains, including scheduled playback and
-  /// capture. Unlike automatic idle shutdown, this ignores empty effects buses
-  /// and other retained voices. Loaded sources and voice state are preserved.
-  ///
-  /// Requires a finite [setAudioDeviceIdleTimeout] policy. Newer playback,
-  /// unpause, explicit startup, or indefinite idle policy supersedes this stop.
-  /// It never suppresses future playback or deactivates AVAudioSession,
-  /// whose ownership may be shared with independent input capture.
-  ///
-  /// Returns true when queued, not when stopped; use [getAudioDeviceState] to
-  /// observe completion. Returns false when the native engine lifecycle is
-  /// busy, uninitialized, or the idle policy is indefinite. The caller may
-  /// retry while still idle. No effect on Web, where it returns false.
-  bool requestAudioDeviceIdleStop() {
-    if (!isInitialized) {
-      return false;
-    }
-    return _controller.soLoudFFI.requestAudioDeviceIdleStop();
-  }
-
   /// Starts or prewarms the audio output device without changing any voice or
   /// loaded [AudioSource]. This uses the same serialized lifecycle path as
   /// automatic startup.
@@ -1094,181 +1064,6 @@ interface class SoLoud {
     }
   }
 
-  /// Lists all OS available capture devices.
-  /// Could be called safely even if the engine has not been initialized yet.
-  List<CaptureDevice> listCaptureDevices() {
-    return _controller.soLoudFFI.listCaptureDevices();
-  }
-
-  /// Whether the native miniaudio capture device is currently recording.
-  bool get isCaptureRecording => _controller.soLoudFFI.isCaptureRecording();
-
-  /// Start recording from the native miniaudio capture device into [path].
-  ///
-  /// The file is written as IEEE float WAV. The capture clock snapshots
-  /// returned by this API use the same native monotonic clock for the whole
-  /// capture session, so callers can compare start, first-buffer, stop, and
-  /// explicit transport marks.
-  SoLoudCaptureStartResult startCapture(
-    String path, {
-    int sampleRate = 48000,
-    Channels channels = Channels.stereo,
-    int bufferSizeFrames = 256,
-    double inputGainDb = 0,
-    CaptureDevice? device,
-    String? mirrorPath,
-    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
-    int mirrorBitsPerSample = 0,
-  }) {
-    if (!isInitialized) {
-      throw const SoLoudNotInitializedException();
-    }
-    final ret = _controller.soLoudFFI.startCapture(
-      path,
-      sampleRate,
-      channels.count,
-      bufferSizeFrames,
-      inputGainDb,
-      device,
-      mirrorPath,
-      mirrorFormat,
-      mirrorBitsPerSample,
-    );
-    _logPlayerError(ret.error, from: 'startCapture() result');
-    if (ret.error != PlayerErrors.noError || ret.result == null) {
-      throw SoLoudCppException.fromPlayerError(ret.error);
-    }
-    _capturePath = path;
-    final result = ret.result!;
-    _captureMirrorPath = result.mirrorActive ? mirrorPath : null;
-    return result;
-  }
-
-  /// Start recording and play [sound] from one native command path.
-  ///
-  /// This creates the SoLoud voice paused, applies the optional [startAt] seek
-  /// and loop settings, then unpauses it after native capture is active. The
-  /// returned timestamps are on the same native monotonic clock as capture.
-  SoLoudCapturePlaybackStartResult startCaptureAndPlay(
-    String path,
-    AudioSource sound, {
-    int busId = 0,
-    int sampleRate = 48000,
-    Channels channels = Channels.stereo,
-    int bufferSizeFrames = 256,
-    double volume = 1,
-    double pan = 0,
-    Duration startAt = Duration.zero,
-    bool looping = false,
-    Duration loopingStartAt = Duration.zero,
-    double inputGainDb = 0,
-    CaptureDevice? device,
-    String? mirrorPath,
-    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
-    int mirrorBitsPerSample = 0,
-  }) {
-    if (!isInitialized) {
-      throw const SoLoudNotInitializedException();
-    }
-    final ret = _controller.soLoudFFI.startCaptureAndPlay(
-      path,
-      sound.soundHash,
-      busId: busId,
-      sampleRate: sampleRate,
-      channels: channels.count,
-      bufferSizeFrames: bufferSizeFrames,
-      volume: volume,
-      pan: pan,
-      startAt: startAt,
-      looping: looping,
-      loopingStartAt: loopingStartAt,
-      inputGainDb: inputGainDb,
-      device: device,
-      mirrorPath: mirrorPath,
-      mirrorFormat: mirrorFormat,
-      mirrorBitsPerSample: mirrorBitsPerSample,
-    );
-    _logPlayerError(ret.error, from: 'startCaptureAndPlay() result');
-    if (ret.error != PlayerErrors.noError || ret.result == null) {
-      throw SoLoudCppException.fromPlayerError(ret.error);
-    }
-
-    final result = ret.result!;
-    _registerHandle(
-      sound,
-      SoundHandle(result.handle),
-      from: 'startCaptureAndPlay()',
-    );
-
-    _capturePath = path;
-    _captureMirrorPath = result.mirrorActive ? mirrorPath : null;
-    return result;
-  }
-
-  /// Stop the active native miniaudio capture device.
-  SoLoudCaptureStopResult stopCapture() {
-    final ret = _controller.soLoudFFI.stopCapture();
-    _logPlayerError(ret.error, from: 'stopCapture() result');
-    if (ret.error != PlayerErrors.noError || ret.result == null) {
-      throw SoLoudCppException.fromPlayerError(ret.error);
-    }
-    final result = ret.result!;
-    final path = _capturePath ?? result.path;
-    final mirrorPath = _captureMirrorPath ?? result.mirrorPath;
-    _capturePath = null;
-    _captureMirrorPath = null;
-    return SoLoudCaptureStopResult(
-      path: path,
-      sampleRate: result.sampleRate,
-      channels: result.channels,
-      frameCount: result.frameCount,
-      duration: result.duration,
-      sessionStartHostTimeNanos: result.sessionStartHostTimeNanos,
-      captureStartHostTimeNanos: result.captureStartHostTimeNanos,
-      firstInputBufferHostTimeNanos: result.firstInputBufferHostTimeNanos,
-      firstInputBufferFrameIndex: result.firstInputBufferFrameIndex,
-      captureStopHostTimeNanos: result.captureStopHostTimeNanos,
-      mirrorPath: mirrorPath,
-      mirrorFormat: result.mirrorFormat,
-      mirrorSucceeded: result.mirrorSucceeded,
-      mirrorFrameCount: result.mirrorFrameCount,
-      writerOverflowFrames: result.writerOverflowFrames,
-      writerSilenceFrames: result.writerSilenceFrames,
-      writerFailed: result.writerFailed,
-    );
-  }
-
-  /// Cancel the active native miniaudio capture device.
-  void cancelCapture() {
-    final ret = _controller.soLoudFFI.cancelCapture();
-    _logPlayerError(ret, from: 'cancelCapture() result');
-    if (ret != PlayerErrors.noError) {
-      throw SoLoudCppException.fromPlayerError(ret);
-    }
-    _capturePath = null;
-    _captureMirrorPath = null;
-  }
-
-  /// Return a clock snapshot from the active miniaudio capture session.
-  SoLoudCaptureClockSnapshot captureClockSnapshot() {
-    final ret = _controller.soLoudFFI.getCaptureClockSnapshot();
-    _logPlayerError(ret.error, from: 'captureClockSnapshot() result');
-    if (ret.error != PlayerErrors.noError || ret.result == null) {
-      throw SoLoudCppException.fromPlayerError(ret.error);
-    }
-    return ret.result!;
-  }
-
-  /// Return the current live input level from the active capture session.
-  SoLoudCaptureLevelSnapshot captureLevelSnapshot() {
-    final ret = _controller.soLoudFFI.getCaptureLevelSnapshot();
-    _logPlayerError(ret.error, from: 'captureLevelSnapshot() result');
-    if (ret.error != PlayerErrors.noError || ret.result == null) {
-      throw SoLoudCppException.fromPlayerError(ret.error);
-    }
-    return ret.result!;
-  }
-
   /// Stops the engine and disposes of all resources, including sounds.
   ///
   /// This method is meant to be called when exiting the app. For example
@@ -1314,7 +1109,7 @@ interface class SoLoud {
   }
 
   void _predeinit({bool invalidateInitialization = true}) {
-    _engineSession++;
+    _forkBeforeEngineShutdown(); // fork:
     _controller.soLoudFFI.requestEngineShutdown();
     if (invalidateInitialization) {
       _lifecycleGeneration++;
@@ -1334,11 +1129,7 @@ interface class SoLoud {
       _controller.soLoudFFI.setVisualizationEnabled(false);
       _isVisualizationEnabled = false;
     }
-    if (_controller.soLoudFFI.isCaptureRecording()) {
-      _controller.soLoudFFI.cancelCapture();
-    }
-    _capturePath = null;
-    _captureMirrorPath = null;
+    _forkAfterPredeinit(); // fork:
   }
 
   Future<void> _deinitNativeAsync() async {
@@ -4499,34 +4290,6 @@ interface class SoLoud {
     );
   }
 
-  /// Atomically schedules every prepared member of [voiceGroupHandle] at one
-  /// absolute [engineDeadline].
-  ///
-  /// Before calling this method, create every intended voice with
-  /// `paused: true`, configure it, and add it to the group. The raw group must
-  /// contain exactly [expectedMemberCount] live paused voices, including
-  /// [requiredMain].
-  ///
-  /// On [VoiceGroupStartResult.success], native code assigns one rounded sample
-  /// delay to every member and unpauses all of them while holding the audio
-  /// mutex. Every other result leaves all voice and group state unchanged.
-  ///
-  /// Unlike most playback methods, an uninitialized backend and a reached
-  /// deadline are returned as explicit control-flow results rather than thrown.
-  VoiceGroupStartResult scheduleVoiceGroupStartAt(
-    SoundHandle voiceGroupHandle,
-    SoundHandle requiredMain,
-    int expectedMemberCount,
-    Duration engineDeadline,
-  ) {
-    return _controller.soLoudFFI.scheduleVoiceGroupStartAt(
-      voiceGroupHandle,
-      requiredMain,
-      expectedMemberCount,
-      engineDeadline,
-    );
-  }
-
   /// Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.
   ///
@@ -6162,4 +5925,146 @@ interface class SoLoud {
     strBuf.write(playerError.toString());
     _log.log(logLevel, strBuf.toString());
   }
+
+  // fork: begin. The fork's public members. Their docs stay here so dartdoc
+  // shows them as members of SoLoud; the code is in fork/soloud_fork_api.dart.
+
+  /// Changes whenever the engine is torn down: native state bound under an
+  /// earlier value (filter slots, callbacks) is gone.
+  @internal
+  int get engineSession => _engineSession;
+
+  /// Queues a one-shot output-device stop after the app has established that
+  /// no user-intended audio work remains, including scheduled playback and
+  /// capture. Unlike automatic idle shutdown, this ignores empty effects buses
+  /// and other retained voices. Loaded sources and voice state are preserved.
+  ///
+  /// Requires a finite [setAudioDeviceIdleTimeout] policy. Newer playback,
+  /// unpause, explicit startup, or indefinite idle policy supersedes this stop.
+  /// It never suppresses future playback or deactivates AVAudioSession,
+  /// whose ownership may be shared with independent input capture.
+  ///
+  /// Returns true when queued, not when stopped; use [getAudioDeviceState] to
+  /// observe completion. Returns false when the native engine lifecycle is
+  /// busy, uninitialized, or the idle policy is indefinite. The caller may
+  /// retry while still idle. No effect on Web, where it returns false.
+  bool requestAudioDeviceIdleStop() => _forkRequestAudioDeviceIdleStop();
+
+  /// Lists all OS available capture devices.
+  /// Could be called safely even if the engine has not been initialized yet.
+  List<CaptureDevice> listCaptureDevices() => _forkListCaptureDevices();
+
+  /// Whether the native miniaudio capture device is currently recording.
+  bool get isCaptureRecording => _forkIsCaptureRecording;
+
+  /// Start recording from the native miniaudio capture device into [path].
+  ///
+  /// The file is written as IEEE float WAV. The capture clock snapshots
+  /// returned by this API use the same native monotonic clock for the whole
+  /// capture session, so callers can compare start, first-buffer, stop, and
+  /// explicit transport marks.
+  SoLoudCaptureStartResult startCapture(
+    String path, {
+    int sampleRate = 48000,
+    Channels channels = Channels.stereo,
+    int bufferSizeFrames = 256,
+    double inputGainDb = 0,
+    CaptureDevice? device,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
+  }) => _forkStartCapture(
+    path,
+    sampleRate: sampleRate,
+    channels: channels,
+    bufferSizeFrames: bufferSizeFrames,
+    inputGainDb: inputGainDb,
+    device: device,
+    mirrorPath: mirrorPath,
+    mirrorFormat: mirrorFormat,
+    mirrorBitsPerSample: mirrorBitsPerSample,
+  );
+
+  /// Start recording and play [sound] from one native command path.
+  ///
+  /// This creates the SoLoud voice paused, applies the optional [startAt] seek
+  /// and loop settings, then unpauses it after native capture is active. The
+  /// returned timestamps are on the same native monotonic clock as capture.
+  SoLoudCapturePlaybackStartResult startCaptureAndPlay(
+    String path,
+    AudioSource sound, {
+    int busId = 0,
+    int sampleRate = 48000,
+    Channels channels = Channels.stereo,
+    int bufferSizeFrames = 256,
+    double volume = 1,
+    double pan = 0,
+    Duration startAt = Duration.zero,
+    bool looping = false,
+    Duration loopingStartAt = Duration.zero,
+    double inputGainDb = 0,
+    CaptureDevice? device,
+    String? mirrorPath,
+    SoLoudCaptureMirrorFormat mirrorFormat = SoLoudCaptureMirrorFormat.none,
+    int mirrorBitsPerSample = 0,
+  }) => _forkStartCaptureAndPlay(
+    path,
+    sound,
+    busId: busId,
+    sampleRate: sampleRate,
+    channels: channels,
+    bufferSizeFrames: bufferSizeFrames,
+    volume: volume,
+    pan: pan,
+    startAt: startAt,
+    looping: looping,
+    loopingStartAt: loopingStartAt,
+    inputGainDb: inputGainDb,
+    device: device,
+    mirrorPath: mirrorPath,
+    mirrorFormat: mirrorFormat,
+    mirrorBitsPerSample: mirrorBitsPerSample,
+  );
+
+  /// Stop the active native miniaudio capture device.
+  SoLoudCaptureStopResult stopCapture() => _forkStopCapture();
+
+  /// Cancel the active native miniaudio capture device.
+  void cancelCapture() => _forkCancelCapture();
+
+  /// Return a clock snapshot from the active miniaudio capture session.
+  SoLoudCaptureClockSnapshot captureClockSnapshot() =>
+      _forkCaptureClockSnapshot();
+
+  /// Return the current live input level from the active capture session.
+  SoLoudCaptureLevelSnapshot captureLevelSnapshot() =>
+      _forkCaptureLevelSnapshot();
+
+  /// Atomically schedules every prepared member of [voiceGroupHandle] at one
+  /// absolute [engineDeadline].
+  ///
+  /// Before calling this method, create every intended voice with
+  /// `paused: true`, configure it, and add it to the group. The raw group must
+  /// contain exactly [expectedMemberCount] live paused voices, including
+  /// [requiredMain].
+  ///
+  /// On [VoiceGroupStartResult.success], native code assigns one rounded sample
+  /// delay to every member and unpauses all of them while holding the audio
+  /// mutex. Every other result leaves all voice and group state unchanged.
+  ///
+  /// Unlike most playback methods, an uninitialized backend and a reached
+  /// deadline are returned as explicit control-flow results rather than thrown.
+  VoiceGroupStartResult scheduleVoiceGroupStartAt(
+    SoundHandle voiceGroupHandle,
+    SoundHandle requiredMain,
+    int expectedMemberCount,
+    Duration engineDeadline,
+  ) => _forkScheduleVoiceGroupStartAt(
+    voiceGroupHandle,
+    requiredMain,
+    expectedMemberCount,
+    engineDeadline,
+  );
+
+  // fork: end
 }

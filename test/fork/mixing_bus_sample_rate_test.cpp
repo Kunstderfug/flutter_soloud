@@ -2,13 +2,13 @@
 //
 // Build and run from the flutter_soloud repository root with:
 //
-//   ./test/run_mixing_bus_sample_rate_test.sh
+//   ./test/fork/run_mixing_bus_sample_rate_test.sh
 
 // The test uses SoLoud's null backend and a deterministic 48 kHz pulse source.
 // It exercises BusData, the exact object constructed by Player::createBus().
 
-#include "../src/filters/filters.h"
-#include "../src/soloud/include/soloud_bus.h"
+#include "../../src/filters/filters.h"
+#include "../../src/soloud/include/soloud_bus.h"
 
 #include <cmath>
 #include <cstdio>

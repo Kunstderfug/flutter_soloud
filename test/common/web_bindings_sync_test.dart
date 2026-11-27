@@ -20,6 +20,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+import '../fork/fork_symbols.dart'; // fork:
+
 const _jsExtensionPath = 'lib/src/bindings/js_extension.dart';
 const _bindingsDir = 'lib/src/bindings';
 const _compileScriptPath = 'web/compile_wasm.sh';
@@ -82,17 +84,7 @@ const _notBoundOnWeb = {
   '_play3d': 'the web calls play3dWithLoopPoints',
   '_getFilterParamNamesBounded': 'the web calls getFilterParamNames',
   '_listPlaybackDevicesBounded': 'the web calls listPlaybackDevices',
-  // Native input capture (fork): the web bindings return notImplemented.
-  '_cancelCapture': 'native capture only (web: notImplemented)',
-  '_freeListCaptureDevices': 'native capture only (web: notImplemented)',
-  '_getCaptureClockSnapshot': 'native capture only (web: notImplemented)',
-  '_getCaptureLevelSnapshot': 'native capture only (web: notImplemented)',
-  '_isCaptureRecording': 'native capture only (web: notImplemented)',
-  '_listCaptureDevices': 'native capture only (web: notImplemented)',
-  '_startCapture': 'native capture only (web: notImplemented)',
-  '_startCaptureAndPlay': 'native capture only (web: notImplemented)',
-  '_stopCapture': 'native capture only (web: notImplemented)',
-  '_requestAudioDeviceIdleStop': 'the device always runs on the web',
+  ...forkNotBoundOnWeb, // fork:
   // VST3 hosting is desktop only.
   '_soloud_vst3CloseEditor': 'VST3 is desktop only',
   '_soloud_vst3FreeScanResults': 'VST3 is desktop only',
@@ -351,6 +343,9 @@ void main() {
       },
   };
   final allExports = exportList.values.expand((s) => s).toSet();
+
+  // fork: every fork FFI symbol is bound on the web or excluded with a reason.
+  forkWebSymbolContract(allExports: allExports, bound: bound, probed: probed);
 
   test('the files parse', () {
     expect(bound.length, greaterThan(100));

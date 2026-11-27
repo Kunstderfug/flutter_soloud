@@ -1,5 +1,5 @@
 // Native harness for the CLAP host core (src/clap). Built and run by
-// test/run_clap_host_test.sh [--asan|--tsan] [test-name]. Uses the mock
+// test/fork/run_clap_host_test.sh [--asan|--tsan] [test-name]. Uses the mock
 // bundles that script builds; no Flutter, SoLoud engine or VST3 SDK.
 //
 // The simulated audio thread calls clapFilterDspCallback under gAudioMutex;
@@ -7,8 +7,8 @@
 // audioThreadBarrier_internal. The main queue is driven with
 // CFRunLoopRunInMode. The C ABI (src/clap_bindings.cpp) is linked in, with
 // the engine's soloud_pluginAudioThreadBarrier defined here.
-#include "../src/bindings.h"
-#include "../src/clap/clap_host.h"
+#include "../../src/bindings.h"
+#include "../../src/clap/clap_host.h"
 #include "clap_fake_window.h"
 #include "clap_mock_api.h"
 

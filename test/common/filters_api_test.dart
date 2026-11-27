@@ -25,6 +25,7 @@ import 'package:flutter_soloud/src/filters/robotize_filter.dart';
 import 'package:flutter_soloud/src/filters/wave_shaper_filter.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../fork/fork_registry.dart'; // fork:
 import '../support/sounds.dart';
 
 /// One parameter of a filter: its range and default, and how to reach it
@@ -47,8 +48,8 @@ class _Param {
   final FilterParam Function() global;
   final FilterParam Function(FiltersSingle filters, SoundHandle handle) on;
 
-  /// A non-default value for a parameter that accepts only some values in its
-  /// range (a 0/1 switch, say).
+  /// fork: a non-default value for a parameter that accepts only some values
+  /// in its range (a 0/1 switch, say).
   final double? otherValue;
 
   /// A value in range that differs from the default.
@@ -453,62 +454,7 @@ final List<_Filter> _filters = [
       ),
     ],
   ),
-  _Filter(
-    FilterType.classicalLevelerFilter,
-    _globals.classicalLevelerFilter,
-    (f) => f.classicalLevelerFilter,
-    [
-      for (final e in ClassicalLeveler.values)
-        _p(
-          e.name,
-          e.min,
-          e.max,
-          e.def,
-          () => switch (e) {
-            ClassicalLeveler.wet => _globals.classicalLevelerFilter.wet,
-            ClassicalLeveler.liftPercent =>
-              _globals.classicalLevelerFilter.liftPercent,
-            ClassicalLeveler.thresholdLufs =>
-              _globals.classicalLevelerFilter.thresholdLufs,
-            ClassicalLeveler.floorLufs =>
-              _globals.classicalLevelerFilter.floorLufs,
-            ClassicalLeveler.riseTimeS =>
-              _globals.classicalLevelerFilter.riseTimeS,
-            ClassicalLeveler.fallTimeMs =>
-              _globals.classicalLevelerFilter.fallTimeMs,
-            ClassicalLeveler.downwardEnabled =>
-              _globals.classicalLevelerFilter.downwardEnabled,
-            ClassicalLeveler.downwardThresholdLufs =>
-              _globals.classicalLevelerFilter.downwardThresholdLufs,
-            ClassicalLeveler.downwardRatio =>
-              _globals.classicalLevelerFilter.downwardRatio,
-          },
-          (f, h) => switch (e) {
-            ClassicalLeveler.wet => f.classicalLevelerFilter.wet(
-              soundHandle: h,
-            ),
-            ClassicalLeveler.liftPercent =>
-              f.classicalLevelerFilter.liftPercent(soundHandle: h),
-            ClassicalLeveler.thresholdLufs =>
-              f.classicalLevelerFilter.thresholdLufs(soundHandle: h),
-            ClassicalLeveler.floorLufs =>
-              f.classicalLevelerFilter.floorLufs(soundHandle: h),
-            ClassicalLeveler.riseTimeS =>
-              f.classicalLevelerFilter.riseTimeS(soundHandle: h),
-            ClassicalLeveler.fallTimeMs =>
-              f.classicalLevelerFilter.fallTimeMs(soundHandle: h),
-            ClassicalLeveler.downwardEnabled =>
-              f.classicalLevelerFilter.downwardEnabled(soundHandle: h),
-            ClassicalLeveler.downwardThresholdLufs =>
-              f.classicalLevelerFilter.downwardThresholdLufs(soundHandle: h),
-            ClassicalLeveler.downwardRatio =>
-              f.classicalLevelerFilter.downwardRatio(soundHandle: h),
-          },
-          // downwardEnabled is a switch: the native filter refuses 0.5.
-          other: e == ClassicalLeveler.downwardEnabled ? 1 : null,
-        ),
-    ],
-  ),
+  ...forkFilters(_p, _Filter.new), // fork:
 ];
 
 void main() {
@@ -538,10 +484,9 @@ void main() {
   for (final filter in _filters) {
     group('${filter.type}', () {
       test('has the parameters the type declares', () {
-        // The parametric EQ's band parameters and the Classical Leveler's
-        // meter and look-ahead plan slots are not listed as user parameters.
         if (filter.type != FilterType.parametricEq &&
-            filter.type != FilterType.classicalLevelerFilter) {
+            // fork: a fork filter may hide parameter slots.
+            !forkFiltersWithHiddenParams.contains(filter.type)) {
           expect(filter.params.length, filter.type.numParameters);
         }
         expect(filter.params.first.name, 'wet');
@@ -782,8 +727,7 @@ void main() {
           test('a voice playing when the filter is activated gets it', () {
             final h = soloud.play(sound);
             f.activate();
-            // Its wet starts at its default: 1, or 0 for the Classical
-            // Leveler, which starts bypassed.
+            // fork: wet starts at its default (0 for the Classical Leveler).
             expect(
               filter.params.first.on(sound.filters, h).value,
               filter.params.first.def,

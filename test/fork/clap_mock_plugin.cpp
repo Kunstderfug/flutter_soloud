@@ -1,5 +1,5 @@
-// A mock CLAP effect and instrument bundle for test/clap_host_test.cpp. Built by
-// test/run_clap_host_test.sh as MockClap.clap (and, with
+// A mock CLAP effect and instrument bundle for test/fork/clap_host_test.cpp. Built by
+// test/fork/run_clap_host_test.sh as MockClap.clap (and, with
 // -DMOCK_CLAP_BAD_VERSION, as MockClapBadVersion.clap).
 //
 // It checks the host: every callback asserts its thread through the host's

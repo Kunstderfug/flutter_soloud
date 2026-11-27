@@ -2,7 +2,7 @@
 // throws SoLoudNotInitializedException, or is listed in _exempt with the
 // reason it does not. The list of members is checked against the public
 // members parsed from lib/src/soloud.dart, so a new method cannot be left out.
-// The parse also reads the mixins SoLoud applies from its part files.
+// fork: the parse also reads the mixins SoLoud applies from its part files.
 @Tags(['device'])
 library;
 
@@ -13,6 +13,7 @@ import 'package:flutter_soloud/flutter_soloud.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
+import '../fork/fork_registry.dart'; // fork:
 import '../support/sounds.dart';
 
 // ignore_for_file: deprecated_member_use_from_same_package
@@ -34,9 +35,6 @@ final Map<String, _Call> _calls = {
   'loadMem': (s, _, _) => s.loadMem('x.wav', wavBytes()),
   'joinTwoSources': (s, _, _) => s.joinTwoSources('j', wavBytes(), wavBytes()),
   'startMixerOutputStream': (s, _, _) => s.startMixerOutputStream(),
-  // Fork: native input capture.
-  'startCapture': (s, _, _) => s.startCapture('capture.wav'),
-  'startCaptureAndPlay': (s, a, _) => s.startCaptureAndPlay('capture.wav', a),
   'getMixerOutputWavHeader': (s, _, _) => s.getMixerOutputWavHeader(),
   'setBufferStream': (s, _, _) => s.setBufferStream(),
   'resetBufferStream': (s, a, _) => s.resetBufferStream(a),
@@ -172,6 +170,7 @@ final Map<String, _Call> _calls = {
   'set3dAutoUpdate': (s, _, _) => s.set3dAutoUpdate(true),
   'get3dAutoUpdate': (s, _, _) => s.get3dAutoUpdate(),
   'update3dAudio': (s, _, _) => s.update3dAudio(),
+  ...forkBeforeInitCalls, // fork:
 };
 
 /// Members that, by design, do not throw SoLoudNotInitializedException.
@@ -204,17 +203,7 @@ const _exempt = {
   'readSamplesFromMem': 'decodes a buffer without the engine',
   // Throw another exception.
   'createVoiceGroup': 'throws SoLoudCreateVoiceGroupDartException',
-  // Fork additions.
-  'get engineSession': 'a Dart-side counter, readable at any time',
-  'requestAudioDeviceIdleStop': 'documented: false before init',
-  'scheduleVoiceGroupStartAt':
-      'reports voiceGroupStartBackendNotInitialized in its result',
-  'listCaptureDevices': 'the capture device is separate from the engine',
-  'get isCaptureRecording': 'false without a capture session',
-  'cancelCapture': 'throws its own error without a capture session',
-  'stopCapture': 'throws its own error without a capture session',
-  'captureClockSnapshot': 'throws its own error without a capture session',
-  'captureLevelSnapshot': 'throws its own error without a capture session',
+  ...forkBeforeInitExempt, // fork:
 };
 
 // ---------------------------------------------------------------------------

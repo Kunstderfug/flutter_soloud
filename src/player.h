@@ -7,7 +7,7 @@
 #include "audiobuffer/audiobuffer.h"
 #include "audiobuffer/buffer.h"
 #include "audiobuffer/metadata_ffi.h"
-#include "capture/capture_models.h"
+#include "capture/capture_models.h" // fork: native capture
 #include "enums.h"
 #include "filters/filters.h"
 #include "soloud/include/soloud.h"
@@ -43,7 +43,7 @@ struct PlaybackDevice
   ma_device_id deviceId; // Store the actual device ID, not just the index
 };
 
-class CaptureSession;
+class CaptureSession; // fork: native capture (src/capture/)
 
 class Player
 {
@@ -87,55 +87,8 @@ public:
   /// `init()` can hold for the whole audio-device startup).
   static std::vector<PlaybackDevice> listPlaybackDevices();
 
-  /// @brief Enumerate OS capture/input devices. Static for the same reason as
-  /// [listPlaybackDevices]: it must not depend on engine lifetime.
-  static std::vector<CaptureDevice> listCaptureDevices();
-
-  /// @brief Start recording the native miniaudio capture device to a WAV file.
-  PlayerErrors startCapture(const std::string &filePath,
-                            unsigned int sampleRate,
-                            unsigned int channels,
-                            unsigned int bufferSizeFrames,
-                            float inputGainDb,
-                            int captureDeviceID,
-                            const std::string &mirrorFilePath,
-                            unsigned int mirrorFormat,
-                            unsigned int mirrorBitsPerSample,
-                            CaptureStartInfo *info);
-
-  /// @brief Start native capture and a SoLoud voice from one native command.
-  PlayerErrors startCaptureAndPlay(const std::string &filePath,
-                                   unsigned int soundHash,
-                                   unsigned int busId,
-                                   unsigned int sampleRate,
-                                   unsigned int channels,
-                                   unsigned int bufferSizeFrames,
-                                   float volume,
-                                   float pan,
-                                   double startAtSeconds,
-                                   bool looping,
-                                   double loopingStartAt,
-                                   float inputGainDb,
-                                   int captureDeviceID,
-                                   const std::string &mirrorFilePath,
-                                   unsigned int mirrorFormat,
-                                   unsigned int mirrorBitsPerSample,
-                                   CapturePlaybackStartInfo *info);
-
-  /// @brief Stop recording the native miniaudio capture device.
-  PlayerErrors stopCapture(CaptureStopInfo *info);
-
-  /// @brief Cancel recording and delete the partially written WAV file.
-  PlayerErrors cancelCapture();
-
-  /// @brief Return true if miniaudio capture is active.
-  bool isCaptureRecording() const;
-
-  /// @brief Capture a same-clock snapshot from the active capture session.
-  PlayerErrors getCaptureClockSnapshot(CaptureClockInfo *info) const;
-
-  /// @brief Capture the current input level from the active capture session.
-  PlayerErrors getCaptureLevelSnapshot(CaptureLevelInfo *info);
+  // fork: the fork's public methods (bodies in src/fork/ and src/capture/).
+#include "fork/player_fork_methods.inc"
 
   /// @brief Set a function callback triggered when a voice is stopped/ended.
   void setVoiceEndedCallback(void (*voiceEndedCallback)(unsigned int *));
@@ -531,11 +484,6 @@ public:
   /// @param force whether to stop even when active voices exist.
   /// @return Returns [PlayerErrors.SO_NO_ERROR] if success.
   PlayerErrors stopAudioDevice(bool force = false);
-
-  /// Queue a one-shot output stop when the application has proved domain idle,
-  /// even if empty buses or paused transport resources remain alive. This does
-  /// not mutate voices or suppress future starts. Requires a finite idle policy.
-  bool requestAudioDeviceIdleStop();
 
   /// @brief Restart the audio output device previously stopped by
   /// stopAudioDevice(), so existing voices and loaded sounds keep operating.
@@ -989,17 +937,6 @@ public:
   void addVoiceToGroup(SoLoud::handle voiceGroupHandle,
                        SoLoud::handle voiceHandle);
 
-  /// @brief Atomically schedule every prepared member of a voice group at one
-  /// absolute engine deadline.
-  ///
-  /// All validation and the successful delay/unpause commit happen under one
-  /// audio mutex. Any failure leaves the voices and group unchanged.
-  VoiceGroupStartResult scheduleVoiceGroupStartAt(
-      SoLoud::handle voiceGroupHandle,
-      SoLoud::handle requiredMainHandle,
-      int expectedMemberCount,
-      double engineDeadline);
-
   /// @brief Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.
   /// @param handle the group handle to check.
@@ -1331,6 +1268,7 @@ private:
   alignas(64) float mWaveData[256] = {};
   unsigned int mBufferSize;
 
+  // fork: native capture, owned by the Player (src/capture/).
   std::unique_ptr<CaptureSession> mCaptureSession;
 
   std::map<unsigned int, BusData> busMap;
@@ -1352,7 +1290,7 @@ private:
     none,
     start,
     interruptionStop,
-    domainIdleStop,
+    domainIdleStop, // fork: requestAudioDeviceIdleStop()
     idleStop,
   };
   // The pending request and generation are protected by mPauseMutex. Requests

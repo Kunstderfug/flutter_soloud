@@ -1,6 +1,6 @@
 #include "soloud_common.h"
 #include "player.h"
-#include "capture/capture_session.h"
+#include "capture/capture_session.h" // fork: native capture
 #include "device_lifecycle_test_hooks.h"
 #include "audiobuffer/circular_float_buffer.h"
 #include "audiobuffer/pull_buffer_stream.h"
@@ -284,7 +284,7 @@ static PlayerErrors fromSoLoudError(SoLoud::result result)
 }
 
 Player::Player() : mFilters(&soloud, nullptr, nullptr),
-                   mCaptureSession(std::make_unique<CaptureSession>(*this)),
+                   mCaptureSession(std::make_unique<CaptureSession>(*this)), // fork
                    mPauseThreadRunning(false),
                    mIdleTimeoutMs(
                        gAudioDeviceIdleTimeoutMs.load(
@@ -324,7 +324,7 @@ Player::~Player()
 
 void Player::dispose()
 {
-    // Capture owns an independent miniaudio device. Stop it even when the
+    // fork: capture owns an independent miniaudio device. Stop it even when the
     // playback engine was never initialized or is already torn down.
     cancelCapture();
 
@@ -2184,11 +2184,13 @@ bool Player::cancelSupersededDeviceRequests(uint64_t token)
                 mPendingDeviceRequest == DeviceLifecycleRequest::start ||
                 mPendingDeviceRequest ==
                     DeviceLifecycleRequest::interruptionStop ||
+                // fork: domain-idle stop is an immediate request too.
                 mPendingDeviceRequest == DeviceLifecycleRequest::domainIdleStop ||
                 mImmediateDeviceRequestInFlight ==
                     DeviceLifecycleRequest::start ||
                 mImmediateDeviceRequestInFlight ==
                     DeviceLifecycleRequest::interruptionStop ||
+                // fork: domain-idle stop.
                 mImmediateDeviceRequestInFlight ==
                     DeviceLifecycleRequest::domainIdleStop ||
                 mStartRequestedAfterInterruptionStop;
@@ -2261,6 +2263,8 @@ PlayerErrors Player::stopAudioDevice(bool force)
     return performAudioDeviceStop(true);
 }
 
+// fork: domain-idle stop. Kept here, beside the device-lifecycle scheduler
+// it feeds, because it reads this file's gAudioDeviceIdleTimeoutMs.
 bool Player::requestAudioDeviceIdleStop()
 {
     if (!mInited.load(std::memory_order_acquire) ||
@@ -2367,12 +2371,14 @@ bool Player::requestDeviceLifecycle(DeviceLifecycleRequest request)
             mPendingDeviceRequest == DeviceLifecycleRequest::start ||
             mPendingDeviceRequest ==
                 DeviceLifecycleRequest::interruptionStop ||
+            // fork: domain-idle stop.
             mPendingDeviceRequest == DeviceLifecycleRequest::domainIdleStop;
 
         const bool immediateInFlight =
             mImmediateDeviceRequestInFlight == DeviceLifecycleRequest::start ||
             mImmediateDeviceRequestInFlight ==
                 DeviceLifecycleRequest::interruptionStop ||
+            // fork: domain-idle stop.
             mImmediateDeviceRequestInFlight ==
                 DeviceLifecycleRequest::domainIdleStop;
 
@@ -2394,7 +2400,7 @@ bool Player::requestDeviceLifecycle(DeviceLifecycleRequest request)
             shouldNotify = true;
             break;
 
-        case DeviceLifecycleRequest::domainIdleStop:
+        case DeviceLifecycleRequest::domainIdleStop: // fork
             // Domain idle supersedes earlier playback intent, but must not
             // displace the system's higher-priority interruption cleanup.
             if (mPendingDeviceRequest == DeviceLifecycleRequest::interruptionStop ||
@@ -2514,6 +2520,7 @@ void Player::pauseEngineScheduler()
         const uint64_t requestGeneration = mDeviceRequestGeneration;
         mPendingDeviceRequest = DeviceLifecycleRequest::none;
 
+        // fork: domain-idle stops added to this immediate path.
         // Starts, interruptions, and domain-idle stops run immediately. Mark
         // the operation in flight before releasing mPauseMutex so idle requests
         // cannot replace or invalidate it while the backend call is running.
@@ -2523,7 +2530,7 @@ void Player::pauseEngineScheduler()
         {
             mImmediateDeviceRequestInFlight = request;
             lock.unlock();
-            if (request == DeviceLifecycleRequest::domainIdleStop)
+            if (request == DeviceLifecycleRequest::domainIdleStop) // fork
                 SOLOUD_TEST_BARRIER(domainIdleStopDequeued);
 
             std::lock_guard<std::mutex> operationLock(
@@ -2541,6 +2548,8 @@ void Player::pauseEngineScheduler()
                     if (performAudioDeviceStart() != noError)
                         reportAutomaticDeviceStartFailure();
                 }
+                // fork: a domain-idle stop is dropped if idle stops were
+                // disabled while it waited.
                 else if (request == DeviceLifecycleRequest::interruptionStop ||
                          (mIdleTimeoutMs.load(std::memory_order_acquire) >= 0 &&
                           gAudioDeviceIdleTimeoutMs.load(std::memory_order_acquire) >= 0))
@@ -2551,7 +2560,7 @@ void Player::pauseEngineScheduler()
                     performAudioDeviceStop(true);
                 }
             }
-            if (request == DeviceLifecycleRequest::domainIdleStop)
+            if (request == DeviceLifecycleRequest::domainIdleStop) // fork
                 SOLOUD_TEST_BARRIER(domainIdleStopCompleted);
 
             bool shouldNotify = false;
@@ -2593,6 +2602,7 @@ void Player::pauseEngineScheduler()
                                 DeviceLifecycleRequest::start ||
                             mPendingDeviceRequest ==
                                 DeviceLifecycleRequest::interruptionStop ||
+                            // fork: domain-idle stop.
                             mPendingDeviceRequest ==
                                 DeviceLifecycleRequest::domainIdleStop;
 
@@ -3783,48 +3793,6 @@ void Player::addVoiceToGroup(SoLoud::handle voiceGroupHandle, SoLoud::handle voi
     soloud.addVoiceToGroup(voiceGroupHandle, voiceHandle);
 }
 
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_SUCCESS) ==
-    voiceGroupStartSuccess);
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_BACKEND_NOT_INITIALIZED) ==
-    voiceGroupStartBackendNotInitialized);
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_INVALID_INPUT) ==
-    voiceGroupStartInvalidInput);
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_INVALID_GROUP) ==
-    voiceGroupStartInvalidGroup);
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_MEMBER_COUNT_MISMATCH) ==
-    voiceGroupStartMemberCountMismatch);
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_INVALID_MAIN) ==
-    voiceGroupStartInvalidMain);
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_INVALID_MEMBER) ==
-    voiceGroupStartInvalidMember);
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_MEMBER_NOT_PAUSED) ==
-    voiceGroupStartMemberNotPaused);
-static_assert(
-    static_cast<int>(SoLoud::VOICE_GROUP_START_DEADLINE_REACHED) ==
-    voiceGroupStartDeadlineReached);
-
-VoiceGroupStartResult Player::scheduleVoiceGroupStartAt(
-    SoLoud::handle voiceGroupHandle,
-    SoLoud::handle requiredMainHandle,
-    int expectedMemberCount,
-    double engineDeadline)
-{
-    return static_cast<VoiceGroupStartResult>(
-        soloud.scheduleVoiceGroupStartAt(
-            voiceGroupHandle,
-            requiredMainHandle,
-            expectedMemberCount,
-            engineDeadline));
-}
-
 bool Player::isVoiceGroup(SoLoud::handle handle)
 {
     return soloud.isVoiceGroup(handle);
@@ -4446,7 +4414,7 @@ PlayerErrors Player::busPlayOnEngine(unsigned int busId, float volume,
     // rate instead: a delay the engine counts in its own samples (a scheduled
     // or clocked start) then runs as long inside the bus as outside it, and
     // the bus's voices are resampled once rather than twice.
-    it->second.syncSampleRate(&soloud);
+    it->second.syncSampleRate(&soloud); // fork: keeps the rate if it is 0
 
     // Create paused so the bus handle and initial pan are committed before the
     // bus can render or request device startup.

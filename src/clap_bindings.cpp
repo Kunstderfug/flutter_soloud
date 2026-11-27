@@ -1,8 +1,8 @@
-// FFI entry points of the CLAP plugin host, declared in bindings.h. Kept out
-// of bindings.cpp so the CLAP host stays one seam. Always compiled: without
-// SOLOUD_ENABLE_CLAP every function is an inert stub that initialises its
-// outputs and returns notImplemented.
-#include "bindings.h"
+// FFI entry points of the CLAP plugin host, declared in fork/fork_bindings.h.
+// Kept out of bindings.cpp so the CLAP host stays one seam. Always compiled:
+// without SOLOUD_ENABLE_CLAP every function is an inert stub that initialises
+// its outputs and returns notImplemented.
+#include "fork/fork_bindings.h"
 
 #include <algorithm>
 #include <cstdint>

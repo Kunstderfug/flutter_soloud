@@ -17,13 +17,12 @@ engine_sources() {
     local platform="$1"
     ENGINE_C_SOURCES=(src/pffft/pffft.c)
     ENGINE_INCLUDES=(-I src/soloud/include -I src/soloud/src -I src/pffft -I src -I src/native_decoder)
-    ENGINE_DEFINES=(-DWITH_MINIAUDIO -DNO_XIPH_LIBS -DSOLOUD_LIFECYCLE_TEST_HOOKS -DNO_WAVPACK_LIBS)
+    ENGINE_DEFINES=(-DWITH_MINIAUDIO -DNO_XIPH_LIBS -DSOLOUD_LIFECYCLE_TEST_HOOKS)
     ENGINE_SOURCES=(
         src/soloud_common.cpp
         src/device_lifecycle_test_hooks.cpp
         src/bindings.cpp
         src/player.cpp
-        src/capture/*.cpp
         src/analyzer.cpp
         src/synth/*.cpp
         src/waveform/waveform.cpp
@@ -45,6 +44,8 @@ engine_sources() {
         src/soloud/src/audiosource/vizsn/*.cpp
         src/soloud/src/audiosource/wav/*.cpp
     )
+    # fork: the fork's sources and defines (test/support/fork_sources.sh).
+    . test/support/fork_sources.sh && ENGINE_SOURCES+=("${FORK_SOURCES[@]}") && ENGINE_DEFINES+=("${FORK_DEFINES[@]}")
     # The platform-specific decoders are in audiobuffer/*.cpp too: drop the
     # other platforms' ones.
     local filtered=()

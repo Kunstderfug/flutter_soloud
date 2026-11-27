@@ -581,6 +581,8 @@ List<String> collectSources(
   // Miniaudio input capture. WavPack C sources are built separately:
   // CBuilder language.cpp force-feeds `-x c++`.
   addDir('capture/');
+  // fork: the fork's entry points and Player methods.
+  addDir('fork/');
   addDir(
     'native_decoder/',
     exclude: (p) {

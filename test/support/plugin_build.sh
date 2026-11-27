@@ -23,6 +23,8 @@ plugin_build() {
     fi
     local common=(src/soloud_common.cpp)
     [ "${PLUGIN_BUILD_NO_COMMON:-0}" == "1" ] && common=()
+    # fork: the fork's sources and defines (test/support/fork_sources.sh).
+    . test/support/fork_sources.sh && common+=("${FORK_DEFINES[@]}" "${FORK_SOURCES[@]}")
 
     cc -std=gnu99 -O2 -c ${SANITIZER[@]+"${SANITIZER[@]}"} -I src/pffft \
         -o "$WORK_DIR/pffft.o" src/pffft/pffft.c
@@ -30,7 +32,6 @@ plugin_build() {
     c++ -std=c++17 -O2 -w -pthread ${SANITIZER[@]+"${SANITIZER[@]}"} \
         -DWITH_MINIAUDIO \
         -DNO_XIPH_LIBS \
-        -DNO_WAVPACK_LIBS \
         -I src/soloud/include \
         -I src/soloud/src \
         -I src/pffft \
@@ -44,7 +45,6 @@ plugin_build() {
         src/device_lifecycle_test_hooks.cpp \
         src/bindings.cpp \
         src/player.cpp \
-        src/capture/*.cpp \
         src/analyzer.cpp \
         src/synth/*.cpp \
         src/waveform/waveform.cpp \

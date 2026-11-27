@@ -153,6 +153,7 @@ SOURCES=(
     ../src/soloud_common.cpp
     ../src/bindings.cpp
     ../src/player.cpp
+    ../src/fork/*.cpp
     ../src/capture/capture_mirror.cpp
     ../src/capture/capture_processing.cpp
     ../src/capture/capture_session.cpp

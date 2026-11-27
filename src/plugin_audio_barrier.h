@@ -1,5 +1,5 @@
-// The audio-thread barrier shared by the VST3 and CLAP hosts, defined in
-// bindings.cpp when either host is compiled in.
+// The audio-thread barrier for the CLAP host, defined in fork/fork_bindings.cpp
+// when either plugin host is compiled in.
 #pragma once
 
 #if defined(SOLOUD_ENABLE_VST3) || defined(SOLOUD_ENABLE_CLAP)

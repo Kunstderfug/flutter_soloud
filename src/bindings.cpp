@@ -1,4 +1,3 @@
-#include <cmath>
 #include "analyzer.h"
 #include "audiobuffer/pull_buffer_stream.h"
 // Declarations of every FFI_PLUGIN_EXPORT entry point defined below, so they
@@ -24,10 +23,8 @@
 #ifdef SOLOUD_ENABLE_VST3
 #include "vst3/vst3_host.h"
 #endif
-#ifdef SOLOUD_ENABLE_CLAP
-#include "clap/clap_host.h"
-#endif
-#include "plugin_audio_barrier.h"
+// fork: narrow engine access for the fork's entry points (src/fork/).
+#include "fork/bindings_internal.h"
 
 #ifndef SOLOUD_COMMON_H
 #include "soloud_common.h"
@@ -48,7 +45,6 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
-#include <cstring>
 #include <map>
 #include <memory.h>
 #include <memory>
@@ -308,11 +304,6 @@ extern "C"
 #if defined(SOLOUD_LIFECYCLE_TEST_HOOKS)
   /// Defined with the other test hooks, far below. Inert unless a test arms it.
   static void soloudTestInitBarrier();
-  /// Dispose calls these, inert unless a test arms them: the first while it
-  /// holds player_lifetime_mutex exclusively, the second where it shuts the
-  /// plugin hosts down after releasing it.
-  static void soloudTestDisposeUnderLifetimeLock();
-  static void soloudTestDisposePluginShutdown();
 #endif
 
   // Deliberately allocate on the heap and hold via reference so no static destructor
@@ -333,9 +324,10 @@ extern "C"
   /// Lock ordering: `init_deinit_mutex -> loadMutex -> player_lifetime_mutex
   /// -> sounds_mutex -> audio mutex`. A leased call never takes
   /// init_deinit_mutex or loadMutex, and the exclusive holder never waits for
-  /// anything a leased call holds. Nor does it wait for the main thread: the
-  /// plugin audio barrier takes this lock shared on main (a CLAP unload or
-  /// restart), so plugin shutdown in dispose runs after releasing it.
+  /// anything a leased call holds.
+  /// fork: nor does it wait for the main thread: the plugin audio barrier
+  /// takes this lock shared on main (a CLAP unload or restart), so plugin
+  /// shutdown in dispose runs after releasing it.
   std::shared_mutex player_lifetime_mutex;
 
   /// Raised before player_lifetime_mutex is taken exclusively. New leases see
@@ -1785,16 +1777,6 @@ extern "C"
     return player.get()->stopAudioDevice(force != 0);
   }
 
-  FFI_PLUGIN_EXPORT bool requestAudioDeviceIdleStop()
-  {
-    // Never queue a delayed FFI operation: its "idle" observation could be
-    // stale by the time it reaches Player. Admission is synchronous and cheap.
-    std::unique_lock<std::mutex> guard(init_deinit_mutex, std::try_to_lock);
-    if (!guard.owns_lock() || player.get() == nullptr)
-      return false;
-    return player.get()->requestAudioDeviceIdleStop();
-  }
-
   /// Restart the audio output device previously stopped by stopAudioDevice(),
   /// so existing voices and loaded sounds keep operating. Idempotent: a no-op
   /// if the device is already started.
@@ -1955,236 +1937,6 @@ extern "C"
     }
   }
 
-  FFI_PLUGIN_EXPORT void listCaptureDevices(char **devicesName, int **deviceId,
-                                            int **isDefault, int *n_devices)
-  {
-    std::vector<CaptureDevice> d = Player::listCaptureDevices();
-
-    int numDevices = 0;
-    for (int i = 0; i < (int)d.size(); i++)
-    {
-      bool hasSpecialChar = false;
-      const size_t nameLength = strlen(d[i].name);
-      for (int n = 0; n < 5 && n < (int)nameLength; n++)
-      {
-        if (d[i].name[n] < 0x20 && d[i].name[n] >= 0)
-          hasSpecialChar = true;
-      }
-      if (nameLength == 0 || hasSpecialChar)
-      {
-        free(d[i].name);
-        continue;
-      }
-
-      devicesName[numDevices] = strdup(d[i].name);
-      isDefault[numDevices] = (int *)malloc(sizeof(int));
-      *isDefault[numDevices] = d[i].isDefault;
-      deviceId[numDevices] = (int *)malloc(sizeof(int));
-      *deviceId[numDevices] = d[i].id;
-      free(d[i].name);
-      numDevices++;
-    }
-    *n_devices = numDevices;
-  }
-
-  FFI_PLUGIN_EXPORT void freeListCaptureDevices(
-      char **devicesName, int **deviceId, int **isDefault, int n_devices)
-  {
-    for (int i = 0; i < n_devices; i++)
-    {
-      free(deviceId[i]);
-      free(isDefault[i]);
-      free(devicesName[i]);
-    }
-  }
-
-  FFI_PLUGIN_EXPORT enum PlayerErrors
-  startCapture(char *path, unsigned int sampleRate, unsigned int channels,
-               unsigned int bufferSizeFrames, float inputGainDb,
-               int captureDeviceID, char *mirrorPath,
-               unsigned int mirrorFormat, unsigned int mirrorBitsPerSample,
-               unsigned int *actualSampleRate, unsigned int *actualChannels,
-               uint64_t *sessionStartHostTimeNanos,
-               uint64_t *captureStartHostTimeNanos,
-               unsigned int *actualMirrorFormat, unsigned int *mirrorActive)
-  {
-    if (player.get() == nullptr)
-      return backendNotInited;
-    if (path == nullptr || actualSampleRate == nullptr ||
-        actualChannels == nullptr || sessionStartHostTimeNanos == nullptr ||
-        captureStartHostTimeNanos == nullptr || actualMirrorFormat == nullptr ||
-        mirrorActive == nullptr)
-      return nullPointer;
-
-    CaptureStartInfo info;
-    PlayerErrors result = player.get()->startCapture(
-        std::string(path), sampleRate, channels, bufferSizeFrames, inputGainDb,
-        captureDeviceID,
-        mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
-        mirrorFormat, mirrorBitsPerSample, &info);
-    if (result == noError)
-    {
-      *actualSampleRate = info.sampleRate;
-      *actualChannels = info.channels;
-      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
-      *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
-      *actualMirrorFormat = info.mirrorFormat;
-      *mirrorActive = info.mirrorActive ? 1 : 0;
-    }
-    return result;
-  }
-
-  FFI_PLUGIN_EXPORT enum PlayerErrors startCaptureAndPlay(
-      char *path, unsigned int soundHash, unsigned int busId,
-      unsigned int sampleRate, unsigned int channels,
-      unsigned int bufferSizeFrames, float volume, float pan,
-      double startAtSeconds, bool looping, double loopingStartAt,
-      float inputGainDb, int captureDeviceID, char *mirrorPath,
-      unsigned int mirrorFormat, unsigned int mirrorBitsPerSample,
-      unsigned int *handle, unsigned int *actualSampleRate,
-      unsigned int *actualChannels, uint64_t *sessionStartHostTimeNanos,
-      uint64_t *captureStartHostTimeNanos,
-      uint64_t *playbackStartHostTimeNanos, unsigned int *actualMirrorFormat,
-      unsigned int *mirrorActive)
-  {
-    if (player.get() == nullptr)
-      return backendNotInited;
-    if (path == nullptr || handle == nullptr || actualSampleRate == nullptr ||
-        actualChannels == nullptr || sessionStartHostTimeNanos == nullptr ||
-        captureStartHostTimeNanos == nullptr ||
-        playbackStartHostTimeNanos == nullptr ||
-        actualMirrorFormat == nullptr || mirrorActive == nullptr)
-      return nullPointer;
-
-    CapturePlaybackStartInfo info;
-    PlayerErrors result = player.get()->startCaptureAndPlay(
-        std::string(path), soundHash, busId, sampleRate, channels,
-        bufferSizeFrames, volume, pan, startAtSeconds, looping, loopingStartAt,
-        inputGainDb, captureDeviceID,
-        mirrorPath == nullptr ? std::string() : std::string(mirrorPath),
-        mirrorFormat, mirrorBitsPerSample, &info);
-    if (result == noError)
-    {
-      *handle = info.handle;
-      *actualSampleRate = info.sampleRate;
-      *actualChannels = info.channels;
-      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
-      *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
-      *playbackStartHostTimeNanos = info.playbackStartHostTimeNanos;
-      *actualMirrorFormat = info.mirrorFormat;
-      *mirrorActive = info.mirrorActive ? 1 : 0;
-    }
-    return result;
-  }
-
-  FFI_PLUGIN_EXPORT enum PlayerErrors
-  stopCapture(unsigned int *sampleRate, unsigned int *channels,
-              uint64_t *frameCount, uint64_t *sessionStartHostTimeNanos,
-              uint64_t *captureStartHostTimeNanos,
-              uint64_t *firstInputBufferHostTimeNanos,
-              uint64_t *firstInputBufferFrameIndex,
-              uint64_t *captureStopHostTimeNanos, unsigned int *mirrorFormat,
-              unsigned int *mirrorSucceeded, uint64_t *mirrorFrameCount,
-              uint64_t *writerOverflowFrames, uint64_t *writerSilenceFrames,
-              unsigned int *writerFailed)
-  {
-    if (player.get() == nullptr)
-      return backendNotInited;
-    if (sampleRate == nullptr || channels == nullptr || frameCount == nullptr ||
-        sessionStartHostTimeNanos == nullptr ||
-        captureStartHostTimeNanos == nullptr ||
-        firstInputBufferHostTimeNanos == nullptr ||
-        firstInputBufferFrameIndex == nullptr ||
-        captureStopHostTimeNanos == nullptr || mirrorFormat == nullptr ||
-        mirrorSucceeded == nullptr || mirrorFrameCount == nullptr ||
-        writerOverflowFrames == nullptr || writerSilenceFrames == nullptr ||
-        writerFailed == nullptr)
-      return nullPointer;
-
-    CaptureStopInfo info;
-    PlayerErrors result = player.get()->stopCapture(&info);
-    if (result == noError)
-    {
-      *sampleRate = info.sampleRate;
-      *channels = info.channels;
-      *frameCount = info.frameCount;
-      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
-      *captureStartHostTimeNanos = info.captureStartHostTimeNanos;
-      *firstInputBufferHostTimeNanos = info.firstInputBufferHostTimeNanos;
-      *firstInputBufferFrameIndex = info.firstInputBufferFrameIndex;
-      *captureStopHostTimeNanos = info.captureStopHostTimeNanos;
-      *mirrorFormat = info.mirrorFormat;
-      *mirrorSucceeded = info.mirrorSucceeded ? 1 : 0;
-      *mirrorFrameCount = info.mirrorFrameCount;
-      *writerOverflowFrames = info.writerOverflowFrames;
-      *writerSilenceFrames = info.writerSilenceFrames;
-      *writerFailed = info.writerFailed ? 1 : 0;
-    }
-    return result;
-  }
-
-  FFI_PLUGIN_EXPORT enum PlayerErrors cancelCapture()
-  {
-    if (player.get() == nullptr)
-      return backendNotInited;
-    return player.get()->cancelCapture();
-  }
-
-  FFI_PLUGIN_EXPORT int isCaptureRecording()
-  {
-    if (player.get() == nullptr)
-      return 0;
-    return player.get()->isCaptureRecording() ? 1 : 0;
-  }
-
-  FFI_PLUGIN_EXPORT enum PlayerErrors
-  getCaptureClockSnapshot(uint64_t *hostTimeNanos,
-                          uint64_t *sessionStartHostTimeNanos,
-                          unsigned int *sampleRate,
-                          uint64_t *inputDeviceFrame)
-  {
-    if (player.get() == nullptr)
-      return backendNotInited;
-    if (hostTimeNanos == nullptr || sessionStartHostTimeNanos == nullptr ||
-        sampleRate == nullptr || inputDeviceFrame == nullptr)
-      return nullPointer;
-
-    CaptureClockInfo info;
-    PlayerErrors result = player.get()->getCaptureClockSnapshot(&info);
-    if (result == noError)
-    {
-      *hostTimeNanos = info.hostTimeNanos;
-      *sessionStartHostTimeNanos = info.sessionStartHostTimeNanos;
-      *sampleRate = info.sampleRate;
-      *inputDeviceFrame = info.inputDeviceFrame;
-    }
-    return result;
-  }
-
-  FFI_PLUGIN_EXPORT enum PlayerErrors getCaptureLevelSnapshot(
-      float *currentPeak, float *currentRms, float *peakSinceLastRead,
-      float *heldPeak, uint64_t *frameCount)
-  {
-    if (player.get() == nullptr)
-      return backendNotInited;
-    if (currentPeak == nullptr || currentRms == nullptr ||
-        peakSinceLastRead == nullptr || heldPeak == nullptr ||
-        frameCount == nullptr)
-      return nullPointer;
-
-    CaptureLevelInfo info;
-    PlayerErrors result = player.get()->getCaptureLevelSnapshot(&info);
-    if (result == noError)
-    {
-      *currentPeak = info.currentPeak;
-      *currentRms = info.currentRms;
-      *peakSinceLastRead = info.peakSinceLastRead;
-      *heldPeak = info.heldPeak;
-      *frameCount = info.frameCount;
-    }
-    return result;
-  }
-
   /// Teardown body. The caller must hold init_deinit_mutex and loadMutex.
   ///
   /// [ownedClaim] is the claim this teardown is entitled to retire, or nullptr
@@ -2242,29 +1994,23 @@ extern "C"
 #ifdef SOLOUD_ENABLE_VST3
       SoLoud::Vst3HostManager::instance().setParameterEditCallback(nullptr);
 #endif
-#ifdef SOLOUD_ENABLE_CLAP
-      // Retire-only: CLAP lifecycle calls belong to the main thread, so the
-      // teardown is posted there. No mix can reach a retired instance.
-      soloud_clap::ClapHostManager::instance().retireAllForDispose();
-#endif
-#if defined(SOLOUD_LIFECYCLE_TEST_HOOKS)
-      soloudTestDisposeUnderLifetimeLock();
-#endif
+      // fork: CLAP retirement and a test hook (src/fork/fork_bindings.cpp).
+      soloud_fork::onDisposeUnderLifetimeLock();
       player.reset();
       player = std::make_unique<Player>();
     }
-    // Plugin shutdown never runs under player_lifetime_mutex. VST3 shutdown
-    // can wait for the main thread to close an editor, while the main thread
-    // may be waiting for that lock in a plugin audio barrier (a CLAP unload,
-    // or a restart from the CLAP pump): holding it here would deadlock both.
+    // fork: plugin shutdown never runs under player_lifetime_mutex. VST3
+    // shutdown can wait for the main thread to close an editor, while the main
+    // thread may be waiting for that lock in a plugin audio barrier (a CLAP
+    // unload, or a restart from the CLAP pump): holding it here would deadlock
+    // both.
     // No barrier is needed: the old device is stopped, and init_deinit_mutex
     // (held) keeps the new Player from initializing, so nothing is mixing.
 #ifdef SOLOUD_ENABLE_VST3
     SoLoud::Vst3HostManager::instance().unloadAll();
 #endif
-#if defined(SOLOUD_LIFECYCLE_TEST_HOOKS)
-    soloudTestDisposePluginShutdown();
-#endif
+    // fork: a test hook (src/fork/fork_bindings.cpp).
+    soloud_fork::onDisposePluginShutdown();
     // Bump the engine session counter only now that the old engine is fully
     // torn down: voiceEnded events posted while it was stopping its voices
     // keep the old generation, and the Dart side (which reads the counter
@@ -2456,30 +2202,6 @@ extern "C"
   /// init_deinit_mutex. That mutex is internal and no exported call holds it
   /// for a controllable length of time, so without a hook a test can only hope
   /// the scheduler puts the teardown inside that window.
-
-  static std::atomic<void (*)()> gDisposeUnderLifetimeLockHook{nullptr};
-  static std::atomic<void (*)()> gDisposePluginShutdownHook{nullptr};
-
-  static void soloudTestDisposeUnderLifetimeLock()
-  {
-    if (auto hook = gDisposeUnderLifetimeLockHook.load(std::memory_order_acquire))
-      hook();
-  }
-
-  static void soloudTestDisposePluginShutdown()
-  {
-    if (auto hook = gDisposePluginShutdownHook.load(std::memory_order_acquire))
-      hook();
-  }
-
-  /// Arms (or, with nulls, disarms) the two dispose hooks above.
-  FFI_PLUGIN_EXPORT void soloudTestSetDisposeHooks(void (*underLifetimeLock)(),
-                                                   void (*pluginShutdown)())
-  {
-    gDisposeUnderLifetimeLockHook.store(underLifetimeLock,
-                                        std::memory_order_release);
-    gDisposePluginShutdownHook.store(pluginShutdown, std::memory_order_release);
-  }
 
   /// Peak number of deferred idle-timeout workers alive at once. The
   /// coalescing is only meaningful if this stays at 1 no matter how many times
@@ -4161,17 +3883,6 @@ extern "C"
     player.get()->addVoiceToGroup(voiceGroupHandle, voiceHandle);
   }
 
-  FFI_PLUGIN_EXPORT enum VoiceGroupStartResult scheduleVoiceGroupStartAt(
-      unsigned int voiceGroupHandle, unsigned int requiredMainHandle,
-      int expectedMemberCount, double engineDeadline)
-  {
-    if (player.get() == nullptr || !player.get()->isInited())
-      return voiceGroupStartBackendNotInitialized;
-    return player.get()->scheduleVoiceGroupStartAt(
-        voiceGroupHandle, requiredMainHandle, expectedMemberCount,
-        engineDeadline);
-  }
-
   /// Checks if the handle is a valid voice group. Does not care if the
   /// voice group is empty.
   ///
@@ -4344,7 +4055,7 @@ extern "C"
   /// Dart passes the filter type as a plain integer.
   static bool isValidFilterType(FilterType filterType)
   {
-    // ClassicalLevelerFilter (fork) comes after CustomFilter in the enum.
+    // fork: ClassicalLevelerFilter comes after CustomFilter in the enum.
     return filterType >= BiquadResonantFilter &&
            filterType <= ClassicalLevelerFilter;
   }
@@ -5705,32 +5416,6 @@ extern "C"
     return player.get()->busGetActiveVoiceCount(busId);
   }
 
-#if defined(SOLOUD_ENABLE_VST3) || defined(SOLOUD_ENABLE_CLAP)
-  /// Audio-thread barrier for plugin unloading (VST3 and CLAP): returns once
-  /// no mix that may have loaded a plugin pointer from a lookup table is
-  /// still running. Holds the lifetime lock only for the barrier itself,
-  /// never across plugin shutdown (which can close editor windows).
-  ///
-  /// Deliberately not a PlayerLease: a lease gives up while a teardown is
-  /// pending, and a barrier must never give up -- the device may still be
-  /// mixing until the teardown actually stops it. Taking the shared lock
-  /// unconditionally guarantees one of two outcomes: either this runs before
-  /// the teardown and synchronizes with the live mixer, or it waits for the
-  /// teardown to finish, by which point the device is stopped and the new
-  /// Player is not initialized, so nothing is mixing.
-  void soloud_pluginAudioThreadBarrier(void * /*userData*/)
-  {
-    std::shared_lock<std::shared_mutex> lifetime(player_lifetime_mutex);
-    Player *p = player.get();
-    if (p != nullptr && p->isInited())
-    {
-      // Mixing (render worker or device callback) and the post-ring global
-      // filters (device callback) each run under their own lock.
-      p->soloud.audioThreadBarrier_internal();
-    }
-  }
-#endif
-
   /////////////////////////////////////////
   /// VST3 Plugin Hosting API
   /////////////////////////////////////////
@@ -5852,10 +5537,28 @@ extern "C"
         outPluginHandle);
   }
 
-  /// The VST3 host's barrier (see soloud_pluginAudioThreadBarrier).
-  static void vst3AudioThreadBarrier(void *userData)
+  /// Audio-thread barrier for VST3 unloading: returns once no mix that may
+  /// have loaded a plugin pointer from the lookup table is still running.
+  /// Holds the lifetime lock only for the barrier itself, never across plugin
+  /// shutdown (which can close editor windows).
+  ///
+  /// Deliberately not a PlayerLease: a lease gives up while a teardown is
+  /// pending, and a barrier must never give up -- the device may still be
+  /// mixing until the teardown actually stops it. Taking the shared lock
+  /// unconditionally guarantees one of two outcomes: either this runs before
+  /// the teardown and synchronizes with the live mixer, or it waits for the
+  /// teardown to finish, by which point the device is stopped and the new
+  /// Player is not initialized, so nothing is mixing.
+  static void vst3AudioThreadBarrier(void * /*userData*/)
   {
-    soloud_pluginAudioThreadBarrier(userData);
+    std::shared_lock<std::shared_mutex> lifetime(player_lifetime_mutex);
+    Player *p = player.get();
+    if (p != nullptr && p->isInited())
+    {
+      // Mixing (render worker or device callback) and the post-ring global
+      // filters (device callback) each run under their own lock.
+      p->soloud.audioThreadBarrier_internal();
+    }
   }
 
   FFI_PLUGIN_EXPORT enum PlayerErrors soloud_vst3UnloadPlugin(int pluginHandle)
@@ -6243,3 +5946,23 @@ extern "C"
 #ifdef __cplusplus
 }
 #endif
+
+// fork: the narrow engine access src/fork/ uses (see fork/bindings_internal.h).
+namespace soloud_fork
+{
+  EnginePlayer::operator bool() const { return player.get() != nullptr; }
+
+  Player *EnginePlayer::operator->() const { return player.get(); }
+
+  InitDeinitTryLock::InitDeinitTryLock()
+      : mLock(init_deinit_mutex, std::try_to_lock)
+  {
+  }
+
+  bool InitDeinitTryLock::ownsLock() const { return mLock.owns_lock(); }
+
+  PlayerLifetimeSharedLock::PlayerLifetimeSharedLock()
+      : mLock(player_lifetime_mutex)
+  {
+  }
+} // namespace soloud_fork

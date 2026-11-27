@@ -53,6 +53,8 @@ list(APPEND PLUGIN_SOURCES
   "${SRC_DIR}/soloud_common.cpp"
   "${SRC_DIR}/bindings.cpp"
   "${SRC_DIR}/player.cpp"
+  # fork: the fork's entry points.
+  "${SRC_DIR}/fork/fork_bindings.cpp"
   "${SRC_DIR}/capture/capture_mirror.cpp"
   "${SRC_DIR}/capture/capture_processing.cpp"
   "${SRC_DIR}/capture/capture_session.cpp"

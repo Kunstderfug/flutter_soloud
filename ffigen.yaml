@@ -5,8 +5,10 @@ output: 'lib/src/bindings/flutter_soloud_ffigen.dart'
 headers:
   entry-points:
     - 'src/bindings.h'
+    - 'src/fork/fork_bindings.h'
   include-directives:
     - '**bindings.h'
+    - '**fork/fork_bindings.h'
 ffi-native:
   asset-id: 'package:flutter_soloud/src/bindings.cpp'
 silence-enum-warning: true

@@ -131,6 +131,8 @@ function Get-PluginSources {
     return @(
         'src\pffft\pffft.c',
         'src\soloud_common.cpp', 'src\bindings.cpp', 'src\player.cpp', 'src\analyzer.cpp',
+        # fork: the fork's sources, as in test/support/fork_sources.sh.
+        'src\fork\*.cpp', 'src\capture\*.cpp',
         'src\synth\*.cpp', 'src\waveform\waveform.cpp', 'src\waveform\miniaudio_libvorbis.cpp',
         'src\audiobuffer\*.cpp', 'src\native_stream\*.cpp',
         'src\native_decoder\native_audio_decoder.cpp', 'src\native_decoder\os_decoder_windows.cpp',
@@ -143,7 +145,7 @@ function Get-PluginSources {
         'src\soloud\src\audiosource\wav\*.cpp',
         'src\soloud\src\backend\miniaudio\soloud_miniaudio.cpp')
 }
-function Get-PluginDefines { return @('WITH_MINIAUDIO', 'NO_XIPH_LIBS') }
+function Get-PluginDefines { return @('WITH_MINIAUDIO', 'NO_XIPH_LIBS', 'NO_WAVPACK_LIBS') } # fork: NO_WAVPACK_LIBS
 function Get-PluginIncludes {
     return @('src\soloud\include', 'src\soloud\src', 'src\pffft', 'src', 'src\native_decoder', 'src\audiobuffer')
 }

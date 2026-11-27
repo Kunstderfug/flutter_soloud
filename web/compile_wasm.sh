@@ -153,7 +153,7 @@ SOURCES=(
     ../src/soloud_common.cpp
     ../src/bindings.cpp
     ../src/player.cpp
-    # fork: the fork's sources (FORK_MAINTENANCE.md).
+    # fork: the fork's sources, see FORK_MAINTENANCE.md.
     ../src/fork/*.cpp
     ../src/capture/capture_mirror.cpp
     ../src/capture/capture_processing.cpp

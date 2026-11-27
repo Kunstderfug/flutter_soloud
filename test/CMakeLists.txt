@@ -1491,19 +1491,17 @@ add_executable(engine_lifecycle_test
   ${REPO_ROOT}/src/capture/capture_writer.cpp
   ${REPO_ROOT}/src/capture/wavpack_capture_encoder.cpp
   ${REPO_ROOT}/src/clap_bindings.cpp
-  ${REPO_ROOT}/src/clap/clap_editor.cpp
-  ${REPO_ROOT}/src/clap/clap_host.cpp
-  ${REPO_ROOT}/src/clap/clap_instance.cpp
-  ${REPO_ROOT}/src/clap/clap_module.cpp
   ${REPO_ROOT}/src/soloud/src/backend/miniaudio/soloud_miniaudio.cpp
   ${SOLOUD_AAC_DECODER_SOURCE}
   ${SOLOUD_OS_DECODER_SOURCE}
   $<TARGET_OBJECTS:engine_lifecycle_test_obj0>
 )
-target_compile_definitions(engine_lifecycle_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS SOLOUD_ENABLE_CLAP NO_WAVPACK_LIBS)
+target_compile_definitions(engine_lifecycle_test PRIVATE WITH_MINIAUDIO MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_NULL NO_XIPH_LIBS SOLOUD_LIFECYCLE_TEST_HOOKS NO_WAVPACK_LIBS)
 target_include_directories(engine_lifecycle_test PRIVATE ${REPO_ROOT}/src/soloud/include ${REPO_ROOT}/src/soloud/src ${REPO_ROOT}/src/pffft ${REPO_ROOT}/src ${REPO_ROOT}/src/native_decoder)
-if(NOT MSVC)
-  target_compile_options(engine_lifecycle_test PRIVATE -isystem)
+if(APPLE)
+  target_sources(engine_lifecycle_test PRIVATE ${REPO_ROOT}/src/clap/clap_editor.cpp ${REPO_ROOT}/src/clap/clap_host.cpp ${REPO_ROOT}/src/clap/clap_instance.cpp ${REPO_ROOT}/src/clap/clap_module.cpp)
+  target_compile_definitions(engine_lifecycle_test PRIVATE SOLOUD_ENABLE_CLAP)
+  target_include_directories(engine_lifecycle_test SYSTEM PRIVATE ${REPO_ROOT}/src/clap/third_party/clap/include)
 endif()
 target_link_libraries(engine_lifecycle_test PRIVATE ${CMAKE_DL_LIBS} ${SOLOUD_M_LIB} Threads::Threads ${SOLOUD_PLATFORM_LIBS})
 add_test(NAME engine_lifecycle_test COMMAND engine_lifecycle_test WORKING_DIRECTORY ${REPO_ROOT})

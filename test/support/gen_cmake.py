@@ -51,6 +51,11 @@ SCRIPT_ONLY = {"pull_mp3_seek_test", "simd_fallback_test", "vst3_param_changes_t
 # Windows.
 POSIX_ONLY = {"bindings_null_args_test", "out_of_memory_test"}
 XIPH_LIBS = {"ogg", "vorbis", "vorbisenc", "vorbisfile", "opus", "FLAC"}
+# fork: CLAP hosting is macOS-only (FORK_MAINTENANCE.md). Scripts add these
+# sources, include paths and defines only on Darwin, so the recorded macOS
+# commands carry them; CMake adds them under if(APPLE).
+APPLE_ONLY_PREFIXES = ("src/clap/",)
+APPLE_ONLY_DEFINES = {"SOLOUD_ENABLE_CLAP"}
 
 
 def capture(script):
@@ -108,7 +113,7 @@ def parse(argv):
             r["compile_only"] = True
         elif a == "-x":
             r["lang"] = nxt; k += 2; continue
-        elif a == "-I":
+        elif a in ("-I", "-isystem"):
             r["includes"].append(nxt); k += 2; continue
         elif a.startswith("-I"):
             r["includes"].append(a[2:])
@@ -163,8 +168,11 @@ def emit_target(name, link, objects, test_dir, run_args):
     srcs = []
     platform_vars = []
     apple_only = False
+    apple_srcs = []
     for s in link["sources"]:
-        if s in PLATFORM_SOURCES:
+        if s.startswith(APPLE_ONLY_PREFIXES):
+            apple_srcs.append(cm_path(s))
+        elif s in PLATFORM_SOURCES:
             platform_vars.append(PLATFORM_SOURCES[s])
         elif s.endswith((".mm", ".m")):
             apple_only = True
@@ -196,7 +204,21 @@ def emit_target(name, link, objects, test_dir, run_args):
     for s in srcs:
         out.append(f"{ind}  {s}")
     out.append(f"{ind})")
-    out += target_props(name, link, ind)
+    apple_defs = [d for d in link["defines"] if d in APPLE_ONLY_DEFINES]
+    apple_incs = [cm_path(i) for i in link["includes"] if i.startswith(APPLE_ONLY_PREFIXES)]
+    shared = dict(link,
+                  defines=[d for d in link["defines"] if d not in APPLE_ONLY_DEFINES],
+                  includes=[i for i in link["includes"] if not i.startswith(APPLE_ONLY_PREFIXES)])
+    out += target_props(name, shared, ind)
+    if apple_srcs or apple_defs or apple_incs:
+        out.append(f"{ind}if(APPLE)")
+        if apple_srcs:
+            out.append(f"{ind}  target_sources({name} PRIVATE {' '.join(apple_srcs)})")
+        if apple_defs:
+            out.append(f"{ind}  target_compile_definitions({name} PRIVATE {' '.join(apple_defs)})")
+        if apple_incs:
+            out.append(f"{ind}  target_include_directories({name} SYSTEM PRIVATE {' '.join(apple_incs)})")
+        out.append(f"{ind}endif()")
     libs = []
     for l in link["libs"]:
         if l == "dl":

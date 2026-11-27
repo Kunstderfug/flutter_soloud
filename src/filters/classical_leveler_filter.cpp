@@ -133,5 +133,5 @@ void ClassicalLevelerInstance::filter(float *buffer, unsigned int frames,
   planAgeSeconds_ += static_cast<double>(frames) / sampleRate;
   const double wet = settings.enabled ? mParam[P::WET] : 1.0;
   mParam[P::APPLIED_GAIN_DB] = static_cast<float>(20 * std::log10(1 + wet * (std::pow(10.0, gainDb / 20) - 1)));
-  mParam[P::LOOK_AHEAD_ACTIVE] = processor_->lookAheadActive() ? 1 : 0;
+  mParam[P::LOOK_AHEAD_ACTIVE] = processor_->lookAheadActive() ? 1.0f : 0.0f;
 }

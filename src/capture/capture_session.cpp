@@ -10,6 +10,14 @@
 #include <cstdlib>
 #include <cstring>
 
+// fork: MSVC deprecates the POSIX strdup name (C4996, an error under /WX).
+// _strdup also allocates with malloc(), so callers still free() the result.
+#if defined(_MSC_VER)
+#define fork_strdup _strdup
+#else
+#define fork_strdup strdup
+#endif
+
 namespace SoLoud
 {
     extern ma_context context;
@@ -76,7 +84,7 @@ std::vector<CaptureDevice> CaptureSession::listDevices()
     for (ma_uint32 i = 0; i < captureCount; ++i)
     {
         CaptureDevice device;
-        device.name = strdup(captureInfos[i].name);
+        device.name = fork_strdup(captureInfos[i].name);
         device.isDefault = captureInfos[i].isDefault;
         device.id = i;
         device.deviceId = captureInfos[i].id;

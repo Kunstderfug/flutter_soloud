@@ -290,7 +290,9 @@ void main() {
       final output = p.join(temp.path, 'flutter_soloud_ffigen.dart');
 
       // Same config, absolute paths, output redirected to the temp dir.
-      var config = File('ffigen.yaml').readAsStringSync().replaceFirst(
+      // fork: _readText drops CRLF line ends (core.autocrlf on Windows), which
+      // _yamlList and the entry-point patterns below expect.
+      var config = _readText('ffigen.yaml').replaceFirst(
         RegExp("output: '[^']*'"),
         "output: '$output'",
       );

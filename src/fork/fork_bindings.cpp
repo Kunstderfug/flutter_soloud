@@ -17,6 +17,14 @@
 #include <string>
 #include <vector>
 
+// fork: MSVC deprecates the POSIX strdup name (C4996, an error under /WX).
+// _strdup also allocates with malloc(), so callers still free() the result.
+#if defined(_MSC_VER)
+#define fork_strdup _strdup
+#else
+#define fork_strdup strdup
+#endif
+
 namespace
 {
   /// Stateless: every use reads bindings.cpp's `player` afresh.
@@ -109,7 +117,7 @@ extern "C"
         continue;
       }
 
-      devicesName[numDevices] = strdup(d[i].name);
+      devicesName[numDevices] = fork_strdup(d[i].name);
       isDefault[numDevices] = (int *)malloc(sizeof(int));
       *isDefault[numDevices] = d[i].isDefault;
       deviceId[numDevices] = (int *)malloc(sizeof(int));

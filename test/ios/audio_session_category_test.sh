@@ -4,7 +4,9 @@
 # with the whole engine for the iOS simulator and runs it with `xcrun simctl
 # spawn`. Swizzles the AVAudioSession setters to record the engine's calls and
 # checks category, mode and options after init, play, an interruption,
-# stopAudioDevice and deinit, for two app configurations.
+# stopAudioDevice and deinit, for three app configurations. Also lists the
+# capture devices before init and while playing, and checks that the session
+# is untouched and the engine clock keeps advancing.
 #
 #   test/ios/audio_session_category_test.sh [--strict]
 #

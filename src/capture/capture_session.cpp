@@ -21,6 +21,7 @@
 namespace SoLoud
 {
     extern ma_context context;
+    ma_result miniaudio_listCaptureDevices(std::vector<ma_device_info> &aDevices);
 }
 
 namespace
@@ -67,12 +68,23 @@ CaptureSession::~CaptureSession()
 
 std::vector<CaptureDevice> CaptureSession::listDevices()
 {
+    std::vector<CaptureDevice> result;
+    std::vector<ma_device_info> infos;
+#if defined(MA_HAS_COREAUDIO) || defined(__ANDROID__)
+    // Capture opens on the engine's context here (see start()), so list on
+    // the same context settings. On iOS a default context would set the
+    // session category and deactivate the session on uninit, which stops
+    // the engine's output.
+    if (SoLoud::miniaudio_listCaptureDevices(infos) != MA_SUCCESS)
+        return result;
+#else
+    // Capture opens without a context here, so list on the same default one
+    // (on Linux the engine's context may use another backend).
     ma_context context;
     ma_device_info *playbackInfos;
     ma_uint32 playbackCount;
     ma_device_info *captureInfos;
     ma_uint32 captureCount;
-    std::vector<CaptureDevice> result;
     if (ma_context_init(nullptr, 0, nullptr, &context) != MA_SUCCESS)
         return result;
     if (ma_context_get_devices(&context, &playbackInfos, &playbackCount,
@@ -81,16 +93,18 @@ std::vector<CaptureDevice> CaptureSession::listDevices()
         ma_context_uninit(&context);
         return result;
     }
-    for (ma_uint32 i = 0; i < captureCount; ++i)
+    infos.assign(captureInfos, captureInfos + captureCount);
+    ma_context_uninit(&context);
+#endif
+    for (size_t i = 0; i < infos.size(); ++i)
     {
         CaptureDevice device;
-        device.name = fork_strdup(captureInfos[i].name);
-        device.isDefault = captureInfos[i].isDefault;
-        device.id = i;
-        device.deviceId = captureInfos[i].id;
+        device.name = fork_strdup(infos[i].name);
+        device.isDefault = infos[i].isDefault;
+        device.id = static_cast<unsigned int>(i);
+        device.deviceId = infos[i].id;
         result.push_back(device);
     }
-    ma_context_uninit(&context);
     return result;
 }
 

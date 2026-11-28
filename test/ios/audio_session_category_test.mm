@@ -3,13 +3,16 @@
 // noAudioSessionDeactivate (init_platform_context() in soloud_miniaudio.cpp),
 // so the category, mode and options the app chose must survive init, play,
 // interruptions and deinit, and the engine must never deactivate the session.
+// Listing the capture devices, before init and while a sound plays, must
+// leave the session alone too and must not stop the output (the engine clock
+// keeps advancing).
 //
 // Runs in the iOS simulator with the whole engine. The AVAudioSession
 // setters (setCategory:..., setMode:..., setActive:...) are swizzled to
 // record every call the engine makes (the test's own calls are not counted),
-// and the category / mode / options are read back after each step, for two
-// app configurations (Playback + mixWithOthers + spokenAudio mode, and
-// Ambient).
+// and the category / mode / options are read back after each step, for three
+// app configurations (Playback + mixWithOthers + spokenAudio mode, Ambient,
+// and GPhil's PlayAndRecord with its options).
 //
 // Activation is allowed in one place: the engine calls setActive:YES before
 // restarting the device from stopped (the MA_APPLE_MOBILE start path in
@@ -25,6 +28,11 @@
 #include "../support/engine_ffi.h"
 
 using namespace enginetest;
+
+extern "C" {
+void listCaptureDevices(char **devicesName, int **deviceId, int **isDefault, int *n_devices);
+void freeListCaptureDevices(char **devicesName, int **deviceId, int **isDefault, int n_devices);
+}
 
 static std::atomic<bool> gRecording{false};
 static std::atomic<int> gSetCategoryCalls{0}, gSetModeCalls{0}, gActivateCalls{0}, gDeactivateCalls{0};
@@ -108,6 +116,39 @@ static void expectUnchanged(const SessionState &want, const char *step) {
     ET_CHECK(gDeactivateCalls == 0, "%s: engine deactivated the session %d times", step, gDeactivateCalls.load());
 }
 
+// Lists the capture devices the way the Dart side does; returns how many.
+// The simulator may have none, which is fine: the session calls happen anyway.
+static int listCapture() {
+    constexpr int kCap = 255;
+    char *names[kCap] = {};
+    int *ids[kCap] = {};
+    int *defs[kCap] = {};
+    int n = 0;
+    listCaptureDevices(names, ids, defs, &n);
+    freeListCaptureDevices(names, ids, defs, n);
+    return n;
+}
+
+// Puts the app's session back (not recorded) and clears the counts, so a
+// failed step does not spill into the next one.
+static void restoreSession(NSString *category, NSString *mode, AVAudioSessionCategoryOptions options) {
+    const bool recording = gRecording;
+    gRecording = false;
+    @autoreleasepool {
+        [[AVAudioSession sharedInstance] setCategory:category mode:mode options:options error:nil];
+    }
+    resetCounts();
+    gRecording = recording;
+}
+
+static void expectCaptureListLeavesSessionAlone(const SessionState &want, const char *step) {
+    resetCounts();
+    const int n = listCapture();
+    std::printf("  note: %d capture devices %s\n", n, step);
+    expectUnchanged(want, step);
+    ET_CHECK(gActivateCalls == 0, "%s: engine activated the session %d times", step, gActivateCalls.load());
+}
+
 static void runConfig(NSString *category, NSString *mode, AVAudioSessionCategoryOptions options) {
     std::printf("[case] app session: %s, %s, options 0x%lx\n", [category UTF8String], [mode UTF8String],
                 static_cast<unsigned long>(options));
@@ -120,6 +161,9 @@ static void runConfig(NSString *category, NSString *mode, AVAudioSessionCategory
     resetCounts();
     gRecording = true;
 
+    expectCaptureListLeavesSessionAlone(want, "after listing capture devices before init");
+    restoreSession(category, mode, options);
+
     gState.clear();
     ET_CHECK(initLikeDart() == noError, "init");
     expectUnchanged(want, "after init");
@@ -130,6 +174,18 @@ static void runConfig(NSString *category, NSString *mode, AVAudioSessionCategory
     expectUnchanged(want, "after play");
     ET_CHECK(gActivateCalls == 0, "the first play after init does not activate the session (%d)",
              gActivateCalls.load());
+
+    // While a sound plays: the output must keep running, so the engine clock
+    // (which advances only while the device renders) keeps advancing.
+    expectCaptureListLeavesSessionAlone(want, "after listing capture devices while playing");
+    {
+        const double before = getEngineTime();
+        sleepMs(500);
+        const double advanced = getEngineTime() - before;
+        ET_CHECK(advanced > 0.25 && mixing(h), "the engine clock keeps advancing after the list (%.3f s in 0.5 s)",
+                 advanced);
+    }
+    restoreSession(category, mode, options);
 
     // An idle stop and the next play restart the device from stopped.
     setAudioDeviceIdleTimeout(100);
@@ -170,6 +226,11 @@ static int runAll() {
     runConfig(AVAudioSessionCategoryPlayback, AVAudioSessionModeSpokenAudio,
               AVAudioSessionCategoryOptionMixWithOthers);
     runConfig(AVAudioSessionCategoryAmbient, AVAudioSessionModeDefault, 0);
+    // GPhil's session (ios/Runner/AudioPluginHandler.swift in the app).
+    runConfig(AVAudioSessionCategoryPlayAndRecord, AVAudioSessionModeDefault,
+              AVAudioSessionCategoryOptionDefaultToSpeaker | AVAudioSessionCategoryOptionAllowBluetooth |
+                  AVAudioSessionCategoryOptionAllowBluetoothA2DP | AVAudioSessionCategoryOptionAllowAirPlay |
+                  AVAudioSessionCategoryOptionMixWithOthers);
     return finish("audio session category");
 }
 

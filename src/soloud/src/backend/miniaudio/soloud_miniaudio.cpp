@@ -1367,11 +1367,12 @@ namespace SoLoud
         gEngineContextInitialized = false;
     }
 
-    // The playback devices of `aContext`, copied out: the array miniaudio
-    // returns belongs to the context and is overwritten by the next
+    // ###### flutter_soloud local patch (capture device list) ######
+    // The playback or capture devices of `aContext`, copied out: the arrays
+    // miniaudio returns belong to the context and are overwritten by the next
     // enumeration on it.
-    static ma_result copy_playback_devices(ma_context *aContext,
-                                           std::vector<ma_device_info> &aDevices)
+    static ma_result copy_devices(ma_context *aContext, ma_device_type aType,
+                                  std::vector<ma_device_info> &aDevices)
     {
         ma_device_info *pPlaybackInfos;
         ma_uint32 playbackCount;
@@ -1381,11 +1382,16 @@ namespace SoLoud
             aContext, &pPlaybackInfos, &playbackCount, &pCaptureInfos, &captureCount);
         if (result != MA_SUCCESS)
             return result;
-        aDevices.assign(pPlaybackInfos, pPlaybackInfos + playbackCount);
+        if (aType == ma_device_type_capture)
+            aDevices.assign(pCaptureInfos, pCaptureInfos + captureCount);
+        else
+            aDevices.assign(pPlaybackInfos, pPlaybackInfos + playbackCount);
         return MA_SUCCESS;
     }
 
-    ma_result miniaudio_listPlaybackDevices(std::vector<ma_device_info> &aDevices)
+    // Shared by the playback and capture lists, so both get the same context
+    // and the same lifecycle handling.
+    static ma_result list_devices(ma_device_type aType, std::vector<ma_device_info> &aDevices)
     {
         aDevices.clear();
         // Held throughout, including around the temporary context below.
@@ -1399,7 +1405,7 @@ namespace SoLoud
         // With the engine running, enumerate on its own context: that is the
         // backend the returned IDs will be opened on.
         if (gEngineContextInitialized)
-            return copy_playback_devices(&context, aDevices);
+            return copy_devices(&context, aType, aDevices);
 
         // No engine context yet, so build a temporary one the way the engine
         // will build its own.
@@ -1414,10 +1420,24 @@ namespace SoLoud
 #if defined(MA_HAS_AAUDIO)
             const ScopedEnumerationAAudioClose closeHook(enumerationContext);
 #endif
-            result = copy_playback_devices(&enumerationContext, aDevices);
+            result = copy_devices(&enumerationContext, aType, aDevices);
         }
         ma_context_uninit(&enumerationContext);
         return result;
+    }
+
+    ma_result miniaudio_listPlaybackDevices(std::vector<ma_device_info> &aDevices)
+    {
+        return list_devices(ma_device_type_playback, aDevices);
+    }
+
+    // Capture devices for src/capture/ (CoreAudio and Android, where capture
+    // opens on the engine's context). A default context would set the iOS
+    // session category and deactivate the session on uninit, stopping the
+    // engine's output.
+    ma_result miniaudio_listCaptureDevices(std::vector<ma_device_info> &aDevices)
+    {
+        return list_devices(ma_device_type_capture, aDevices);
     }
 
     void soloud_miniaudio_audiomixer(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount)
